@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+  background: #eef7f4;
+  color: #153b35;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  display: grid;
+  place-items: center;
+}
+
+.status-card {
+  width: min(90%, 32rem);
+  padding: 2rem;
+  border-radius: 0.75rem;
+  background: #ffffff;
+  box-shadow: 0 0.5rem 2rem rgb(21 59 53 / 12%);
+}
+
+h1 {
+  margin-top: 0;
+}
+
+button {
+  padding: 0.7rem 1rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: #147d68;
+  color: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #0f6555;
+}
+
+button:focus-visible {
+  outline: 0.2rem solid #153b35;
+  outline-offset: 0.2rem;
+}
