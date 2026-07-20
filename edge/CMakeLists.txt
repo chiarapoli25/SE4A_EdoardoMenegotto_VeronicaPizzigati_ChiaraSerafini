@@ -9,19 +9,19 @@ target_include_directories(smarthydro_sensor_simulator
 target_compile_features(smarthydro_sensor_simulator PUBLIC cxx_std_17)
 set_target_properties(smarthydro_sensor_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
-add_library(smarthydro_actuator_manager src/actuator_manager.cpp)
-target_include_directories(smarthydro_actuator_manager
+add_library(smarthydro_actuator_simulator src/actuator_simulator.cpp)
+target_include_directories(smarthydro_actuator_simulator
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_compile_features(smarthydro_actuator_manager PUBLIC cxx_std_17)
-set_target_properties(smarthydro_actuator_manager PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_features(smarthydro_actuator_simulator PUBLIC cxx_std_17)
+set_target_properties(smarthydro_actuator_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
 add_executable(smarthydro_edge src/main.cpp)
 target_compile_features(smarthydro_edge PRIVATE cxx_std_17)
 target_link_libraries(smarthydro_edge
     PRIVATE
         smarthydro_sensor_simulator
-        smarthydro_actuator_manager
+        smarthydro_actuator_simulator
 )
 set_target_properties(smarthydro_edge PROPERTIES CXX_EXTENSIONS OFF)
 
@@ -35,8 +35,8 @@ if(BUILD_TESTING)
 
     add_test(NAME smarthydro_sensor_tests COMMAND smarthydro_sensor_tests)
 
-    add_executable(smarthydro_actuator_tests tests/actuator_manager_tests.cpp)
-    target_link_libraries(smarthydro_actuator_tests PRIVATE smarthydro_actuator_manager)
+    add_executable(smarthydro_actuator_tests tests/actuator_simulator_tests.cpp)
+    target_link_libraries(smarthydro_actuator_tests PRIVATE smarthydro_actuator_simulator)
     target_compile_features(smarthydro_actuator_tests PRIVATE cxx_std_17)
     set_target_properties(smarthydro_actuator_tests PROPERTIES CXX_EXTENSIONS OFF)
 

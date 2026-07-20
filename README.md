@@ -71,19 +71,25 @@ La durata reale del passo non e ancora definita. Gli intervalli e le variazioni
 servono esclusivamente alla simulazione e non rappresentano valori obiettivo
 per una coltura.
 
-### Gestore degli attuatori
+### Simulatore degli attuatori
 
-`ActuatorManager` conserva lo stato comandato di:
+`ActuatorSimulator` distingue lo stato obiettivo comandato dallo stato
+effettivamente raggiunto da:
 
 - pompa dell'acqua, regolabile tra 0% e 100%;
 - selettore del concime tramite un identificativo testuale;
 - dosaggio del concime liquido, regolabile tra 0% e 100%;
 - lampade, regolabili tra 0% e 100%.
 
-Gli attuatori partono spenti. Non e possibile avviare il dosaggio senza avere
-prima selezionato un concime; rimuovere la selezione arresta anche il dosaggio.
-Il metodo `stop_all()` riporta tutti gli attuatori allo stato sicuro. Il gestore
-non contiene logica decisionale e non simula ancora gli effetti fisici degli
+Gli attuatori partono spenti. I metodi `set_*_target_percent()` impostano il
+valore desiderato; ogni chiamata a `step()` avvicina lo stato effettivo al
+target con una variazione massima del 20% per la pompa dell'acqua, 5% per il
+dosaggio del concime e 25% per le lampade.
+
+Non e possibile avviare il dosaggio senza avere prima selezionato un concime;
+rimuovere la selezione arresta anche il dosaggio. Il metodo `stop_all()` riporta
+immediatamente stato e target alla condizione sicura. Il simulatore non
+contiene logica decisionale e non riproduce ancora gli effetti fisici degli
 attuatori sull'ambiente.
 
 ## Preparazione del backend Python

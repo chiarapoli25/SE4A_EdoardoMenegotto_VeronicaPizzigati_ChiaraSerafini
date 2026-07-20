@@ -1,4 +1,4 @@
-#include "smarthydro/actuator_manager.hpp"
+#include "smarthydro/actuator_simulator.hpp"
 #include "smarthydro/sensor_simulator.hpp"
 
 #include <iomanip>
@@ -12,7 +12,7 @@ int main() {
     smarthydro::SensorSimulator sensors;
     const auto readings = sensors.read();
 
-    const smarthydro::ActuatorManager actuators;
+    const smarthydro::ActuatorSimulator actuators;
     const auto& actuator_state = actuators.state();
 
     std::cout << std::fixed << std::setprecision(1)
