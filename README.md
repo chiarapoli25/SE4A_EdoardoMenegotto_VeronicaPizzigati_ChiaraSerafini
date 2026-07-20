@@ -5,9 +5,10 @@ idroponico. Questa Fase 0 prepara una base di lavoro avviabile composta da un
 Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
 una ricetta di coltivazione di esempio.
 
-In questa fase non sono ancora presenti database, autenticazione, sensori,
-attuatori, controllo PID, comunicazione tra Edge e backend, Docker o gestione
-delle colture.
+Il primo incremento dell'area Edge aggiunge un simulatore dei sensori e un
+gestore simulato degli attuatori. Non sono ancora presenti dispositivi reali,
+controllori automatici, database, autenticazione, comunicazione tra Edge e
+backend o Docker.
 
 ## Struttura del progetto
 
@@ -37,10 +38,53 @@ Tutti i comandi seguenti devono essere eseguiti dalla radice del repository.
 ```bash
 cmake -S edge -B edge/build
 cmake --build edge/build
+ctest --test-dir edge/build --output-on-failure
 ./edge/build/smarthydro_edge
 ```
 
-L'eseguibile stampa nome, versione e stato dell'Edge Controller.
+L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
+campione simulato dei sensori e dallo stato sicuro iniziale degli attuatori.
+
+### Simulatore dei sensori
+
+`SensorSimulator` produce una lettura aggregata contenente:
+
+- temperatura in gradi Celsius, tra 18 e 30;
+- umidita dell'aria, tra 30% e 90%;
+- pH, tra 4 e 8;
+- luce, espressa come percentuale tra 0% e 100%.
+
+Il costruttore senza argomenti genera sequenze diverse a ogni esecuzione. Un
+seed esplicito, per esempio `SensorSimulator(42)`, rende invece la sequenza
+riproducibile per test e debug.
+
+Ogni chiamata a `read()` rappresenta un passo temporale discreto. I valori non
+vengono estratti nuovamente sull'intero intervallo, ma evolvono a partire dalla
+lettura precedente con queste variazioni massime per passo:
+
+- temperatura: 0,25 °C;
+- umidita dell'aria: 1%;
+- pH: 0,05;
+- luce: 2,5%.
+
+La durata reale del passo non e ancora definita. Gli intervalli e le variazioni
+servono esclusivamente alla simulazione e non rappresentano valori obiettivo
+per una coltura.
+
+### Gestore degli attuatori
+
+`ActuatorManager` conserva lo stato comandato di:
+
+- pompa dell'acqua, regolabile tra 0% e 100%;
+- selettore del concime tramite un identificativo testuale;
+- dosaggio del concime liquido, regolabile tra 0% e 100%;
+- lampade, regolabili tra 0% e 100%.
+
+Gli attuatori partono spenti. Non e possibile avviare il dosaggio senza avere
+prima selezionato un concime; rimuovere la selezione arresta anche il dosaggio.
+Il metodo `stop_all()` riporta tutti gli attuatori allo stato sicuro. Il gestore
+non contiene logica decisionale e non simula ancora gli effetti fisici degli
+attuatori sull'ambiente.
 
 ## Preparazione del backend Python
 
