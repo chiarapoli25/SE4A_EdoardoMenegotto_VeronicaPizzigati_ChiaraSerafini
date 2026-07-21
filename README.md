@@ -45,6 +45,12 @@ ctest --test-dir edge/build --output-on-failure
 L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
 campione simulato dei sensori e dallo stato sicuro iniziale degli attuatori.
 
+I test C++ di sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
+scarica automaticamente la versione fissata al primo comando di configurazione
+con `BUILD_TESTING=ON`; le esecuzioni successive riutilizzano la copia nella
+cartella di build. `gtest_discover_tests` registra in CTest ciascun caso di test
+separatamente.
+
 ### Simulatore dei sensori
 
 `SensorSimulator` produce una lettura aggregata contenente:
@@ -91,6 +97,26 @@ rimuovere la selezione arresta anche il dosaggio. Il metodo `stop_all()` riporta
 immediatamente stato e target alla condizione sicura. Il simulatore non
 contiene logica decisionale e non riproduce ancora gli effetti fisici degli
 attuatori sull'ambiente.
+
+### Controllori
+
+Il file `controllers.cpp` implementa tre controllori scalari. Ciascuno riceve
+una misura e restituisce un comando normalizzato tra 0% e 100%; non e ancora
+collegato automaticamente a uno specifico sensore o attuatore.
+
+- `ThresholdController` usa due soglie e mantiene lo stato nella zona
+  intermedia, introducendo isteresi ed evitando accensioni e spegnimenti
+  continui vicino a una singola soglia.
+- `PidController` combina termine proporzionale, integrale e derivativo,
+  richiede la durata del passo e limita l'uscita. Include una protezione
+  essenziale contro l'accumulo dell'integrale durante la saturazione.
+- `PredictiveController` calcola il trend tra due misure, lo proietta su un
+  orizzonte configurabile e regola l'uscita rispetto al valore previsto.
+  Si tratta di una previsione lineare iniziale, non di MPC o machine learning.
+
+`ControlDirection` permette di indicare se l'attuatore associato aumenta o
+diminuisce la variabile controllata. La successiva integrazione dovra stabilire
+esplicitamente quali controllori comandano pompa, concime e lampade.
 
 ## Preparazione del backend Python
 
