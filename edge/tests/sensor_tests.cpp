@@ -59,3 +59,4 @@ TEST(SensorSimulatorTest, ConsecutiveReadingsAreContinuous) {
 }
 
 }  // namespace
+

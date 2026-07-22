@@ -28,6 +28,7 @@ backend o Docker.
 
 - CMake 3.16 o successivo
 - Un compilatore compatibile con C++17
+- gnuplot (facoltativo per l'Edge, necessario per i grafici degli experiments)
 - Python 3.10 o successivo
 - Un browser web moderno
 
@@ -39,7 +40,7 @@ Tutti i comandi seguenti devono essere eseguiti dalla radice del repository.
 cmake -S edge -B edge/build
 cmake --build edge/build
 ctest --test-dir edge/build --output-on-failure
-./edge/build/bin/smarthydro_edge
+./edge/build/bin/edge
 ```
 
 L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
@@ -117,6 +118,87 @@ collegato automaticamente a uno specifico sensore o attuatore.
 `ControlDirection` permette di indicare se l'attuatore associato aumenta o
 diminuisce la variabile controllata. La successiva integrazione dovra stabilire
 esplicitamente quali controllori comandano pompa, concime e lampade.
+
+## Experiments C++
+
+Gli experiments sono programmi interattivi separati dagli unit test. Usano le
+librerie dell'Edge per produrre una giornata o una settimana di campioni
+simulati, salvano tutte le letture in CSV e, se gnuplot e disponibile, generano
+un grafico PNG. Per convenzione dei soli experiments, un passo simulato
+corrisponde a 15 minuti; il programma non attende il trascorrere del tempo
+reale.
+
+### Installazione di gnuplot
+
+Su macOS con Homebrew:
+
+```bash
+brew install gnuplot
+```
+
+Su Ubuntu o Debian:
+
+```bash
+sudo apt update
+sudo apt install gnuplot
+```
+
+Su Fedora:
+
+```bash
+sudo dnf install gnuplot
+```
+
+Su Windows con winget:
+
+```powershell
+winget install gnuplot.gnuplot
+```
+
+Verificare che il comando sia raggiungibile dal terminale:
+
+```bash
+gnuplot --version
+```
+
+Se gnuplot non e presente, gli experiments terminano comunque correttamente e
+conservano il CSV, mostrando un avviso per il grafico non generato.
+
+### Compilazione degli experiments
+
+Dalla radice del repository, configurare CMake abilitando gli experiments. I
+test possono essere disabilitati se si desiderano compilare soltanto le demo:
+
+```bash
+cmake -S edge -B edge/build -DBUILD_EXPERIMENTS=ON -DBUILD_TESTING=OFF
+cmake --build edge/build --target \
+    temperature_simulation \
+    humidity_simulation \
+    ph_simulation \
+    light_simulation
+```
+
+`BUILD_EXPERIMENTS` e attivo per impostazione predefinita, quindi una normale
+compilazione completa include gia questi programmi. Per visualizzare l'elenco
+dei target disponibili:
+
+```bash
+cmake --build edge/build --target help
+```
+
+Gli eseguibili sono creati in `edge/build/bin`. Avviarli separatamente con:
+
+```bash
+./edge/build/bin/temperature_simulation
+./edge/build/bin/humidity_simulation
+./edge/build/bin/ph_simulation
+./edge/build/bin/light_simulation
+```
+
+Ogni programma chiede se simulare una giornata o una settimana. I CSV e i PNG
+vengono salvati nella cartella `experiment_results` relativa alla directory da
+cui viene avviato l'eseguibile, e il percorso completo viene mostrato nel
+terminale.
 
 ## Preparazione del backend Python
 

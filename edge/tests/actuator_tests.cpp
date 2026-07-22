@@ -81,3 +81,4 @@ TEST(ActuatorSimulatorTest, StopAllClearsStateAndTargets) {
 }
 
 }  // namespace
+

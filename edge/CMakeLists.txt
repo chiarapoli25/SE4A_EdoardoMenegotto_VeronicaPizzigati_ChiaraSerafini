@@ -10,6 +10,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 # Legge src/CMakeLists.txt, che definisce librerie ed eseguibile principale.
 add_subdirectory(src)
 
+# Permette di escludere le demo interattive nelle build minimali.
+option(BUILD_EXPERIMENTS "Build interactive demonstration programs" ON)
+
+if(BUILD_EXPERIMENTS)
+    # Questi programmi dimostrativi non vengono registrati come test CTest.
+    add_subdirectory(experiments)
+endif()
+
 # Abilita il supporto di CTest e crea l'opzione BUILD_TESTING.
 include(CTest)
 
