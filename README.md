@@ -39,7 +39,7 @@ Tutti i comandi seguenti devono essere eseguiti dalla radice del repository.
 cmake -S edge -B edge/build
 cmake --build edge/build
 ctest --test-dir edge/build --output-on-failure
-./edge/build/smarthydro_edge
+./edge/build/bin/smarthydro_edge
 ```
 
 L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
