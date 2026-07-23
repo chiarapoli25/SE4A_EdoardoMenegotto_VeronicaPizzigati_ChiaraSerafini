@@ -67,64 +67,30 @@ target_compile_features(controller_tests PRIVATE cxx_std_17)
 set_target_properties(controller_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(controller_tests)
 
-# Smoke test dei programmi dimostrativi. I risultati finiscono esclusivamente
-# nella build e non toccano i CSV/PNG versionati in experiment_results.
+# Smoke test dei programmi dimostrativi. I sensori creano un solo CSV e nessun
+# PNG; gli altri output di test finiscono esclusivamente nella build.
 if(BUILD_EXPERIMENTS)
-    set(EXPERIMENT_SMOKE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/experiment_smoke.cmake")
-
-    add_test(
-        NAME experiment_light_day_natural_without_gnuplot
-        COMMAND ${CMAKE_COMMAND}
-            -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:light_simulation>
-            -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/light
-            -DBASE_NAME=light_day_natural_soil-aerated-universal_seed-31415
-            -DEXPECTED_LINES=98
-            -DDURATION=day
-            -DSOIL=aerated-universal
-            -DNO_GNUPLOT=ON
-            -DCHECK_DARKNESS=ON
-            -P ${EXPERIMENT_SMOKE_SCRIPT}
-    )
-
-    add_test(
-        NAME experiment_humidity_week_without_actuators
-        COMMAND ${CMAKE_COMMAND}
-            -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:humidity_simulation>
-            -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/humidity
-            -DBASE_NAME=humidity_week_natural_soil-draining_seed-31415
-            -DEXPECTED_LINES=674
-            -DDURATION=week
-            -DSOIL=draining
-            -DNO_GNUPLOT=ON
-            -P ${EXPERIMENT_SMOKE_SCRIPT}
-    )
-
-    add_test(
-        NAME experiment_soil_moisture_day_without_actuators
-        COMMAND ${CMAKE_COMMAND}
-            -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:soil_moisture_simulation>
-            -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/soil_moisture
-            -DBASE_NAME=soil_moisture_day_natural_soil-aerated-universal_seed-31415
-            -DEXPECTED_LINES=98
-            -DDURATION=day
-            -DSOIL=aerated-universal
-            -DNO_GNUPLOT=ON
-            -P ${EXPERIMENT_SMOKE_SCRIPT}
-    )
-
     find_program(GNUPLOT_EXECUTABLE gnuplot)
     if(GNUPLOT_EXECUTABLE)
         add_test(
-            NAME experiment_environment_generates_png
+            NAME experiment_sensor_simulation_day
             COMMAND ${CMAKE_COMMAND}
-                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:environment_simulation>
-                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/environment
-                -DBASE_NAME=environment_day_natural_soil-organic-retentive_seed-31415
-                -DEXPECTED_LINES=98
-                -DDURATION=day
-                -DSOIL=organic-retentive
-                -DEXPECT_PNG=ON
-                -P ${EXPERIMENT_SMOKE_SCRIPT}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:sensor_simulation>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/sensor_day
+                -DDURATION_CHOICE=1
+                -DSOIL_CHOICE=1
+                -DEXPECTED_SAMPLES=97
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/sensor_simulation_smoke.cmake
+        )
+        add_test(
+            NAME experiment_sensor_simulation_week
+            COMMAND ${CMAKE_COMMAND}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:sensor_simulation>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/sensor_week
+                -DDURATION_CHOICE=2
+                -DSOIL_CHOICE=2
+                -DEXPECTED_SAMPLES=673
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/sensor_simulation_smoke.cmake
         )
     endif()
 

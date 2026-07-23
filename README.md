@@ -131,7 +131,7 @@ automaticamente a uno specifico sensore o attuatore.
 
 `ControlDirection` permette di indicare se l'attuatore associato aumenta o
 diminuisce la variabile controllata. L'integrazione stabilisce esplicitamente
-esplicitamente quali controllori comandano pompa, concime e lampade.
+quali controllori comandano pompa, concime e lampade.
 
 Un controllo a soglia dell'irrigazione puo essere collegato cosi:
 
@@ -149,14 +149,15 @@ environment.step(delta_time_seconds, actuators.output());
 ## Experiments C++
 
 Gli experiments sono programmi dimostrativi separati dagli unit test e usano
-direttamente le librerie di sensori, attuatori e controllori. Quelli di sensori
-e controllori salvano i campioni in CSV e, se gnuplot e disponibile, generano
-un grafico PNG. L'experiment degli attuatori usa invece una finestra gnuplot
-interattiva e non salva file.
+direttamente le librerie di sensori, attuatori e controllori. Gli experiment di
+sensori e attuatori usano una finestra gnuplot interattiva. Quello dei sensori
+salva un solo CSV multivariato ma nessun PNG; quello degli attuatori non salva
+file. Gli experiment dei controllori salvano invece CSV e grafici PNG.
 
-Gli experiments dei sensori sono interattivi e simulano una giornata o una
-settimana con passo di 15 minuti. Tutti gli attuatori rimangono spenti, cosi le
-misure rappresentano esclusivamente l'evoluzione naturale dell'ambiente.
+L'experiment dei sensori e un unico programma interattivo che simula una
+giornata o una settimana con passo di 15 minuti. Tutti gli attuatori rimangono
+spenti, cosi le misure rappresentano esclusivamente l'evoluzione naturale
+dell'ambiente.
 
 ### Installazione di gnuplot
 
@@ -191,10 +192,10 @@ Verificare che il comando sia raggiungibile dal terminale:
 gnuplot --version
 ```
 
-Se gnuplot non e presente, gli experiments che producono file conservano il
-CSV e mostrano un avviso per il PNG non generato. L'experiment live degli
-attuatori segnala invece che gnuplot e necessario e termina senza avviare la
-sessione interattiva.
+Se gnuplot non e presente, gli experiments dei controllori conservano il CSV e
+mostrano un avviso per il PNG non generato. Gli experiment live di sensori e
+attuatori segnalano invece che gnuplot e necessario e terminano senza avviare
+la sessione interattiva.
 
 ### Compilazione degli experiments
 
@@ -204,12 +205,7 @@ test possono essere disabilitati se si desiderano compilare soltanto le demo:
 ```bash
 cmake -S edge -B edge/build -DBUILD_EXPERIMENTS=ON -DBUILD_TESTING=OFF
 cmake --build edge/build --target \
-    temperature_simulation \
-    humidity_simulation \
-    soil_moisture_simulation \
-    ph_simulation \
-    light_simulation \
-    environment_simulation \
+    sensor_simulation \
     actuator_simulation \
     threshold_step_response \
     pid_step_response \
@@ -227,25 +223,29 @@ cmake --build edge/build --target help
 Gli eseguibili sono creati in `edge/build/bin`. Avviarli separatamente con:
 
 ```bash
-./edge/build/bin/temperature_simulation
-./edge/build/bin/humidity_simulation
-./edge/build/bin/soil_moisture_simulation
-./edge/build/bin/ph_simulation
-./edge/build/bin/light_simulation
-./edge/build/bin/environment_simulation
+./edge/build/bin/sensor_simulation
 ./edge/build/bin/actuator_simulation
 ./edge/build/bin/threshold_step_response
 ./edge/build/bin/pid_step_response
 ./edge/build/bin/predictive_step_response
 ```
 
-I primi cinque programmi isolano nel grafico temperatura, umidita dell'aria,
-umidita del terriccio, pH o PPFD. `environment_simulation` registra tutte
-queste misure nello stesso CSV. Anche questo experiment usa
-sempre attuatori spenti.
+`sensor_simulation` apre una sola finestra gnuplot con quattro pannelli
+sincronizzati sullo stesso asse temporale:
+
+- temperatura dell'aria in gradi Celsius;
+- umidita dell'aria e del terriccio nello stesso pannello, entrambe in
+  percentuale e con colori distinti;
+- pH della soluzione presente nei pori del terriccio;
+- luce espressa come PPFD in micromoli per metro quadrato al secondo.
+
+Temperatura e pH usano intervalli verticali adattati ai dati, le umidita
+mantengono la scala fisica 0-100% e il PPFD parte da zero. Il programma salva
+tutte le misure in un unico CSV, non crea PNG e mantiene il grafico aperto
+finche non si preme Invio nel terminale. Gli attuatori restano sempre spenti.
 
 Gli experiments non accettano opzioni da riga di comando. Dopo l'avvio
-le simulazioni dei sensori richiedono interattivamente:
+la simulazione dei sensori richiede interattivamente:
 
 - giornata oppure settimana;
 - substrato universale aerato, drenante oppure organico ritentivo;
@@ -270,13 +270,9 @@ richiedere input:
 - `predictive_step_response` combina gradini e una rampa per mostrare come il
   trend modifica previsione e comando.
 
-I nomi dei sensori includono durata, scenario `natural`, terriccio e seed. Se
-un nome esiste gia viene aggiunto un suffisso `run-N`, senza sovrascriverlo. Le
-celle CSV vuote rappresentano i dropout e gnuplot le visualizza come
-interruzioni.
-Per impostazione predefinita i risultati vengono salvati in
-`experiment_results` relativa alla directory di avvio; il percorso assoluto
-viene sempre mostrato nel terminale.
+I dropout dei sensori vengono salvati come celle CSV vuote e visualizzati come
+interruzioni delle curve. Il CSV dei sensori e i risultati dei controllori
+vengono salvati in `experiment_results` relativa alla directory di avvio.
 
 ## Preparazione del backend Python
 
