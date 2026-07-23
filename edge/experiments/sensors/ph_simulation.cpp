@@ -1,8 +1,7 @@
-#include "experiment_utils.hpp"
+#include "sensor_experiment_runner.hpp"
 #include "smarthydro/sensor_simulator.hpp"
 
 int main() {
-    smarthydro::SensorSimulator simulator;
     const smarthydro::experiments::SensorExperimentConfig config{
         "ph",
         "Simulazione del pH",
@@ -11,5 +10,6 @@ int main() {
         "ph"};
 
     return smarthydro::experiments::run_sensor_experiment(
-        config, [&simulator] { return simulator.read().ph; });
+        config,
+        [](const smarthydro::SensorReadings& readings) { return readings.ph; });
 }

@@ -1,15 +1,17 @@
-#include "experiment_utils.hpp"
+#include "sensor_experiment_runner.hpp"
 #include "smarthydro/sensor_simulator.hpp"
 
 int main() {
-    smarthydro::SensorSimulator simulator;
     const smarthydro::experiments::SensorExperimentConfig config{
         "light",
         "Simulazione della luce",
-        "Intensita luminosa",
-        "%",
-        "light_percent"};
+        "PPFD",
+        "umol/(m2 s)",
+        "light_ppfd_umol_m2_s"};
 
     return smarthydro::experiments::run_sensor_experiment(
-        config, [&simulator] { return simulator.read().light_percent; });
+        config,
+        [](const smarthydro::SensorReadings& readings) {
+            return readings.light_ppfd_umol_m2_s;
+        });
 }

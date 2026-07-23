@@ -1,12 +1,12 @@
 # SmartHydro
 
-SmartHydro e un progetto per il monitoraggio e il controllo di un sistema
-idroponico. Questa Fase 0 prepara una base di lavoro avviabile composta da un
+SmartHydro e un progetto per il monitoraggio e il controllo di una coltivazione
+in terriccio. Questa Fase 0 prepara una base di lavoro avviabile composta da un
 Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
 una ricetta di coltivazione di esempio.
 
-Il primo incremento dell'area Edge aggiunge un simulatore dei sensori e un
-gestore simulato degli attuatori. Non sono ancora presenti dispositivi reali,
+L'area Edge include un simulatore dinamico della serra, sensori con errori
+strumentali, attuatori e controllori. Non sono ancora presenti dispositivi reali,
 controllori automatici, database, autenticazione, comunicazione tra Edge e
 backend o Docker.
 
@@ -44,60 +44,64 @@ ctest --test-dir edge/build --output-on-failure
 ```
 
 L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
-campione simulato dei sensori e dallo stato sicuro iniziale degli attuatori.
+campione sincronizzato ottenuto applicando lo stato degli attuatori
+all'avanzamento dell'ambiente e leggendo infine i sensori.
 
-I test C++ di sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
+I test C++ di ambiente, sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
 scarica automaticamente la versione fissata al primo comando di configurazione
 con `BUILD_TESTING=ON`; le esecuzioni successive riutilizzano la copia nella
 cartella di build. `gtest_discover_tests` registra in CTest ciascun caso di test
 separatamente.
 
-### Simulatore dei sensori
+### Ambiente e sensori simulati
 
-`SensorSimulator` produce una lettura aggregata contenente:
+`EnvironmentSimulator` possiede lo stato fisico condiviso della serra. Il
+metodo `step(delta_time_seconds, actuator_state)` evolve gradualmente:
 
-- temperatura in gradi Celsius, tra 18 e 30;
-- umidita dell'aria, tra 30% e 90%;
-- pH, tra 4 e 8;
-- luce, espressa come percentuale tra 0% e 100%.
+- temperatura e umidita relativa, accoppiate al profilo esterno, alla luce,
+  alla traspirazione e al ricambio d'aria;
+- pH ed EC della soluzione presente nei pori del terriccio;
+- disponibilita idrica radicale, con ritenzione e drenaggio diversi per
+  substrato universale aerato, drenante e organico ritentivo;
+- luce naturale e supplementare espressa come PPFD in `umol/(m2 s)`.
 
-Il costruttore senza argomenti genera sequenze diverse a ogni esecuzione. Un
-seed esplicito, per esempio `SensorSimulator(42)`, rende invece la sequenza
-riproducibile per test e debug.
+La configurazione predefinita rappresenta pomodoro in fase vegetativa su
+substrato universale aerato, con alba alle 06:00 e fotoperiodo di 14 ore. Sono
+disponibili anche un substrato drenante e uno organico ritentivo. Il profilo di
+concime incluso e `tomato-growth`.
 
-Ogni chiamata a `read()` rappresenta un passo temporale discreto. I valori non
-vengono estratti nuovamente sull'intero intervallo, ma evolvono a partire dalla
-lettura precedente con queste variazioni massime per passo:
+`SensorSimulator::read(const EnvironmentState&)` non fa avanzare il tempo e
+non modifica l'ambiente. Aggiunge rumore gaussiano, bias, correzione di
+calibrazione, quantizzazione e possibili dropout. Le letture sono
+`std::optional<double>` e un campione assente e rappresentato da
+`std::nullopt`. I seed dell'ambiente e dei sensori sono distinti, cosi il
+rumore fisico e quello strumentale restano indipendenti.
 
-- temperatura: 0,25 °C;
-- umidita dell'aria: 1%;
-- pH: 0,05;
-- luce: 2,5%.
-
-La durata reale del passo non e ancora definita. Gli intervalli e le variazioni
-servono esclusivamente alla simulazione e non rappresentano valori obiettivo
-per una coltura.
+Il modello ha finalita didattica ed e progettato per produrre dinamiche
+plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 
 ### Simulatore degli attuatori
 
-`ActuatorSimulator` distingue lo stato obiettivo comandato dallo stato
-effettivamente raggiunto da:
+`ActuatorSimulator` rappresenta attuatori ideali:
 
-- pompa dell'acqua, regolabile tra 0% e 100%;
+- pompa di irrigazione, regolabile tra 0% e 100%;
 - selettore del concime tramite un identificativo testuale;
 - dosaggio del concime liquido, regolabile tra 0% e 100%;
 - lampade, regolabili tra 0% e 100%.
 
-Gli attuatori partono spenti. I metodi `set_*_target_percent()` impostano il
-valore desiderato; ogni chiamata a `step()` avvicina lo stato effettivo al
-target con una variazione massima del 20% per la pompa dell'acqua, 5% per il
-dosaggio del concime e 25% per le lampade.
+Gli attuatori partono spenti. I metodi `set_*_percent()` applicano
+immediatamente la percentuale richiesta allo stato erogato. Il modello non
+introduce ritardi, guasti o differenze tra comando e uscita: se viene richiesto
+il 60%, l'attuatore eroga subito il 60%.
 
 Non e possibile avviare il dosaggio senza avere prima selezionato un concime;
 rimuovere la selezione arresta anche il dosaggio. Il metodo `stop_all()` riporta
-immediatamente stato e target alla condizione sicura. Il simulatore non
-contiene logica decisionale e non riproduce ancora gli effetti fisici degli
-attuatori sull'ambiente.
+immediatamente lo stato alla condizione sicura. Il simulatore degli
+attuatori non contiene logica decisionale. Il suo stato effettivo viene pero
+applicato all'ambiente: la pompa irriga il terriccio, le lampade aggiungono
+PPFD e calore, il dosatore modifica pH ed EC secondo il profilo chimico
+selezionato. L'irrigazione distribuisce il concime e puo diluire o lisciviare i
+sali, soprattutto nel substrato drenante.
 
 ### Controllori
 
@@ -121,12 +125,15 @@ esplicitamente quali controllori comandano pompa, concime e lampade.
 
 ## Experiments C++
 
-Gli experiments sono programmi interattivi separati dagli unit test. Usano le
-librerie dell'Edge per produrre una giornata o una settimana di campioni
-simulati, salvano tutte le letture in CSV e, se gnuplot e disponibile, generano
-un grafico PNG. Per convenzione dei soli experiments, un passo simulato
-corrisponde a 15 minuti; il programma non attende il trascorrere del tempo
-reale.
+Gli experiments sono programmi dimostrativi separati dagli unit test e usano
+direttamente le librerie di sensori, attuatori e controllori. Quelli di sensori
+e controllori salvano i campioni in CSV e, se gnuplot e disponibile, generano
+un grafico PNG. L'experiment degli attuatori usa invece una finestra gnuplot
+interattiva e non salva file.
+
+Gli experiments dei sensori sono interattivi e simulano una giornata o una
+settimana con passo di 15 minuti. Tutti gli attuatori rimangono spenti, cosi le
+misure rappresentano esclusivamente l'evoluzione naturale dell'ambiente.
 
 ### Installazione di gnuplot
 
@@ -175,7 +182,12 @@ cmake --build edge/build --target \
     temperature_simulation \
     humidity_simulation \
     ph_simulation \
-    light_simulation
+    light_simulation \
+    environment_simulation \
+    actuator_live_simulation \
+    threshold_step_response \
+    pid_step_response \
+    predictive_step_response
 ```
 
 `BUILD_EXPERIMENTS` e attivo per impostazione predefinita, quindi una normale
@@ -193,12 +205,47 @@ Gli eseguibili sono creati in `edge/build/bin`. Avviarli separatamente con:
 ./edge/build/bin/humidity_simulation
 ./edge/build/bin/ph_simulation
 ./edge/build/bin/light_simulation
+./edge/build/bin/environment_simulation
+./edge/build/bin/actuator_live_simulation
+./edge/build/bin/threshold_step_response
+./edge/build/bin/pid_step_response
+./edge/build/bin/predictive_step_response
 ```
 
-Ogni programma chiede se simulare una giornata o una settimana. I CSV e i PNG
-vengono salvati nella cartella `experiment_results` relativa alla directory da
-cui viene avviato l'eseguibile, e il percorso completo viene mostrato nel
-terminale.
+I primi quattro programmi isolano nel grafico una misura. Il quinto registra
+temperatura, umidita, pH e PPFD nello stesso CSV. Anche questo experiment usa
+sempre attuatori spenti.
+
+Gli experiments non accettano opzioni da riga di comando. Dopo l'avvio
+le simulazioni dei sensori richiedono interattivamente:
+
+- giornata oppure settimana;
+- substrato universale aerato, drenante oppure organico ritentivo;
+- seed numerico riproducibile oppure invio per generarne uno casuale.
+
+`actuator_live_simulation` apre un'unica finestra gnuplot con tre grafici:
+pompa di irrigazione, dosatore di concime e illuminazione. Dal terminale si
+sceglie ripetutamente quale attuatore modificare e si inserisce una potenza tra
+0% e 100%. Il nuovo valore viene erogato e mostrato immediatamente, mentre gli
+altri due rimangono invariati. Il comando `q` termina il ciclo e chiude il
+grafico. Questo experiment richiede gnuplot e non crea CSV o PNG.
+
+Gli experiments dei controllori eseguono invece scenari standard senza
+richiedere input:
+
+- `threshold_step_response` evidenzia l'isteresi tra le soglie 40% e 60%;
+- `pid_step_response` applica gradini attorno al setpoint 50 e mostra la
+  combinazione dei termini PID;
+- `predictive_step_response` combina gradini e una rampa per mostrare come il
+  trend modifica previsione e uscita.
+
+I nomi dei sensori includono durata, scenario `natural`, terriccio e seed. Se
+un nome esiste gia viene aggiunto un suffisso `run-N`, senza sovrascriverlo. Le
+celle CSV vuote rappresentano i dropout e gnuplot le visualizza come
+interruzioni.
+Per impostazione predefinita i risultati vengono salvati in
+`experiment_results` relativa alla directory di avvio; il percorso assoluto
+viene sempre mostrato nel terminale.
 
 ## Preparazione del backend Python
 

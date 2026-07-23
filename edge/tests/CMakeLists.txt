@@ -34,6 +34,17 @@ target_compile_features(sensor_tests PRIVATE cxx_std_17)
 set_target_properties(sensor_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(sensor_tests)
 
+# Eseguibile dei test delle dinamiche fisiche dell'ambiente.
+add_executable(environment_tests environment_tests.cpp)
+target_link_libraries(environment_tests
+    PRIVATE
+        environment_simulator
+        GTest::gtest_main
+)
+target_compile_features(environment_tests PRIVATE cxx_std_17)
+set_target_properties(environment_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(environment_tests)
+
 # Eseguibile dei test del simulatore degli attuatori.
 add_executable(actuator_tests actuator_tests.cpp)
 target_link_libraries(actuator_tests
@@ -55,6 +66,102 @@ target_link_libraries(controller_tests
 target_compile_features(controller_tests PRIVATE cxx_std_17)
 set_target_properties(controller_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(controller_tests)
+
+# Smoke test dei programmi dimostrativi. I risultati finiscono esclusivamente
+# nella build e non toccano i CSV/PNG versionati in experiment_results.
+if(BUILD_EXPERIMENTS)
+    set(EXPERIMENT_SMOKE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/experiment_smoke.cmake")
+
+    add_test(
+        NAME experiment_light_day_natural_without_gnuplot
+        COMMAND ${CMAKE_COMMAND}
+            -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:light_simulation>
+            -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/light
+            -DBASE_NAME=light_day_natural_soil-aerated-universal_seed-31415
+            -DEXPECTED_LINES=98
+            -DDURATION=day
+            -DSOIL=aerated-universal
+            -DNO_GNUPLOT=ON
+            -DCHECK_DARKNESS=ON
+            -P ${EXPERIMENT_SMOKE_SCRIPT}
+    )
+
+    add_test(
+        NAME experiment_humidity_week_without_actuators
+        COMMAND ${CMAKE_COMMAND}
+            -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:humidity_simulation>
+            -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/humidity
+            -DBASE_NAME=humidity_week_natural_soil-draining_seed-31415
+            -DEXPECTED_LINES=674
+            -DDURATION=week
+            -DSOIL=draining
+            -DNO_GNUPLOT=ON
+            -P ${EXPERIMENT_SMOKE_SCRIPT}
+    )
+
+    find_program(GNUPLOT_EXECUTABLE gnuplot)
+    if(GNUPLOT_EXECUTABLE)
+        add_test(
+            NAME experiment_environment_generates_png
+            COMMAND ${CMAKE_COMMAND}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:environment_simulation>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/environment
+                -DBASE_NAME=environment_day_natural_soil-organic-retentive_seed-31415
+                -DEXPECTED_LINES=98
+                -DDURATION=day
+                -DSOIL=organic-retentive
+                -DEXPECT_PNG=ON
+                -P ${EXPERIMENT_SMOKE_SCRIPT}
+        )
+    endif()
+
+    set(STANDARD_EXPERIMENT_SMOKE_SCRIPT
+        "${CMAKE_CURRENT_SOURCE_DIR}/standard_experiment_smoke.cmake")
+    if(GNUPLOT_EXECUTABLE)
+        set(STANDARD_EXPECT_PNG ON)
+    else()
+        set(STANDARD_EXPECT_PNG OFF)
+    endif()
+
+    function(add_standard_experiment_smoke_test test_name target_name base_name line_count)
+        add_test(
+            NAME ${test_name}
+            COMMAND ${CMAKE_COMMAND}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:${target_name}>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/${target_name}
+                -DBASE_NAME=${base_name}
+                -DEXPECTED_LINES=${line_count}
+                -DEXPECT_PNG=${STANDARD_EXPECT_PNG}
+                -P ${STANDARD_EXPERIMENT_SMOKE_SCRIPT}
+        )
+    endfunction()
+
+    if(GNUPLOT_EXECUTABLE)
+        add_test(
+            NAME experiment_actuator_simulation
+            COMMAND ${CMAKE_COMMAND}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:actuator_simulation>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/actuator_simulation
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/actuator_live_smoke.cmake
+        )
+    endif()
+
+    add_standard_experiment_smoke_test(
+        experiment_threshold_step_response
+        threshold_step_response
+        threshold_step_response
+        25)
+    add_standard_experiment_smoke_test(
+        experiment_pid_step_response
+        pid_step_response
+        pid_step_response
+        36)
+    add_standard_experiment_smoke_test(
+        experiment_predictive_step_response
+        predictive_step_response
+        predictive_step_response
+        26)
+endif()
 
 # Per cambiare solo il nome di un file senza rinominare il target CMake:
 # set_target_properties(sensor_tests PROPERTIES OUTPUT_NAME "nuovo_nome")

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "smarthydro/sensor_simulator.hpp"
+
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace smarthydro::experiments {
@@ -20,16 +23,19 @@ struct SensorExperimentConfig {
 };
 
 /**
- * @brief Esegue il flusso comune di una dimostrazione di un sensore.
+ * @brief Esegue un esperimento interattivo su un singolo sensore.
  * @param config Metadati della misura e dei file prodotti.
- * @param read_sample Funzione che ottiene una nuova lettura dalla libreria.
- * @return 0 se CSV e simulazione sono stati completati, 1 in caso di errore.
- *
- * L'assenza di gnuplot produce un avviso, ma non rende inutilizzabile il CSV e
- * non viene pertanto considerata un errore della simulazione.
+ * @param select_measurement Funzione che seleziona la misura dalle letture aggregate.
+ * @return 0 in caso di simulazione completata, 1 in caso di errore.
  */
 int run_sensor_experiment(
     const SensorExperimentConfig& config,
-    const std::function<double()>& read_sample);
+    const std::function<std::optional<double>(const SensorReadings&)>& select_measurement);
+
+/**
+ * @brief Registra tutte le misure di un ambiente con attuatori spenti.
+ * @return 0 in caso di simulazione completata, 1 in caso di errore.
+ */
+int run_environment_experiment();
 
 }  // namespace smarthydro::experiments

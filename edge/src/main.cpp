@@ -1,4 +1,5 @@
 #include "smarthydro/actuator_simulator.hpp"
+#include "smarthydro/environment_simulator.hpp"
 #include "smarthydro/sensor_simulator.hpp"
 
 #include <iomanip>
@@ -9,18 +10,22 @@ int main() {
               << "Version: 0.1.0\n"
               << "Status: ready\n";
 
+    smarthydro::ActuatorSimulator actuators;
+    smarthydro::EnvironmentSimulator environment;
     smarthydro::SensorSimulator sensors;
-    const auto readings = sensors.read();
 
-    const smarthydro::ActuatorSimulator actuators;
+    // Lo stato corrente degli attuatori viene applicato all'ambiente.
+    environment.step(900.0, actuators.state());
+    const auto readings = sensors.read(environment.state());
     const auto& actuator_state = actuators.state();
 
     std::cout << std::fixed << std::setprecision(1)
               << "Sensor sample:\n"
-              << "Temperature: " << readings.temperature_c << " C\n"
-              << "Air humidity: " << readings.air_humidity_percent << " %\n"
-              << "pH: " << readings.ph << "\n"
-              << "Light: " << readings.light_percent << " %\n"
+              << "Temperature: " << readings.temperature_c.value_or(0.0) << " C\n"
+              << "Air humidity: " << readings.air_humidity_percent.value_or(0.0) << " %\n"
+              << "pH: " << readings.ph.value_or(0.0) << "\n"
+              << "Light: " << readings.light_ppfd_umol_m2_s.value_or(0.0)
+              << " umol/(m2 s)\n"
               << "Actuator safe state:\n"
               << "Water pump: " << actuator_state.water_pump_percent << " %\n"
               << "Fertilizer: none selected\n"
