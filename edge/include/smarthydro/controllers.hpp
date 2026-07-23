@@ -12,12 +12,17 @@ enum class ControlDirection {
     DECREASES_PROCESS_VALUE,
 };
 
-/** @brief Limiti ammessi per l'uscita normalizzata di un controllore. */
-struct OutputLimits {
-    /** Limite minimo dell'uscita, espresso in percentuale. */
-    double minimum_percent = 0.0;
-    /** Limite massimo dell'uscita, espresso in percentuale. */
-    double maximum_percent = 100.0;
+/**
+ * @brief Limiti del comando di un controllore.
+ *
+ * L'unita dipende dall'anello di controllo: percentuale, litri, watt o altra
+ * grandezza scelta dall'integrazione.
+ */
+struct CommandLimits {
+    /** Limite minimo del comando. */
+    double minimum = 0.0;
+    /** Limite massimo del comando. */
+    double maximum = 100.0;
 };
 
 /**
@@ -29,26 +34,26 @@ struct OutputLimits {
 class ThresholdController {
 public:
     /**
-     * @brief Configura le soglie e i valori di uscita del controllore.
+     * @brief Configura soglie e valori di comando del controllore.
      * @param lower_threshold Soglia inferiore, minore di upper_threshold.
      * @param upper_threshold Soglia superiore.
      * @param direction Effetto dell'attuatore sulla variabile controllata.
-     * @param active_output_percent Uscita applicata nello stato attivo.
-     * @param inactive_output_percent Uscita applicata nello stato inattivo.
-     * @throws std::invalid_argument Se una soglia non e finita, se l'intervallo
-     *         non e valido o se un'uscita non appartiene a [0, 100].
+     * @param active_command Comando applicato nello stato attivo.
+     * @param inactive_command Comando applicato nello stato inattivo.
+     * @throws std::invalid_argument Se una soglia o un comando non e finito,
+     *         oppure se l'intervallo delle soglie non e valido.
      */
     ThresholdController(
         double lower_threshold,
         double upper_threshold,
         ControlDirection direction = ControlDirection::INCREASES_PROCESS_VALUE,
-        double active_output_percent = 100.0,
-        double inactive_output_percent = 0.0);
+        double active_command = 100.0,
+        double inactive_command = 0.0);
 
     /**
      * @brief Aggiorna il controllo usando una nuova misura.
      * @param measured_value Valore corrente della variabile controllata.
-     * @return Uscita attiva o inattiva, espressa in percentuale.
+     * @return Comando attivo o inattivo nell'unita scelta dall'integrazione.
      * @throws std::invalid_argument Se measured_value non e finito.
      */
     double update(double measured_value);
@@ -69,8 +74,8 @@ private:
     double lower_threshold_;
     double upper_threshold_;
     ControlDirection direction_;
-    double active_output_percent_;
-    double inactive_output_percent_;
+    double active_command_;
+    double inactive_command_;
     bool active_ = false;
 };
 
@@ -85,7 +90,7 @@ struct PidConfig {
     /** Guadagno del termine derivativo. */
     double derivative_gain = 0.0;
     /** Intervallo ammesso per il comando prodotto. */
-    OutputLimits output_limits;
+    CommandLimits command_limits;
     /** Effetto dell'attuatore sulla variabile controllata. */
     ControlDirection direction = ControlDirection::INCREASES_PROCESS_VALUE;
 };
@@ -97,7 +102,7 @@ public:
      * @brief Costruisce un controllore PID dalla configurazione indicata.
      * @param config Setpoint, guadagni, limiti e direzione del controllo.
      * @throws std::invalid_argument Se i valori non sono finiti, se un guadagno
-     *         e negativo o se i limiti di uscita non sono validi.
+     *         e negativo o se i limiti del comando non sono validi.
      */
     explicit PidController(PidConfig config);
 
@@ -105,26 +110,26 @@ public:
      * @brief Calcola un nuovo comando PID.
      * @param measured_value Valore corrente della variabile controllata.
      * @param delta_time_seconds Tempo trascorso dall'aggiornamento precedente.
-     * @return Comando limitato, espresso in percentuale.
+     * @return Comando limitato nell'unita definita dalla configurazione.
      * @throws std::invalid_argument Se un parametro non e finito o se
      *         delta_time_seconds non e positivo.
      */
     double update(double measured_value, double delta_time_seconds);
 
-    /** @brief Azzera integrale, errore precedente e ultima uscita. */
+    /** @brief Azzera integrale, errore precedente e ultimo comando. */
     void reset() noexcept;
 
     /**
      * @brief Restituisce l'ultimo comando calcolato.
-     * @return Ultima uscita del PID, espressa in percentuale.
+     * @return Ultimo comando del PID nell'unita configurata.
      */
-    double last_output_percent() const noexcept;
+    double last_command() const noexcept;
 
 private:
     PidConfig config_;
     double integral_ = 0.0;
     std::optional<double> previous_error_;
-    double last_output_percent_ = 0.0;
+    double last_command_ = 0.0;
 };
 
 /** @brief Parametri della previsione lineare usata dal controllore predittivo. */
@@ -135,22 +140,22 @@ struct PredictiveConfig {
     double prediction_horizon_steps = 1.0;
     /** Guadagno applicato all'errore previsto. */
     double response_gain = 1.0;
-    /** Uscita usata quando l'errore previsto e nullo. */
-    double neutral_output_percent = 0.0;
+    /** Comando usato quando l'errore previsto e nullo. */
+    double neutral_command = 0.0;
     /** Intervallo ammesso per il comando prodotto. */
-    OutputLimits output_limits;
+    CommandLimits command_limits;
     /** Effetto dell'attuatore sulla variabile controllata. */
     ControlDirection direction = ControlDirection::INCREASES_PROCESS_VALUE;
 };
 
-/** @brief Risultati intermedi e uscita di un aggiornamento predittivo. */
+/** @brief Risultati intermedi e comando di un aggiornamento predittivo. */
 struct PredictiveControlResult {
     /** Differenza tra la misura corrente e quella precedente. */
     double measured_trend;
     /** Valore stimato alla fine dell'orizzonte di previsione. */
     double predicted_value;
-    /** Comando calcolato e limitato, espresso in percentuale. */
-    double output_percent;
+    /** Comando limitato nell'unita definita dalla configurazione. */
+    double command;
 };
 
 /** @brief Controllore basato sulla proiezione lineare del trend misurato. */
@@ -158,16 +163,16 @@ class PredictiveController {
 public:
     /**
      * @brief Costruisce un controllore predittivo.
-     * @param config Setpoint, orizzonte, guadagno, uscita neutra e limiti.
+     * @param config Setpoint, orizzonte, guadagno, comando neutro e limiti.
      * @throws std::invalid_argument Se la configurazione contiene valori non
-     *         finiti, negativi o incompatibili con i limiti di uscita.
+     *         finiti, negativi o incompatibili con i limiti del comando.
      */
     explicit PredictiveController(PredictiveConfig config);
 
     /**
      * @brief Aggiorna trend, previsione e comando usando una nuova misura.
      * @param measured_value Valore corrente della variabile controllata.
-     * @return Trend misurato, valore previsto e uscita percentuale.
+     * @return Trend misurato, valore previsto e comando limitato.
      * @throws std::invalid_argument Se measured_value non e finito.
      */
     PredictiveControlResult update(double measured_value);

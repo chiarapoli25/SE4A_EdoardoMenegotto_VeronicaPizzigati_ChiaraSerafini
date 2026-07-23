@@ -21,12 +21,12 @@ enum class SoilType {
 
 /** @brief Effetti semplificati di un concime sulla soluzione nel terriccio. */
 struct FertilizerProfile {
-    /** Identificativo usato da ActuatorState::selected_fertilizer_id. */
+    /** Identificativo usato da ActuatorOutput::selected_fertilizer_id. */
     std::string id;
-    /** Incremento di EC in mS/cm per ora al 100% del dosatore. */
-    double ec_increase_per_hour_at_full_power = 0.0;
-    /** Variazione di pH per ora al 100% del dosatore. */
-    double ph_change_per_hour_at_full_power = 0.0;
+    /** Incremento di EC, in mS/cm, per millilitro di concime miscelato. */
+    double ec_increase_ms_cm_per_milliliter = 0.0;
+    /** Variazione di pH per millilitro di concime miscelato. */
+    double ph_change_per_milliliter = 0.0;
 };
 
 /** @brief Parametri del modello didattico della coltivazione in terriccio. */
@@ -53,11 +53,13 @@ struct EnvironmentConfig {
     double initial_ec_ms_cm = 1.8;
     /** Picco della luce naturale, in micromoli per metro quadrato al secondo. */
     double natural_light_peak_ppfd = 700.0;
-    /** PPFD aggiunto dalle lampade alla massima potenza. */
-    double lamp_maximum_ppfd = 400.0;
+    /** PPFD sul piano di coltivazione per watt elettrico delle lampade. */
+    double lamp_ppfd_umol_m2_s_per_watt = 2.0;
+    /** Incremento termico di equilibrio per watt elettrico delle lampade. */
+    double lamp_heating_c_per_watt = 0.015;
     /** Profili di concime riconosciuti dal modello. */
     std::vector<FertilizerProfile> fertilizer_profiles{
-        {"tomato-growth", 0.80, -0.06},
+        {"tomato-growth", 0.04, -0.003},
     };
 };
 
@@ -73,8 +75,8 @@ struct EnvironmentState {
     double ph = 6.3;
     /** Conducibilita elettrica della soluzione nei pori, in mS/cm. */
     double ec_ms_cm = 1.8;
-    /** Acqua disponibile alle radici, normalizzata tra 0 e 1. */
-    double root_water_availability = 0.75;
+    /** Acqua disponibile rispetto alla capacita utile del terriccio, in percentuale. */
+    double soil_moisture_percent = 75.0;
     /** Densita di flusso fotonico fotosintetico (PPFD). */
     double light_ppfd_umol_m2_s = 0.0;
 };
@@ -105,11 +107,12 @@ public:
     /**
      * @brief Fa avanzare ambiente e coltura sotto l'effetto degli attuatori.
      * @param delta_time_seconds Durata positiva del passo, in secondi.
-     * @param actuator_state Percentuali attualmente erogate dagli attuatori ideali.
+     * @param actuator_output Volume d'acqua erogato nel passo, portata del
+     *         dosatore e potenza delle lampade.
      * @throws std::invalid_argument Se il passo non e finito/positivo o se un
      *         concime dosato non appartiene ai profili configurati.
      */
-    void step(double delta_time_seconds, const ActuatorState& actuator_state);
+    void step(double delta_time_seconds, const ActuatorOutput& actuator_output);
 
     /**
      * @brief Restituisce lo stato fisico corrente senza modificarlo.
@@ -124,7 +127,7 @@ public:
     const EnvironmentConfig& config() const noexcept;
 
 private:
-    void integrate_substep(double delta_time_seconds, const ActuatorState& actuator_state);
+    void integrate_substep(double delta_time_seconds, const ActuatorOutput& actuator_output);
 
     EnvironmentConfig config_;
     EnvironmentState state_;

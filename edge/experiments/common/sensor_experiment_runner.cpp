@@ -207,7 +207,7 @@ SensorReadings advance_and_read(
     SensorSimulator& sensors,
     std::size_t step_index) {
     if (step_index > 0) {
-        environment.step(kSampleIntervalSeconds, ActuatorState{});
+        environment.step(kSampleIntervalSeconds, ActuatorOutput{});
     }
     return sensors.read(environment.state());
 }
@@ -247,7 +247,7 @@ std::filesystem::path write_environment_csv(
     if (!csv) {
         throw std::runtime_error("impossibile creare il file CSV: " + path.string());
     }
-    csv << "time_hours,temperature_c,air_humidity_percent,ph,"
+    csv << "time_hours,temperature_c,air_humidity_percent,soil_moisture_percent,ph,"
            "light_ppfd_umol_m2_s\n"
         << std::fixed << std::setprecision(6);
     for (const auto& sample : samples) {
@@ -255,6 +255,8 @@ std::filesystem::path write_environment_csv(
         write_optional(csv, sample.readings.temperature_c);
         csv << ',';
         write_optional(csv, sample.readings.air_humidity_percent);
+        csv << ',';
+        write_optional(csv, sample.readings.soil_moisture_percent);
         csv << ',';
         write_optional(csv, sample.readings.ph);
         csv << ',';
@@ -351,12 +353,13 @@ std::optional<std::filesystem::path> generate_environment_plot(
     script << "set encoding utf8\nset terminal pngcairo size 1400,900\n"
            << "set output \"" << escape_gnuplot_string(std::filesystem::absolute(png_path).string()) << "\"\n"
            << "set datafile separator ','\nset datafile missing \"\"\nset grid\n"
-           << "set multiplot layout 2,2 title \"Ambiente naturale senza attuatori\"\n"
+           << "set multiplot layout 3,2 title \"Ambiente naturale senza attuatori\"\n"
            << "set xlabel \"Ore\"\nset ylabel \"Temperatura (C)\"\n"
            << "plot \"" << escape_gnuplot_string(csv_path.string()) << "\" using 1:2 every ::1 with lines notitle\n"
            << "set ylabel \"Umidita relativa (%)\"\nplot '' using 1:3 every ::1 with lines notitle\n"
-           << "set ylabel \"pH\"\nplot '' using 1:4 every ::1 with lines notitle\n"
-           << "set ylabel \"PPFD (umol/(m2 s))\"\nplot '' using 1:5 every ::1 with lines notitle\n"
+           << "set ylabel \"Umidita terriccio (%)\"\nplot '' using 1:4 every ::1 with lines notitle\n"
+           << "set ylabel \"pH\"\nplot '' using 1:5 every ::1 with lines notitle\n"
+           << "set ylabel \"PPFD (umol/(m2 s))\"\nplot '' using 1:6 every ::1 with lines notitle\n"
            << "unset multiplot\n";
     script.close();
     return execute_gnuplot(script_path, png_path);

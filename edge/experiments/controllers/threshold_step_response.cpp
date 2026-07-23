@@ -8,7 +8,7 @@ int main() {
     smarthydro::ThresholdController controller(40.0, 60.0);
     std::vector<double> steps;
     std::vector<double> measurements;
-    std::vector<double> outputs;
+    std::vector<double> commands;
 
     for (int step = 0; step < 24; ++step) {
         double measurement = 50.0;
@@ -19,7 +19,7 @@ int main() {
         }
         steps.push_back(step);
         measurements.push_back(measurement);
-        outputs.push_back(controller.update(measurement));
+        commands.push_back(controller.update(measurement));
     }
 
     const auto artifacts = smarthydro::experiments::write_experiment_output(
@@ -33,7 +33,7 @@ int main() {
         steps,
         {
             {"measurement_percent", "Ingresso", measurements},
-            {"output_percent", "Uscita", outputs},
+            {"command_percent", "Comando attuatore", commands},
         });
 
     std::cout << "Soglie: 40% / 60%. La zona intermedia conserva lo stato.\n"

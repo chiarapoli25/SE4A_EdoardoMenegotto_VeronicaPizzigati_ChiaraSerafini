@@ -22,12 +22,14 @@ struct SensorChannelConfig {
     double calibration_correction = 0.0;
 };
 
-/** @brief Configurazione dei quattro sensori pubblici di SmartHydro. */
+/** @brief Configurazione dei sensori pubblici di SmartHydro. */
 struct SensorConfig {
     /** Configurazione del sensore di temperatura. */
     SensorChannelConfig temperature{0.0, 0.10, 0.01, 0.001, 0.0};
     /** Configurazione del sensore di umidita relativa. */
     SensorChannelConfig air_humidity{0.0, 0.50, 0.10, 0.001, 0.0};
+    /** Configurazione del sensore di umidita del terriccio. */
+    SensorChannelConfig soil_moisture{0.0, 1.0, 0.10, 0.001, 0.0};
     /** Configurazione dell'elettrodo di pH. */
     SensorChannelConfig ph{0.0, 0.01, 0.01, 0.001, 0.0};
     /** Configurazione del sensore PAR, espressa in PPFD. */
@@ -42,6 +44,8 @@ struct SensorReadings {
     std::optional<double> temperature_c;
     /** Umidita relativa in percentuale, oppure nessun valore in caso di dropout. */
     std::optional<double> air_humidity_percent;
+    /** Umidita del terriccio in percentuale, oppure nessun valore per dropout. */
+    std::optional<double> soil_moisture_percent;
     /** pH della soluzione nei pori del terriccio, o nessun valore per dropout. */
     std::optional<double> ph;
     /** PPFD in umol/(m2 s), oppure nessun valore in caso di dropout. */
@@ -82,7 +86,7 @@ public:
     /**
      * @brief Misura uno stato ambientale senza modificarlo.
      * @param environment_state Stato fisico da osservare.
-     * @return Timestamp e quattro letture, eventualmente mancanti.
+     * @return Timestamp e letture ambientali, eventualmente mancanti.
      */
     SensorReadings read(const EnvironmentState& environment_state);
 

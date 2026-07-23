@@ -99,6 +99,19 @@ if(BUILD_EXPERIMENTS)
             -P ${EXPERIMENT_SMOKE_SCRIPT}
     )
 
+    add_test(
+        NAME experiment_soil_moisture_day_without_actuators
+        COMMAND ${CMAKE_COMMAND}
+            -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:soil_moisture_simulation>
+            -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/soil_moisture
+            -DBASE_NAME=soil_moisture_day_natural_soil-aerated-universal_seed-31415
+            -DEXPECTED_LINES=98
+            -DDURATION=day
+            -DSOIL=aerated-universal
+            -DNO_GNUPLOT=ON
+            -P ${EXPERIMENT_SMOKE_SCRIPT}
+    )
+
     find_program(GNUPLOT_EXECUTABLE gnuplot)
     if(GNUPLOT_EXECUTABLE)
         add_test(
@@ -142,7 +155,7 @@ if(BUILD_EXPERIMENTS)
             COMMAND ${CMAKE_COMMAND}
                 -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:actuator_simulation>
                 -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/actuator_simulation
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/actuator_live_smoke.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/actuator_simulation_smoke.cmake
         )
     endif()
 

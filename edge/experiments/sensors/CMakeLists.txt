@@ -26,6 +26,7 @@ endfunction()
 # Il nome del primo argomento e anche il nome dell'eseguibile in build/bin.
 add_sensor_experiment(temperature_simulation temperature_simulation.cpp)
 add_sensor_experiment(humidity_simulation humidity_simulation.cpp)
+add_sensor_experiment(soil_moisture_simulation soil_moisture_simulation.cpp)
 add_sensor_experiment(ph_simulation ph_simulation.cpp)
 add_sensor_experiment(light_simulation light_simulation.cpp)
 add_sensor_experiment(environment_simulation environment_simulation.cpp)

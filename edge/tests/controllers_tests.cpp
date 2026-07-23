@@ -7,10 +7,15 @@
 namespace {
 
 TEST(ThresholdControllerTest, UsesHysteresisForIncreasingProcess) {
-    smarthydro::ThresholdController controller(40.0, 60.0);
+    smarthydro::ThresholdController controller(
+        40.0,
+        60.0,
+        smarthydro::ControlDirection::INCREASES_PROCESS_VALUE,
+        0.5,
+        0.0);
 
-    EXPECT_DOUBLE_EQ(controller.update(35.0), 100.0);
-    EXPECT_DOUBLE_EQ(controller.update(50.0), 100.0);
+    EXPECT_DOUBLE_EQ(controller.update(35.0), 0.5);
+    EXPECT_DOUBLE_EQ(controller.update(50.0), 0.5);
     EXPECT_DOUBLE_EQ(controller.update(65.0), 0.0);
     EXPECT_DOUBLE_EQ(controller.update(50.0), 0.0);
 }
@@ -30,7 +35,7 @@ TEST(ThresholdControllerTest, RejectsInvalidBand) {
     EXPECT_THROW(smarthydro::ThresholdController(60.0, 40.0), std::invalid_argument);
 }
 
-TEST(PidControllerTest, AppliesProportionalTermAndOutputLimits) {
+TEST(PidControllerTest, AppliesProportionalTermAndCommandLimits) {
     smarthydro::PidController controller({
         50.0,
         2.0,
@@ -111,12 +116,12 @@ TEST(PredictiveControllerTest, UsesMeasuredTrend) {
     const auto first = controller.update(45.0);
     EXPECT_DOUBLE_EQ(first.measured_trend, 0.0);
     EXPECT_DOUBLE_EQ(first.predicted_value, 45.0);
-    EXPECT_DOUBLE_EQ(first.output_percent, 20.0);
+    EXPECT_DOUBLE_EQ(first.command, 20.0);
 
     const auto second = controller.update(47.0);
     EXPECT_DOUBLE_EQ(second.measured_trend, 2.0);
     EXPECT_DOUBLE_EQ(second.predicted_value, 51.0);
-    EXPECT_DOUBLE_EQ(second.output_percent, 8.0);
+    EXPECT_DOUBLE_EQ(second.command, 8.0);
 }
 
 TEST(PredictiveControllerTest, ResetClearsPreviousMeasurement) {

@@ -16,7 +16,7 @@ int main() {
     std::vector<double> steps;
     std::vector<double> measurements;
     std::vector<double> predictions;
-    std::vector<double> outputs;
+    std::vector<double> commands;
 
     for (int step = 0; step < 25; ++step) {
         double measurement = 50.0;
@@ -31,7 +31,7 @@ int main() {
         steps.push_back(step);
         measurements.push_back(measurement);
         predictions.push_back(result.predicted_value);
-        outputs.push_back(result.output_percent);
+        commands.push_back(result.command);
     }
 
     const auto artifacts = smarthydro::experiments::write_experiment_output(
@@ -46,7 +46,7 @@ int main() {
         {
             {"measurement_percent", "Misura", measurements},
             {"predicted_percent", "Previsione", predictions},
-            {"output_percent", "Uscita", outputs},
+            {"command_percent", "Comando attuatore", commands},
         });
 
     std::cout << "Predittivo: setpoint=50, orizzonte=2 passi, guadagno=3.\n"

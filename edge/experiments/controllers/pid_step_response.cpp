@@ -16,7 +16,7 @@ int main() {
     std::vector<double> seconds;
     std::vector<double> setpoints;
     std::vector<double> measurements;
-    std::vector<double> outputs;
+    std::vector<double> commands;
 
     for (int second = 0; second < 35; ++second) {
         double measurement = 50.0;
@@ -28,7 +28,7 @@ int main() {
         seconds.push_back(second);
         setpoints.push_back(50.0);
         measurements.push_back(measurement);
-        outputs.push_back(controller.update(measurement, 1.0));
+        commands.push_back(controller.update(measurement, 1.0));
     }
 
     const auto artifacts = smarthydro::experiments::write_experiment_output(
@@ -43,7 +43,7 @@ int main() {
         {
             {"setpoint_percent", "Setpoint", setpoints},
             {"measurement_percent", "Misura", measurements},
-            {"output_percent", "Uscita PID", outputs},
+            {"command_percent", "Comando PID", commands},
         });
 
     std::cout << "PID: setpoint=50, Kp=3, Ki=0.08, Kd=0.5.\n"

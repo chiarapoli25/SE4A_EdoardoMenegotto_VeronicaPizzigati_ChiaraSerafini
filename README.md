@@ -61,7 +61,7 @@ metodo `step(delta_time_seconds, actuator_state)` evolve gradualmente:
 - temperatura e umidita relativa, accoppiate al profilo esterno, alla luce,
   alla traspirazione e al ricambio d'aria;
 - pH ed EC della soluzione presente nei pori del terriccio;
-- disponibilita idrica radicale, con ritenzione e drenaggio diversi per
+- umidita del terriccio in percentuale, con ritenzione e drenaggio diversi per
   substrato universale aerato, drenante e organico ritentivo;
 - luce naturale e supplementare espressa come PPFD in `umol/(m2 s)`.
 
@@ -82,46 +82,69 @@ plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 
 ### Simulatore degli attuatori
 
-`ActuatorSimulator` rappresenta attuatori ideali:
+`ActuatorSimulator` mantiene separati il comando del controllore e l'uscita
+fisica dell'attuatore. La configurazione predefinita rappresenta:
 
-- pompa di irrigazione, regolabile tra 0% e 100%;
+- pompa ON/OFF con portata fissa di 2 L/h e dose massima di 5 L;
 - selettore del concime tramite un identificativo testuale;
-- dosaggio del concime liquido, regolabile tra 0% e 100%;
-- lampade, regolabili tra 0% e 100%.
+- dosatore di concime concentrato con portata massima di 20 mL/h;
+- lampade LED con potenza elettrica massima di 200 W.
 
-Gli attuatori partono spenti. I metodi `set_*_percent()` applicano
-immediatamente la percentuale richiesta allo stato erogato. Il modello non
-introduce ritardi, guasti o differenze tra comando e uscita: se viene richiesto
-il 60%, l'attuatore eroga subito il 60%.
+Gli attuatori partono spenti. Per l'irrigazione,
+`request_irrigation_volume_liters()` riceve direttamente la dose decisa dal
+controllore. `step(delta_time_seconds)` mantiene la pompa accesa alla portata
+fissa finche la dose non e stata completata e registra i litri realmente
+erogati nel passo. Dosatore e lampade continuano a ricevere comandi tra 0% e
+100%, convertiti rispettivamente in mL/h e W.
 
 Non e possibile avviare il dosaggio senza avere prima selezionato un concime;
 rimuovere la selezione arresta anche il dosaggio. Il metodo `stop_all()` riporta
-immediatamente lo stato alla condizione sicura. Il simulatore degli
-attuatori non contiene logica decisionale. Il suo stato effettivo viene pero
-applicato all'ambiente: la pompa irriga il terriccio, le lampade aggiungono
-PPFD e calore, il dosatore modifica pH ed EC secondo il profilo chimico
-selezionato. L'irrigazione distribuisce il concime e puo diluire o lisciviare i
-sali, soprattutto nel substrato drenante.
+immediatamente comando e uscita alla condizione sicura. Il simulatore degli
+attuatori non contiene logica decisionale. Le uscite fisiche vengono applicate
+all'ambiente: i litri realmente erogati modificano l'umidita del terriccio; i
+watt delle lampade
+determinano PPFD e carico termico; i millilitri di concime modificano pH ed EC
+secondo il profilo selezionato. L'irrigazione distribuisce il concime e puo
+diluire o lisciviare i sali, soprattutto nel substrato drenante.
+
+Il sensore di umidita del terriccio continua a restituire una percentuale:
+l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e il
+sensore osserva quel valore aggiungendo i soli errori strumentali configurati.
 
 ### Controllori
 
 Il file `controllers.cpp` implementa tre controllori scalari. Ciascuno riceve
-una misura e restituisce un comando normalizzato tra 0% e 100%; non e ancora
-collegato automaticamente a uno specifico sensore o attuatore.
+una misura e restituisce un comando nell'unita scelta dall'anello di controllo.
+Per l'irrigazione il comando puo quindi essere una dose in litri; per lampade o
+dosatore puo rimanere una percentuale. I controllori non sono collegati
+automaticamente a uno specifico sensore o attuatore.
 
 - `ThresholdController` usa due soglie e mantiene lo stato nella zona
   intermedia, introducendo isteresi ed evitando accensioni e spegnimenti
   continui vicino a una singola soglia.
 - `PidController` combina termine proporzionale, integrale e derivativo,
-  richiede la durata del passo e limita l'uscita. Include una protezione
+  richiede la durata del passo e limita il comando. Include una protezione
   essenziale contro l'accumulo dell'integrale durante la saturazione.
 - `PredictiveController` calcola il trend tra due misure, lo proietta su un
-  orizzonte configurabile e regola l'uscita rispetto al valore previsto.
+  orizzonte configurabile e regola il comando rispetto al valore previsto.
   Si tratta di una previsione lineare iniziale, non di MPC o machine learning.
 
 `ControlDirection` permette di indicare se l'attuatore associato aumenta o
-diminuisce la variabile controllata. La successiva integrazione dovra stabilire
+diminuisce la variabile controllata. L'integrazione stabilisce esplicitamente
 esplicitamente quali controllori comandano pompa, concime e lampade.
+
+Un controllo a soglia dell'irrigazione puo essere collegato cosi:
+
+```cpp
+ThresholdController irrigation(40.0, 60.0,
+    ControlDirection::INCREASES_PROCESS_VALUE, 0.5, 0.0);
+const double requested_liters = irrigation.update(soil_moisture_percent);
+if (requested_liters > 0.0 && !actuators.output().water_pump_on) {
+    actuators.request_irrigation_volume_liters(requested_liters);
+}
+actuators.step(delta_time_seconds);
+environment.step(delta_time_seconds, actuators.output());
+```
 
 ## Experiments C++
 
@@ -168,8 +191,10 @@ Verificare che il comando sia raggiungibile dal terminale:
 gnuplot --version
 ```
 
-Se gnuplot non e presente, gli experiments terminano comunque correttamente e
-conservano il CSV, mostrando un avviso per il grafico non generato.
+Se gnuplot non e presente, gli experiments che producono file conservano il
+CSV e mostrano un avviso per il PNG non generato. L'experiment live degli
+attuatori segnala invece che gnuplot e necessario e termina senza avviare la
+sessione interattiva.
 
 ### Compilazione degli experiments
 
@@ -181,10 +206,11 @@ cmake -S edge -B edge/build -DBUILD_EXPERIMENTS=ON -DBUILD_TESTING=OFF
 cmake --build edge/build --target \
     temperature_simulation \
     humidity_simulation \
+    soil_moisture_simulation \
     ph_simulation \
     light_simulation \
     environment_simulation \
-    actuator_live_simulation \
+    actuator_simulation \
     threshold_step_response \
     pid_step_response \
     predictive_step_response
@@ -203,17 +229,19 @@ Gli eseguibili sono creati in `edge/build/bin`. Avviarli separatamente con:
 ```bash
 ./edge/build/bin/temperature_simulation
 ./edge/build/bin/humidity_simulation
+./edge/build/bin/soil_moisture_simulation
 ./edge/build/bin/ph_simulation
 ./edge/build/bin/light_simulation
 ./edge/build/bin/environment_simulation
-./edge/build/bin/actuator_live_simulation
+./edge/build/bin/actuator_simulation
 ./edge/build/bin/threshold_step_response
 ./edge/build/bin/pid_step_response
 ./edge/build/bin/predictive_step_response
 ```
 
-I primi quattro programmi isolano nel grafico una misura. Il quinto registra
-temperatura, umidita, pH e PPFD nello stesso CSV. Anche questo experiment usa
+I primi cinque programmi isolano nel grafico temperatura, umidita dell'aria,
+umidita del terriccio, pH o PPFD. `environment_simulation` registra tutte
+queste misure nello stesso CSV. Anche questo experiment usa
 sempre attuatori spenti.
 
 Gli experiments non accettano opzioni da riga di comando. Dopo l'avvio
@@ -223,21 +251,24 @@ le simulazioni dei sensori richiedono interattivamente:
 - substrato universale aerato, drenante oppure organico ritentivo;
 - seed numerico riproducibile oppure invio per generarne uno casuale.
 
-`actuator_live_simulation` apre un'unica finestra gnuplot con tre grafici:
+`actuator_simulation` apre un'unica finestra gnuplot con tre grafici:
 pompa di irrigazione, dosatore di concime e illuminazione. Dal terminale si
-sceglie ripetutamente quale attuatore modificare e si inserisce una potenza tra
-0% e 100%. Il nuovo valore viene erogato e mostrato immediatamente, mentre gli
-altri due rimangono invariati. Il comando `q` termina il ciclo e chiude il
-grafico. Questo experiment richiede gnuplot e non crea CSV o PNG.
+sceglie ripetutamente quale attuatore modificare. Per la pompa si inserisce il
+volume richiesto in litri: il programma calcola la durata, mostra la portata
+costante durante l'intervallo ON e lo spegnimento al termine. Dosatore e lampade
+ricevono invece una percentuale. Il grafico usa il tempo simulato e colori
+distinti per portata d'acqua in L/h, portata di concime in mL/h e potenza
+elettrica in W. Il comando `q` termina il ciclo e chiude il grafico. Questo
+experiment richiede gnuplot e non crea CSV o PNG.
 
 Gli experiments dei controllori eseguono invece scenari standard senza
 richiedere input:
 
 - `threshold_step_response` evidenzia l'isteresi tra le soglie 40% e 60%;
 - `pid_step_response` applica gradini attorno al setpoint 50 e mostra la
-  combinazione dei termini PID;
+  combinazione dei termini PID nel comando percentuale;
 - `predictive_step_response` combina gradini e una rampa per mostrare come il
-  trend modifica previsione e uscita.
+  trend modifica previsione e comando.
 
 I nomi dei sensori includono durata, scenario `natural`, terriccio e seed. Se
 un nome esiste gia viene aggiunto un suffisso `run-N`, senza sovrascriverlo. Le

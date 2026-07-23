@@ -28,6 +28,7 @@ void validate_channel(const SensorChannelConfig& channel, const char* name) {
 void validate_config(const SensorConfig& config) {
     validate_channel(config.temperature, "temperature");
     validate_channel(config.air_humidity, "air humidity");
+    validate_channel(config.soil_moisture, "soil moisture");
     validate_channel(config.ph, "pH");
     validate_channel(config.light_ppfd, "light PPFD");
 }
@@ -75,6 +76,7 @@ SensorReadings SensorSimulator::read(const EnvironmentState& environment_state) 
         environment_state.simulation_time_seconds,
         measure(environment_state.temperature_c, config_.temperature, -50.0, 80.0),
         measure(environment_state.air_humidity_percent, config_.air_humidity, 0.0, 100.0),
+        measure(environment_state.soil_moisture_percent, config_.soil_moisture, 0.0, 100.0),
         measure(environment_state.ph, config_.ph, 0.0, 14.0),
         measure(
             environment_state.light_ppfd_umol_m2_s,

@@ -25,7 +25,7 @@ TEST(EnvironmentSimulatorTest, UsesAeratedUniversalSoilByDefault) {
 
 TEST(EnvironmentSimulatorTest, NaturalLightIsZeroAtNightAndPeaksDuringDay) {
     smarthydro::EnvironmentSimulator environment({}, 10);
-    const smarthydro::ActuatorState actuators;
+    const smarthydro::ActuatorOutput actuators;
 
     EXPECT_DOUBLE_EQ(environment.state().light_ppfd_umol_m2_s, 0.0);
     for (int step = 0; step < 48; ++step) {
@@ -41,7 +41,7 @@ TEST(EnvironmentSimulatorTest, NaturalLightIsZeroAtNightAndPeaksDuringDay) {
 
 TEST(EnvironmentSimulatorTest, DayIsWarmerAndHumidityRespondsToTemperature) {
     smarthydro::EnvironmentSimulator environment({}, 11);
-    const smarthydro::ActuatorState actuators;
+    const smarthydro::ActuatorOutput actuators;
     double day_temperature = 0.0;
     double night_temperature = 0.0;
     double day_humidity = 0.0;
@@ -72,7 +72,7 @@ TEST(EnvironmentSimulatorTest, DayIsWarmerAndHumidityRespondsToTemperature) {
 
 TEST(EnvironmentSimulatorTest, RemainsBoundedForAWeekWithoutActuators) {
     smarthydro::EnvironmentSimulator environment({}, 12);
-    const smarthydro::ActuatorState actuators;
+    const smarthydro::ActuatorOutput actuators;
 
     for (int step = 0; step < 7 * 96; ++step) {
         environment.step(kQuarterHour, actuators);
@@ -85,17 +85,17 @@ TEST(EnvironmentSimulatorTest, RemainsBoundedForAWeekWithoutActuators) {
         EXPECT_LE(state.ph, 9.0);
         EXPECT_GE(state.ec_ms_cm, 0.0);
         EXPECT_LE(state.ec_ms_cm, 8.0);
-        EXPECT_GE(state.root_water_availability, 0.0);
-        EXPECT_LE(state.root_water_availability, 1.0);
+        EXPECT_GE(state.soil_moisture_percent, 0.0);
+        EXPECT_LE(state.soil_moisture_percent, 100.0);
     }
 }
 
 TEST(EnvironmentSimulatorTest, LampsIncreasePpfdAndTemperatureWithSameSeed) {
     smarthydro::EnvironmentSimulator dark({}, 13);
     smarthydro::EnvironmentSimulator lit({}, 13);
-    smarthydro::ActuatorState off;
-    smarthydro::ActuatorState on;
-    on.lighting_percent = 100.0;
+    smarthydro::ActuatorOutput off;
+    smarthydro::ActuatorOutput on;
+    on.lighting_power_watts = 200.0;
 
     for (int step = 0; step < 16; ++step) {
         dark.step(kQuarterHour, off);
@@ -115,10 +115,10 @@ TEST(EnvironmentSimulatorTest, SoilTypesDryAtDifferentRates) {
     smarthydro::EnvironmentSimulator universal(universal_config, 14);
     smarthydro::EnvironmentSimulator draining(draining_config, 14);
     smarthydro::EnvironmentSimulator organic(organic_config, 14);
-    const double universal_initial = universal.state().root_water_availability;
-    const double draining_initial = draining.state().root_water_availability;
-    const double organic_initial = organic.state().root_water_availability;
-    const smarthydro::ActuatorState off;
+    const double universal_initial = universal.state().soil_moisture_percent;
+    const double draining_initial = draining.state().soil_moisture_percent;
+    const double organic_initial = organic.state().soil_moisture_percent;
+    const smarthydro::ActuatorOutput off;
 
     for (int step = 0; step < 96; ++step) {
         universal.step(kQuarterHour, off);
@@ -127,11 +127,11 @@ TEST(EnvironmentSimulatorTest, SoilTypesDryAtDifferentRates) {
     }
 
     const double universal_loss =
-        universal_initial - universal.state().root_water_availability;
+        universal_initial - universal.state().soil_moisture_percent;
     const double draining_loss =
-        draining_initial - draining.state().root_water_availability;
+        draining_initial - draining.state().soil_moisture_percent;
     const double organic_loss =
-        organic_initial - organic.state().root_water_availability;
+        organic_initial - organic.state().soil_moisture_percent;
     EXPECT_GT(draining_loss, universal_loss);
     EXPECT_GT(universal_loss, organic_loss);
 }
@@ -146,9 +146,9 @@ TEST(EnvironmentSimulatorTest, IrrigationMaintainsWaterWithSoilSpecificResponse)
     smarthydro::EnvironmentSimulator dry_universal(universal_config, 19);
     smarthydro::EnvironmentSimulator pumped_draining(draining_config, 19);
     smarthydro::EnvironmentSimulator pumped_organic(organic_config, 19);
-    smarthydro::ActuatorState pump;
-    pump.water_pump_percent = 60.0;
-    const smarthydro::ActuatorState off;
+    smarthydro::ActuatorOutput pump;
+    pump.irrigation_volume_liters_last_step = 0.3;
+    const smarthydro::ActuatorOutput off;
 
     for (int step = 0; step < 4; ++step) {
         pumped_universal.step(kQuarterHour, pump);
@@ -157,45 +157,64 @@ TEST(EnvironmentSimulatorTest, IrrigationMaintainsWaterWithSoilSpecificResponse)
         pumped_organic.step(kQuarterHour, pump);
     }
 
-    EXPECT_GT(pumped_universal.state().root_water_availability,
-              dry_universal.state().root_water_availability);
-    EXPECT_NE(pumped_universal.state().root_water_availability,
-              pumped_draining.state().root_water_availability);
-    EXPECT_NE(pumped_universal.state().root_water_availability,
-              pumped_organic.state().root_water_availability);
+    EXPECT_GT(pumped_universal.state().soil_moisture_percent,
+              dry_universal.state().soil_moisture_percent);
+    EXPECT_NE(pumped_universal.state().soil_moisture_percent,
+              pumped_draining.state().soil_moisture_percent);
+    EXPECT_NE(pumped_universal.state().soil_moisture_percent,
+              pumped_organic.state().soil_moisture_percent);
+}
+
+TEST(EnvironmentSimulatorTest, DeliveredWaterVolumeChangesSoilMoisture) {
+    smarthydro::EnvironmentSimulator dry({}, 21);
+    smarthydro::EnvironmentSimulator irrigated({}, 21);
+    const smarthydro::ActuatorOutput off;
+    smarthydro::ActuatorOutput irrigation;
+    irrigation.irrigation_volume_liters_last_step = 0.1;
+
+    // Con capacita utile di 4 L ed efficienza del 90%, 0,1 L aumentano
+    // l'umidita di 2,25 punti percentuali.
+    dry.step(kQuarterHour, off);
+    irrigated.step(kQuarterHour, irrigation);
+
+    EXPECT_NEAR(
+        irrigated.state().soil_moisture_percent -
+            dry.state().soil_moisture_percent,
+        2.25,
+        1e-9);
 }
 
 TEST(EnvironmentSimulatorTest, ManagedIrrigationOutperformsNaturalScenarioForAWeek) {
     smarthydro::EnvironmentSimulator natural({}, 20);
     smarthydro::EnvironmentSimulator managed({}, 20);
-    const smarthydro::ActuatorState off;
-    smarthydro::ActuatorState irrigation;
+    const smarthydro::ActuatorOutput off;
+    smarthydro::ActuatorOutput irrigation;
 
     for (int step = 0; step < 7 * 96; ++step) {
-        const double water = managed.state().root_water_availability;
-        if (water < 0.45) {
-            irrigation.water_pump_percent = 60.0;
-        } else if (water > 0.72) {
-            irrigation.water_pump_percent = 0.0;
+        const double moisture = managed.state().soil_moisture_percent;
+        if (moisture < 45.0) {
+            irrigation.irrigation_volume_liters_last_step = 0.3;
+        } else if (moisture > 72.0) {
+            irrigation.irrigation_volume_liters_last_step = 0.0;
         }
         natural.step(kQuarterHour, off);
         managed.step(kQuarterHour, irrigation);
     }
 
-    EXPECT_GT(managed.state().root_water_availability,
-              natural.state().root_water_availability + 0.30);
-    EXPECT_GE(managed.state().root_water_availability, 0.40);
-    EXPECT_LE(managed.state().root_water_availability, 0.85);
+    EXPECT_GT(managed.state().soil_moisture_percent,
+              natural.state().soil_moisture_percent + 30.0);
+    EXPECT_GE(managed.state().soil_moisture_percent, 40.0);
+    EXPECT_LE(managed.state().soil_moisture_percent, 85.0);
 }
 
 TEST(EnvironmentSimulatorTest, FertilizerProfileChangesPhAndEc) {
     smarthydro::EnvironmentSimulator baseline({}, 15);
     smarthydro::EnvironmentSimulator fertilized({}, 15);
-    smarthydro::ActuatorState off;
-    smarthydro::ActuatorState dosing;
-    dosing.water_pump_percent = 100.0;
+    smarthydro::ActuatorOutput off;
+    smarthydro::ActuatorOutput dosing;
+    dosing.irrigation_volume_liters_last_step = 2.0;
     dosing.selected_fertilizer_id = "tomato-growth";
-    dosing.fertilizer_dosing_percent = 100.0;
+    dosing.fertilizer_flow_milliliters_per_hour = 20.0;
 
     baseline.step(3600.0, off);
     fertilized.step(3600.0, dosing);
@@ -206,16 +225,16 @@ TEST(EnvironmentSimulatorTest, FertilizerProfileChangesPhAndEc) {
 
 TEST(EnvironmentSimulatorTest, RejectsUnknownFertilizerWhenDosing) {
     smarthydro::EnvironmentSimulator environment({}, 16);
-    smarthydro::ActuatorState dosing;
+    smarthydro::ActuatorOutput dosing;
     dosing.selected_fertilizer_id = "unknown";
-    dosing.fertilizer_dosing_percent = 5.0;
+    dosing.fertilizer_flow_milliliters_per_hour = 1.0;
     EXPECT_THROW(environment.step(kQuarterHour, dosing), std::invalid_argument);
 }
 
 TEST(EnvironmentSimulatorTest, SeedMakesPhysicalDynamicsReproducible) {
     smarthydro::EnvironmentSimulator first({}, 17);
     smarthydro::EnvironmentSimulator second({}, 17);
-    const smarthydro::ActuatorState actuators;
+    const smarthydro::ActuatorOutput actuators;
 
     for (int step = 0; step < 100; ++step) {
         first.step(kQuarterHour, actuators);
@@ -226,15 +245,15 @@ TEST(EnvironmentSimulatorTest, SeedMakesPhysicalDynamicsReproducible) {
     EXPECT_DOUBLE_EQ(first.state().air_humidity_percent, second.state().air_humidity_percent);
     EXPECT_DOUBLE_EQ(first.state().ph, second.state().ph);
     EXPECT_DOUBLE_EQ(first.state().ec_ms_cm, second.state().ec_ms_cm);
-    EXPECT_DOUBLE_EQ(first.state().root_water_availability,
-                     second.state().root_water_availability);
+    EXPECT_DOUBLE_EQ(first.state().soil_moisture_percent,
+                     second.state().soil_moisture_percent);
     EXPECT_DOUBLE_EQ(first.state().light_ppfd_umol_m2_s,
                      second.state().light_ppfd_umol_m2_s);
 }
 
 TEST(EnvironmentSimulatorTest, RejectsInvalidTimeStep) {
     smarthydro::EnvironmentSimulator environment({}, 18);
-    const smarthydro::ActuatorState actuators;
+    const smarthydro::ActuatorOutput actuators;
     EXPECT_THROW(environment.step(0.0, actuators), std::invalid_argument);
     EXPECT_THROW(environment.step(-1.0, actuators), std::invalid_argument);
 }

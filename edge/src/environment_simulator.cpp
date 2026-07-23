@@ -26,6 +26,13 @@ void validate_percentage(double value, const char* name) {
     }
 }
 
+void validate_non_negative(double value, const char* name) {
+    require_finite(value, name);
+    if (value < 0.0) {
+        throw std::invalid_argument(std::string(name) + " must not be negative");
+    }
+}
+
 void validate_config(const EnvironmentConfig& config) {
     if (config.crop_name.empty()) {
         throw std::invalid_argument("crop_name must not be empty");
@@ -52,18 +59,20 @@ void validate_config(const EnvironmentConfig& config) {
     require_finite(config.initial_ph, "initial_ph");
     require_finite(config.initial_ec_ms_cm, "initial_ec_ms_cm");
     require_finite(config.natural_light_peak_ppfd, "natural_light_peak_ppfd");
-    require_finite(config.lamp_maximum_ppfd, "lamp_maximum_ppfd");
+    require_finite(config.lamp_ppfd_umol_m2_s_per_watt, "lamp PPFD per watt");
+    require_finite(config.lamp_heating_c_per_watt, "lamp heating per watt");
     if (config.initial_ph < 0.0 || config.initial_ph > 14.0 ||
         config.initial_ec_ms_cm < 0.0 || config.natural_light_peak_ppfd < 0.0 ||
-        config.lamp_maximum_ppfd < 0.0) {
+        config.lamp_ppfd_umol_m2_s_per_watt < 0.0 ||
+        config.lamp_heating_c_per_watt < 0.0) {
         throw std::invalid_argument("pH, EC and PPFD configuration values are out of range");
     }
     for (const auto& profile : config.fertilizer_profiles) {
         if (profile.id.empty()) {
             throw std::invalid_argument("fertilizer profile id must not be empty");
         }
-        require_finite(profile.ec_increase_per_hour_at_full_power, "fertilizer EC effect");
-        require_finite(profile.ph_change_per_hour_at_full_power, "fertilizer pH effect");
+        require_finite(profile.ec_increase_ms_cm_per_milliliter, "fertilizer EC effect");
+        require_finite(profile.ph_change_per_milliliter, "fertilizer pH effect");
     }
 }
 
@@ -83,11 +92,12 @@ double saturation_vapor_density(double temperature_c) {
 
 struct SoilDynamics {
     double depletion_per_hour;
-    double irrigation_recovery_per_hour;
+    double available_water_capacity_liters;
+    double irrigation_retention_efficiency;
     double drainage_per_hour;
     double field_capacity;
-    double initial_water_availability;
-    double ec_leaching_per_hour;
+    double initial_soil_moisture_percent;
+    double ec_leaching_per_liter;
     double ph_equilibrium_offset;
     double ph_buffering_days;
 };
@@ -95,13 +105,13 @@ struct SoilDynamics {
 SoilDynamics soil_dynamics(SoilType soil_type) {
     switch (soil_type) {
         case SoilType::AERATED_UNIVERSAL:
-            return {0.020, 0.45, 0.55, 0.78, 0.75, 0.12, 0.15, 7.0};
+            return {0.020, 4.0, 0.90, 0.55, 0.78, 75.0, 0.06, 0.15, 7.0};
         case SoilType::DRAINING:
-            return {0.030, 0.60, 1.10, 0.66, 0.65, 0.25, 0.10, 5.0};
+            return {0.030, 3.0, 0.90, 1.10, 0.66, 65.0, 0.125, 0.10, 5.0};
         case SoilType::ORGANIC_RETENTIVE:
-            return {0.012, 0.32, 0.22, 0.86, 0.82, 0.05, -0.05, 10.0};
+            return {0.012, 5.0, 0.80, 0.22, 0.86, 82.0, 0.025, -0.05, 10.0};
     }
-    return {0.020, 0.45, 0.55, 0.78, 0.75, 0.12, 0.15, 7.0};
+    return {0.020, 4.0, 0.90, 0.55, 0.78, 75.0, 0.06, 0.15, 7.0};
 }
 
 const FertilizerProfile* find_profile(
@@ -142,25 +152,29 @@ EnvironmentSimulator::EnvironmentSimulator(EnvironmentConfig config, std::uint32
     state_.air_humidity_percent = config_.night_relative_humidity_percent;
     state_.ph = config_.initial_ph;
     state_.ec_ms_cm = config_.initial_ec_ms_cm;
-    state_.root_water_availability =
-        soil_dynamics(config_.soil_type).initial_water_availability;
+    state_.soil_moisture_percent =
+        soil_dynamics(config_.soil_type).initial_soil_moisture_percent;
     vapor_density_g_m3_ = saturation_vapor_density(state_.temperature_c) *
                           state_.air_humidity_percent / 100.0;
 }
 
 void EnvironmentSimulator::step(
     double delta_time_seconds,
-    const ActuatorState& actuator_state) {
+    const ActuatorOutput& actuator_output) {
     require_finite(delta_time_seconds, "delta_time_seconds");
     if (delta_time_seconds <= 0.0) {
         throw std::invalid_argument("delta_time_seconds must be positive");
     }
-    validate_percentage(actuator_state.water_pump_percent, "water pump power");
-    validate_percentage(actuator_state.fertilizer_dosing_percent, "fertilizer dosing power");
-    validate_percentage(actuator_state.lighting_percent, "lighting power");
-    if (actuator_state.fertilizer_dosing_percent > 0.0) {
-        if (!actuator_state.selected_fertilizer_id.has_value() ||
-            find_profile(config_, *actuator_state.selected_fertilizer_id) == nullptr) {
+    validate_non_negative(
+        actuator_output.irrigation_volume_liters_last_step,
+        "irrigation volume");
+    validate_non_negative(
+        actuator_output.fertilizer_flow_milliliters_per_hour,
+        "fertilizer flow");
+    validate_non_negative(actuator_output.lighting_power_watts, "lighting power");
+    if (actuator_output.fertilizer_flow_milliliters_per_hour > 0.0) {
+        if (!actuator_output.selected_fertilizer_id.has_value() ||
+            find_profile(config_, *actuator_output.selected_fertilizer_id) == nullptr) {
             throw std::invalid_argument("unknown fertilizer selected for positive dosing");
         }
     }
@@ -168,14 +182,18 @@ void EnvironmentSimulator::step(
     double remaining = delta_time_seconds;
     while (remaining > 0.0) {
         const double substep = std::min(remaining, 300.0);
-        integrate_substep(substep, actuator_state);
+        auto substep_output = actuator_output;
+        substep_output.irrigation_volume_liters_last_step =
+            actuator_output.irrigation_volume_liters_last_step *
+            substep / delta_time_seconds;
+        integrate_substep(substep, substep_output);
         remaining -= substep;
     }
 }
 
 void EnvironmentSimulator::integrate_substep(
     double delta_time_seconds,
-    const ActuatorState& actuator_state) {
+    const ActuatorOutput& actuator_output) {
     const double delta_hours = delta_time_seconds / kSecondsPerHour;
     state_.simulation_time_seconds += delta_time_seconds;
     const double hour = std::fmod(state_.simulation_time_seconds / kSecondsPerHour, kHoursPerDay);
@@ -193,8 +211,8 @@ void EnvironmentSimulator::integrate_substep(
 
     const double natural_ppfd =
         config_.natural_light_peak_ppfd * sun_factor * cloud_transmission_;
-    const double lamp_ppfd = config_.lamp_maximum_ppfd *
-                             actuator_state.lighting_percent / 100.0;
+    const double lamp_ppfd = config_.lamp_ppfd_umol_m2_s_per_watt *
+                             actuator_output.lighting_power_watts;
     state_.light_ppfd_umol_m2_s = std::max(0.0, natural_ppfd + lamp_ppfd);
 
     const double external_temperature =
@@ -202,7 +220,8 @@ void EnvironmentSimulator::integrate_substep(
         (config_.day_temperature_c - config_.night_temperature_c) * sun_factor +
         temperature_disturbance_c_;
     const double solar_heating_c = natural_ppfd * 0.0025;
-    const double lamp_heating_c = 3.0 * actuator_state.lighting_percent / 100.0;
+    const double lamp_heating_c = config_.lamp_heating_c_per_watt *
+                                  actuator_output.lighting_power_watts;
     const double temperature_equilibrium =
         external_temperature + solar_heating_c + lamp_heating_c;
     const double temperature_response = 1.0 - std::exp(-delta_hours / 1.7);
@@ -213,18 +232,23 @@ void EnvironmentSimulator::integrate_substep(
     const auto soil = soil_dynamics(config_.soil_type);
     const double light_activity =
         std::clamp(state_.light_ppfd_umol_m2_s / 700.0, 0.0, 1.5);
-    const double pump_fraction = actuator_state.water_pump_percent / 100.0;
-    const double water_before_step = state_.root_water_availability;
+    double soil_water_fraction = state_.soil_moisture_percent / 100.0;
+    const double water_before_step = soil_water_fraction;
     const double depletion = soil.depletion_per_hour * (0.20 + 0.80 * light_activity);
-    const double recovery = soil.irrigation_recovery_per_hour * pump_fraction;
+    const double irrigation_volume_liters =
+        actuator_output.irrigation_volume_liters_last_step;
+    const double recovery =
+        irrigation_volume_liters * soil.irrigation_retention_efficiency /
+        soil.available_water_capacity_liters;
     const double provisional_water =
-        state_.root_water_availability + (recovery - depletion) * delta_hours;
+        soil_water_fraction + recovery - depletion * delta_hours;
     const double drainage = soil.drainage_per_hour *
                             std::max(0.0, provisional_water - soil.field_capacity);
-    state_.root_water_availability = std::clamp(
+    soil_water_fraction = std::clamp(
         provisional_water - drainage * delta_hours,
         0.0,
         1.0);
+    state_.soil_moisture_percent = soil_water_fraction * 100.0;
 
     const double external_rh =
         config_.night_relative_humidity_percent +
@@ -234,9 +258,8 @@ void EnvironmentSimulator::integrate_substep(
                                   external_rh / 100.0;
     const double air_exchange = (external_vapor - vapor_density_g_m3_) * delta_hours / 2.0;
     const double transpiration = 0.30 * light_activity *
-                                 state_.root_water_availability * delta_hours;
-    const double irrigation_evaporation = 0.06 *
-        actuator_state.water_pump_percent / 100.0 * delta_hours;
+                                 soil_water_fraction * delta_hours;
+    const double irrigation_evaporation = 0.03 * irrigation_volume_liters;
     vapor_density_g_m3_ += air_exchange + transpiration + irrigation_evaporation;
     vapor_density_g_m3_ = std::max(0.0, vapor_density_g_m3_);
     state_.air_humidity_percent = std::clamp(
@@ -245,7 +268,7 @@ void EnvironmentSimulator::integrate_substep(
         99.0);
 
     const double uptake_activity = (0.20 + 0.80 * light_activity) *
-                                   state_.root_water_availability;
+                                   soil_water_fraction;
     const double ph_equilibrium = config_.initial_ph + soil.ph_equilibrium_offset;
     state_.ph += (ph_equilibrium - state_.ph) * delta_hours /
                  (24.0 * soil.ph_buffering_days);
@@ -253,24 +276,30 @@ void EnvironmentSimulator::integrate_substep(
     state_.ec_ms_cm -= 0.025 * uptake_activity * delta_hours / 24.0;
 
     const double water_change =
-        state_.root_water_availability - water_before_step;
+        soil_water_fraction - water_before_step;
     if (water_change < 0.0) {
         state_.ec_ms_cm *= 1.0 + (-water_change) * 0.08;
     }
-    if (pump_fraction > 0.0) {
+    if (irrigation_volume_liters > 0.0) {
         constexpr double kIrrigationWaterEcMsCm = 0.60;
         state_.ec_ms_cm += (kIrrigationWaterEcMsCm - state_.ec_ms_cm) *
-                           soil.ec_leaching_per_hour * pump_fraction * delta_hours;
+                           soil.ec_leaching_per_liter * irrigation_volume_liters;
     }
 
-    if (actuator_state.fertilizer_dosing_percent > 0.0) {
-        const auto* profile = find_profile(config_, *actuator_state.selected_fertilizer_id);
-        const double mixing = 0.15 + 0.85 * pump_fraction;
-        const double dosing_fraction = actuator_state.fertilizer_dosing_percent / 100.0;
-        state_.ph += profile->ph_change_per_hour_at_full_power * dosing_fraction *
-                     mixing * delta_hours;
-        state_.ec_ms_cm += profile->ec_increase_per_hour_at_full_power * dosing_fraction *
-                           mixing * delta_hours;
+    if (actuator_output.fertilizer_flow_milliliters_per_hour > 0.0) {
+        const auto* profile = find_profile(config_, *actuator_output.selected_fertilizer_id);
+        const double effective_irrigation_flow_liters_per_hour =
+            delta_hours > 0.0 ? irrigation_volume_liters / delta_hours : 0.0;
+        const double mixing = std::clamp(
+            0.15 + 0.425 * effective_irrigation_flow_liters_per_hour,
+            0.15,
+            1.0);
+        const double fertilizer_volume_milliliters =
+            actuator_output.fertilizer_flow_milliliters_per_hour * delta_hours;
+        state_.ph += profile->ph_change_per_milliliter *
+                     fertilizer_volume_milliliters * mixing;
+        state_.ec_ms_cm += profile->ec_increase_ms_cm_per_milliliter *
+                           fertilizer_volume_milliliters * mixing;
     }
 
     state_.ph = std::clamp(state_.ph, 3.0, 9.0);

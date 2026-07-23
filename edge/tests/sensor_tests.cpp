@@ -8,6 +8,7 @@ smarthydro::SensorConfig ideal_sensor_config() {
     smarthydro::SensorConfig config;
     config.temperature = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.air_humidity = {0.0, 0.0, 0.0, 0.0, 0.0};
+    config.soil_moisture = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.ph = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.light_ppfd = {0.0, 0.0, 0.0, 0.0, 0.0};
     return config;
@@ -15,7 +16,7 @@ smarthydro::SensorConfig ideal_sensor_config() {
 
 TEST(SensorSimulatorTest, ReadDoesNotModifyEnvironment) {
     const smarthydro::EnvironmentState environment{
-        900.0, 23.4, 67.0, 5.9, 2.4, 0.8, 512.0};
+        900.0, 23.4, 67.0, 5.9, 2.4, 80.0, 512.0};
     const auto original = environment;
     smarthydro::SensorSimulator sensors(ideal_sensor_config(), 42);
 
@@ -26,10 +27,12 @@ TEST(SensorSimulatorTest, ReadDoesNotModifyEnvironment) {
     EXPECT_DOUBLE_EQ(environment.air_humidity_percent, original.air_humidity_percent);
     EXPECT_DOUBLE_EQ(environment.ph, original.ph);
     EXPECT_DOUBLE_EQ(environment.ec_ms_cm, original.ec_ms_cm);
-    EXPECT_DOUBLE_EQ(environment.root_water_availability, original.root_water_availability);
+    EXPECT_DOUBLE_EQ(environment.soil_moisture_percent, original.soil_moisture_percent);
     EXPECT_DOUBLE_EQ(environment.light_ppfd_umol_m2_s, original.light_ppfd_umol_m2_s);
     ASSERT_TRUE(readings.temperature_c.has_value());
     EXPECT_DOUBLE_EQ(*readings.temperature_c, 23.4);
+    ASSERT_TRUE(readings.soil_moisture_percent.has_value());
+    EXPECT_DOUBLE_EQ(*readings.soil_moisture_percent, 80.0);
     EXPECT_DOUBLE_EQ(readings.timestamp_seconds, 900.0);
 }
 
@@ -50,6 +53,7 @@ TEST(SensorSimulatorTest, SupportsCompleteDropout) {
     auto config = ideal_sensor_config();
     config.temperature.dropout_probability = 1.0;
     config.air_humidity.dropout_probability = 1.0;
+    config.soil_moisture.dropout_probability = 1.0;
     config.ph.dropout_probability = 1.0;
     config.light_ppfd.dropout_probability = 1.0;
     smarthydro::SensorSimulator sensors(config, 8);
@@ -58,6 +62,7 @@ TEST(SensorSimulatorTest, SupportsCompleteDropout) {
 
     EXPECT_FALSE(readings.temperature_c.has_value());
     EXPECT_FALSE(readings.air_humidity_percent.has_value());
+    EXPECT_FALSE(readings.soil_moisture_percent.has_value());
     EXPECT_FALSE(readings.ph.has_value());
     EXPECT_FALSE(readings.light_ppfd_umol_m2_s.has_value());
 }
@@ -66,13 +71,14 @@ TEST(SensorSimulatorTest, SeedMakesInstrumentNoiseReproducible) {
     smarthydro::SensorSimulator first(1234);
     smarthydro::SensorSimulator second(1234);
     const smarthydro::EnvironmentState environment{
-        1800.0, 24.0, 65.0, 5.8, 2.5, 0.9, 600.0};
+        1800.0, 24.0, 65.0, 5.8, 2.5, 90.0, 600.0};
 
     for (int sample = 0; sample < 20; ++sample) {
         const auto a = first.read(environment);
         const auto b = second.read(environment);
         EXPECT_EQ(a.temperature_c, b.temperature_c);
         EXPECT_EQ(a.air_humidity_percent, b.air_humidity_percent);
+        EXPECT_EQ(a.soil_moisture_percent, b.soil_moisture_percent);
         EXPECT_EQ(a.ph, b.ph);
         EXPECT_EQ(a.light_ppfd_umol_m2_s, b.light_ppfd_umol_m2_s);
     }
@@ -91,6 +97,17 @@ TEST(SensorSimulatorTest, ReportsLightAsPpfdAndPreservesDarkness) {
     readings = sensors.read(environment);
     ASSERT_TRUE(readings.light_ppfd_umol_m2_s.has_value());
     EXPECT_DOUBLE_EQ(*readings.light_ppfd_umol_m2_s, 0.0);
+}
+
+TEST(SensorSimulatorTest, ReportsSoilMoistureAsPercentage) {
+    smarthydro::SensorSimulator sensors(ideal_sensor_config(), 10);
+    smarthydro::EnvironmentState environment;
+    environment.soil_moisture_percent = 63.5;
+
+    const auto readings = sensors.read(environment);
+
+    ASSERT_TRUE(readings.soil_moisture_percent.has_value());
+    EXPECT_DOUBLE_EQ(*readings.soil_moisture_percent, 63.5);
 }
 
 TEST(SensorSimulatorTest, RejectsInvalidChannelConfiguration) {
