@@ -1,5 +1,6 @@
 #include "smarthydro/environment_simulator.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -15,6 +16,9 @@ TEST(EnvironmentSimulatorTest, UsesAeratedUniversalSoilByDefault) {
     EXPECT_EQ(config.soil_type, smarthydro::SoilType::AERATED_UNIVERSAL);
     EXPECT_DOUBLE_EQ(config.initial_ph, 6.3);
     EXPECT_DOUBLE_EQ(config.initial_ec_ms_cm, 1.8);
+    EXPECT_DOUBLE_EQ(config.mean_cloud_transmission, 0.82);
+    EXPECT_GT(config.daily_cloud_transmission_stddev, 0.0);
+    EXPECT_GT(config.hourly_cloud_transmission_stddev, 0.0);
     EXPECT_STREQ(smarthydro::to_string(smarthydro::SoilType::AERATED_UNIVERSAL),
                  "aerated-universal");
     EXPECT_STREQ(smarthydro::to_string(smarthydro::SoilType::DRAINING),
@@ -31,12 +35,69 @@ TEST(EnvironmentSimulatorTest, NaturalLightIsZeroAtNightAndPeaksDuringDay) {
     for (int step = 0; step < 48; ++step) {
         environment.step(kQuarterHour, actuators);
     }
-    EXPECT_GT(environment.state().light_ppfd_umol_m2_s, 450.0);
+    // Anche una giornata molto nuvolosa deve conservare luce naturale
+    // significativa, senza presumere che il seed produca cielo sereno.
+    EXPECT_GT(environment.state().light_ppfd_umol_m2_s, 100.0);
 
     for (int step = 0; step < 48; ++step) {
         environment.step(kQuarterHour, actuators);
     }
     EXPECT_DOUBLE_EQ(environment.state().light_ppfd_umol_m2_s, 0.0);
+}
+
+TEST(EnvironmentSimulatorTest, DailyCloudRegimesChangeAvailableNaturalLight) {
+    auto config = smarthydro::make_default_tomato_environment_config();
+    config.hourly_cloud_transmission_stddev = 0.0;
+    smarthydro::EnvironmentSimulator environment(config, 110);
+    const smarthydro::ActuatorOutput actuators;
+    double previous_noon_ppfd = -1.0;
+    bool observed_different_days = false;
+
+    for (int step = 0; step < 5 * 96; ++step) {
+        environment.step(kQuarterHour, actuators);
+        const double hour =
+            std::fmod(environment.state().simulation_time_seconds / 3600.0, 24.0);
+        if (std::abs(hour - 12.0) < 1e-9) {
+            const double noon_ppfd = environment.state().light_ppfd_umol_m2_s;
+            if (previous_noon_ppfd >= 0.0 &&
+                std::abs(noon_ppfd - previous_noon_ppfd) > 1.0) {
+                observed_different_days = true;
+            }
+            previous_noon_ppfd = noon_ppfd;
+        }
+    }
+
+    EXPECT_TRUE(observed_different_days);
+}
+
+TEST(EnvironmentSimulatorTest, HourlyCloudsVaryAroundAFixedDailyRegime) {
+    auto config = smarthydro::make_default_tomato_environment_config();
+    config.daily_cloud_transmission_stddev = 0.0;
+    config.hourly_cloud_transmission_stddev = 0.15;
+    smarthydro::EnvironmentSimulator environment(config, 111);
+    const smarthydro::ActuatorOutput actuators;
+    double minimum_transmission = 1.0;
+    double maximum_transmission = 0.0;
+
+    for (int step = 0; step < 96; ++step) {
+        environment.step(kQuarterHour, actuators);
+        const double hour =
+            std::fmod(environment.state().simulation_time_seconds / 3600.0, 24.0);
+        const double relative_hour = hour - config.sunrise_hour;
+        if (relative_hour <= 0.0 || relative_hour >= config.photoperiod_hours) {
+            continue;
+        }
+        const double sun_factor =
+            std::sin(3.14159265358979323846 * relative_hour /
+                     config.photoperiod_hours);
+        const double transmission =
+            environment.state().light_ppfd_umol_m2_s /
+            (config.natural_light_peak_ppfd * sun_factor);
+        minimum_transmission = std::min(minimum_transmission, transmission);
+        maximum_transmission = std::max(maximum_transmission, transmission);
+    }
+
+    EXPECT_GT(maximum_transmission - minimum_transmission, 0.10);
 }
 
 TEST(EnvironmentSimulatorTest, DayIsWarmerAndHumidityRespondsToTemperature) {
@@ -256,6 +317,26 @@ TEST(EnvironmentSimulatorTest, RejectsInvalidTimeStep) {
     const smarthydro::ActuatorOutput actuators;
     EXPECT_THROW(environment.step(0.0, actuators), std::invalid_argument);
     EXPECT_THROW(environment.step(-1.0, actuators), std::invalid_argument);
+}
+
+TEST(EnvironmentSimulatorTest, RejectsInvalidCloudConfiguration) {
+    auto config = smarthydro::make_default_tomato_environment_config();
+    config.mean_cloud_transmission = 1.1;
+    EXPECT_THROW(
+        smarthydro::EnvironmentSimulator(config, 22),
+        std::invalid_argument);
+
+    config = smarthydro::make_default_tomato_environment_config();
+    config.daily_cloud_transmission_stddev = -0.1;
+    EXPECT_THROW(
+        smarthydro::EnvironmentSimulator(config, 22),
+        std::invalid_argument);
+
+    config = smarthydro::make_default_tomato_environment_config();
+    config.cloud_persistence_hours = 0.0;
+    EXPECT_THROW(
+        smarthydro::EnvironmentSimulator(config, 22),
+        std::invalid_argument);
 }
 
 }  // namespace

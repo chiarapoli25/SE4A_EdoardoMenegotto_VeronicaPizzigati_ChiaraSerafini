@@ -53,6 +53,14 @@ struct EnvironmentConfig {
     double initial_ec_ms_cm = 1.8;
     /** Picco della luce naturale, in micromoli per metro quadrato al secondo. */
     double natural_light_peak_ppfd = 700.0;
+    /** Trasmissione atmosferica media in assenza di lampade, tra 0 e 1. */
+    double mean_cloud_transmission = 0.82;
+    /** Deviazione standard del regime nuvoloso estratto per ogni giorno. */
+    double daily_cloud_transmission_stddev = 0.16;
+    /** Deviazione standard delle oscillazioni nuvolose nell'arco di alcune ore. */
+    double hourly_cloud_transmission_stddev = 0.10;
+    /** Tempo caratteristico delle variazioni orarie della nuvolosita. */
+    double cloud_persistence_hours = 1.5;
     /** PPFD sul piano di coltivazione per watt elettrico delle lampade. */
     double lamp_ppfd_umol_m2_s_per_watt = 2.0;
     /** Incremento termico di equilibrio per watt elettrico delle lampade. */
@@ -132,7 +140,9 @@ private:
     EnvironmentConfig config_;
     EnvironmentState state_;
     std::mt19937 generator_;
-    double cloud_transmission_ = 0.88;
+    double daily_cloud_transmission_ = 0.82;
+    double hourly_cloud_deviation_ = 0.0;
+    std::uint64_t cloud_regime_day_ = 0;
     double temperature_disturbance_c_ = 0.0;
     double vapor_density_g_m3_ = 0.0;
 };

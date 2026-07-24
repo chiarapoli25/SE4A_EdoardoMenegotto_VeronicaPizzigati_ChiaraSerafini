@@ -70,6 +70,13 @@ substrato universale aerato, con alba alle 06:00 e fotoperiodo di 14 ore. Sono
 disponibili anche un substrato drenante e uno organico ritentivo. Il profilo di
 concime incluso e `tomato-growth`.
 
+La luce naturale combina il ciclo solare con due livelli di nuvolosita
+stocastica. Ogni giorno viene estratto un regime atmosferico piu sereno o piu
+coperto; variazioni correlate su scala oraria simulano invece il passaggio
+graduale delle nuvole. Media, variabilita giornaliera, variabilita oraria e
+tempo di persistenza sono configurabili in `EnvironmentConfig`. Specificando
+lo stesso seed si ottiene la stessa sequenza meteorologica.
+
 `SensorSimulator::read(const EnvironmentState&)` non fa avanzare il tempo e
 non modifica l'ambiente. Aggiunge rumore gaussiano, bias, correzione di
 calibrazione, quantizzazione e possibili dropout. Le letture sono

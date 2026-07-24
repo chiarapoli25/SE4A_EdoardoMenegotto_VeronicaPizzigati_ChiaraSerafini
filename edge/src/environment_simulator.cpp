@@ -12,6 +12,8 @@ namespace {
 constexpr double kSecondsPerHour = 3600.0;
 constexpr double kHoursPerDay = 24.0;
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kMinimumCloudTransmission = 0.20;
+constexpr double kMaximumCloudTransmission = 1.0;
 
 void require_finite(double value, const char* name) {
     if (!std::isfinite(value)) {
@@ -59,13 +61,25 @@ void validate_config(const EnvironmentConfig& config) {
     require_finite(config.initial_ph, "initial_ph");
     require_finite(config.initial_ec_ms_cm, "initial_ec_ms_cm");
     require_finite(config.natural_light_peak_ppfd, "natural_light_peak_ppfd");
+    require_finite(config.mean_cloud_transmission, "mean cloud transmission");
+    validate_non_negative(
+        config.daily_cloud_transmission_stddev,
+        "daily cloud transmission standard deviation");
+    validate_non_negative(
+        config.hourly_cloud_transmission_stddev,
+        "hourly cloud transmission standard deviation");
+    require_finite(config.cloud_persistence_hours, "cloud persistence");
     require_finite(config.lamp_ppfd_umol_m2_s_per_watt, "lamp PPFD per watt");
     require_finite(config.lamp_heating_c_per_watt, "lamp heating per watt");
     if (config.initial_ph < 0.0 || config.initial_ph > 14.0 ||
         config.initial_ec_ms_cm < 0.0 || config.natural_light_peak_ppfd < 0.0 ||
+        config.mean_cloud_transmission < 0.0 ||
+        config.mean_cloud_transmission > 1.0 ||
+        config.cloud_persistence_hours <= 0.0 ||
         config.lamp_ppfd_umol_m2_s_per_watt < 0.0 ||
         config.lamp_heating_c_per_watt < 0.0) {
-        throw std::invalid_argument("pH, EC and PPFD configuration values are out of range");
+        throw std::invalid_argument(
+            "pH, EC, cloud and PPFD configuration values are out of range");
     }
     for (const auto& profile : config.fertilizer_profiles) {
         if (profile.id.empty()) {
@@ -148,6 +162,14 @@ EnvironmentSimulator::EnvironmentSimulator(EnvironmentConfig config)
 EnvironmentSimulator::EnvironmentSimulator(EnvironmentConfig config, std::uint32_t seed)
     : config_(std::move(config)), generator_(seed) {
     validate_config(config_);
+    std::normal_distribution<double> standard_normal(0.0, 1.0);
+    daily_cloud_transmission_ = std::clamp(
+        config_.mean_cloud_transmission +
+            config_.daily_cloud_transmission_stddev * standard_normal(generator_),
+        kMinimumCloudTransmission,
+        kMaximumCloudTransmission);
+    hourly_cloud_deviation_ =
+        config_.hourly_cloud_transmission_stddev * standard_normal(generator_);
     state_.temperature_c = config_.night_temperature_c;
     state_.air_humidity_percent = config_.night_relative_humidity_percent;
     state_.ph = config_.initial_ph;
@@ -200,17 +222,40 @@ void EnvironmentSimulator::integrate_substep(
     const double sun_factor = daylight_factor(hour, config_);
 
     std::normal_distribution<double> standard_normal(0.0, 1.0);
+    const auto current_day = static_cast<std::uint64_t>(
+        state_.simulation_time_seconds / (kHoursPerDay * kSecondsPerHour));
+    if (current_day != cloud_regime_day_) {
+        daily_cloud_transmission_ = std::clamp(
+            config_.mean_cloud_transmission +
+                config_.daily_cloud_transmission_stddev * standard_normal(generator_),
+            kMinimumCloudTransmission,
+            kMaximumCloudTransmission);
+        cloud_regime_day_ = current_day;
+    }
+
+    // Processo di Ornstein-Uhlenbeck discreto: le variazioni orarie sono
+    // correlate e persistono, invece di diventare rumore bianco a ogni passo.
+    const double cloud_memory =
+        std::exp(-delta_hours / config_.cloud_persistence_hours);
+    const double cloud_innovation_scale =
+        config_.hourly_cloud_transmission_stddev *
+        std::sqrt(1.0 - cloud_memory * cloud_memory);
+    hourly_cloud_deviation_ =
+        cloud_memory * hourly_cloud_deviation_ +
+        cloud_innovation_scale * standard_normal(generator_);
+    const double cloud_transmission = std::clamp(
+        daily_cloud_transmission_ + hourly_cloud_deviation_,
+        kMinimumCloudTransmission,
+        kMaximumCloudTransmission);
+
     const double noise_scale = std::sqrt(delta_hours);
-    cloud_transmission_ += (0.88 - cloud_transmission_) * delta_hours / 3.0 +
-                           0.025 * noise_scale * standard_normal(generator_);
-    cloud_transmission_ = std::clamp(cloud_transmission_, 0.35, 1.0);
     temperature_disturbance_c_ +=
         -temperature_disturbance_c_ * delta_hours / 4.0 +
         0.08 * noise_scale * standard_normal(generator_);
     temperature_disturbance_c_ = std::clamp(temperature_disturbance_c_, -1.5, 1.5);
 
     const double natural_ppfd =
-        config_.natural_light_peak_ppfd * sun_factor * cloud_transmission_;
+        config_.natural_light_peak_ppfd * sun_factor * cloud_transmission;
     const double lamp_ppfd = config_.lamp_ppfd_umol_m2_s_per_watt *
                              actuator_output.lighting_power_watts;
     state_.light_ppfd_umol_m2_s = std::max(0.0, natural_ppfd + lamp_ppfd);
