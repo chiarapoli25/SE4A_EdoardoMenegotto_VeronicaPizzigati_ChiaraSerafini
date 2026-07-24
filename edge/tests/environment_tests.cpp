@@ -11,7 +11,7 @@ namespace {
 constexpr double kQuarterHour = 900.0;
 
 TEST(EnvironmentSimulatorTest, UsesAeratedUniversalSoilByDefault) {
-    const auto config = smarthydro::make_default_tomato_environment_config();
+    const smarthydro::EnvironmentConfig config;
 
     EXPECT_EQ(config.soil_type, smarthydro::SoilType::AERATED_UNIVERSAL);
     EXPECT_DOUBLE_EQ(config.initial_ph, 6.3);
@@ -46,7 +46,7 @@ TEST(EnvironmentSimulatorTest, NaturalLightIsZeroAtNightAndPeaksDuringDay) {
 }
 
 TEST(EnvironmentSimulatorTest, DailyCloudRegimesChangeAvailableNaturalLight) {
-    auto config = smarthydro::make_default_tomato_environment_config();
+    smarthydro::EnvironmentConfig config;
     config.hourly_cloud_transmission_stddev = 0.0;
     smarthydro::EnvironmentSimulator environment(config, 110);
     const smarthydro::ActuatorOutput actuators;
@@ -71,7 +71,7 @@ TEST(EnvironmentSimulatorTest, DailyCloudRegimesChangeAvailableNaturalLight) {
 }
 
 TEST(EnvironmentSimulatorTest, HourlyCloudsVaryAroundAFixedDailyRegime) {
-    auto config = smarthydro::make_default_tomato_environment_config();
+    smarthydro::EnvironmentConfig config;
     config.daily_cloud_transmission_stddev = 0.0;
     config.hourly_cloud_transmission_stddev = 0.15;
     smarthydro::EnvironmentSimulator environment(config, 111);
@@ -168,7 +168,7 @@ TEST(EnvironmentSimulatorTest, LampsIncreasePpfdAndTemperatureWithSameSeed) {
 }
 
 TEST(EnvironmentSimulatorTest, SoilTypesDryAtDifferentRates) {
-    auto universal_config = smarthydro::make_default_tomato_environment_config();
+    smarthydro::EnvironmentConfig universal_config;
     auto draining_config = universal_config;
     auto organic_config = universal_config;
     draining_config.soil_type = smarthydro::SoilType::DRAINING;
@@ -198,7 +198,7 @@ TEST(EnvironmentSimulatorTest, SoilTypesDryAtDifferentRates) {
 }
 
 TEST(EnvironmentSimulatorTest, IrrigationMaintainsWaterWithSoilSpecificResponse) {
-    auto universal_config = smarthydro::make_default_tomato_environment_config();
+    smarthydro::EnvironmentConfig universal_config;
     auto draining_config = universal_config;
     auto organic_config = universal_config;
     draining_config.soil_type = smarthydro::SoilType::DRAINING;
@@ -320,19 +320,19 @@ TEST(EnvironmentSimulatorTest, RejectsInvalidTimeStep) {
 }
 
 TEST(EnvironmentSimulatorTest, RejectsInvalidCloudConfiguration) {
-    auto config = smarthydro::make_default_tomato_environment_config();
+    smarthydro::EnvironmentConfig config;
     config.mean_cloud_transmission = 1.1;
     EXPECT_THROW(
         smarthydro::EnvironmentSimulator(config, 22),
         std::invalid_argument);
 
-    config = smarthydro::make_default_tomato_environment_config();
+    config = {};
     config.daily_cloud_transmission_stddev = -0.1;
     EXPECT_THROW(
         smarthydro::EnvironmentSimulator(config, 22),
         std::invalid_argument);
 
-    config = smarthydro::make_default_tomato_environment_config();
+    config = {};
     config.cloud_persistence_hours = 0.0;
     EXPECT_THROW(
         smarthydro::EnvironmentSimulator(config, 22),

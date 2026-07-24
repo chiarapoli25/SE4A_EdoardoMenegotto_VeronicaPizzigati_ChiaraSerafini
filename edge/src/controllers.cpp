@@ -74,16 +74,8 @@ double ThresholdController::update(double measured_value) {
     return active_ ? active_command_ : inactive_command_;
 }
 
-void ThresholdController::reset(bool active) noexcept {
-    active_ = active;
-}
-
-bool ThresholdController::is_active() const noexcept {
-    return active_;
-}
-
 PidController::PidController(PidConfig config)
-    : config_(config), last_command_(config.command_limits.minimum) {
+    : config_(config) {
     require_finite(config_.setpoint, "PID setpoint");
     require_finite(config_.proportional_gain, "proportional gain");
     require_finite(config_.integral_gain, "integral gain");
@@ -125,22 +117,17 @@ double PidController::update(double measured_value, double delta_time_seconds) {
                                 derivative_term;
     }
 
-    last_command_ = std::clamp(
+    const double command = std::clamp(
         unconstrained_command,
         config_.command_limits.minimum,
         config_.command_limits.maximum);
     previous_error_ = error;
-    return last_command_;
+    return command;
 }
 
 void PidController::reset() noexcept {
     integral_ = 0.0;
     previous_error_.reset();
-    last_command_ = config_.command_limits.minimum;
-}
-
-double PidController::last_command() const noexcept {
-    return last_command_;
 }
 
 PredictiveController::PredictiveController(PredictiveConfig config)

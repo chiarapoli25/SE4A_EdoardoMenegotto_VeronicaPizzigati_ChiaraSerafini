@@ -65,10 +65,10 @@ metodo `step(delta_time_seconds, actuator_state)` evolve gradualmente:
   substrato universale aerato, drenante e organico ritentivo;
 - luce naturale e supplementare espressa come PPFD in `umol/(m2 s)`.
 
-La configurazione predefinita rappresenta pomodoro in fase vegetativa su
-substrato universale aerato, con alba alle 06:00 e fotoperiodo di 14 ore. Sono
-disponibili anche un substrato drenante e uno organico ritentivo. Il profilo di
-concime incluso e `tomato-growth`.
+La configurazione predefinita usa un substrato universale aerato, con alba alle
+06:00 e fotoperiodo di 14 ore. Sono disponibili anche un substrato drenante e
+uno organico ritentivo. La dinamica ambientale non dipende dalla specie
+coltivata. Il profilo di concime incluso e `tomato-growth`.
 
 La luce naturale combina il ciclo solare con due livelli di nuvolosita
 stocastica. Ogni giorno viene estratto un regime atmosferico piu sereno o piu

@@ -460,7 +460,7 @@ int main() {
         const smarthydro::SoilType soil_type = request_soil_type();
         const std::uint32_t seed = request_seed();
 
-        auto config = smarthydro::make_default_tomato_environment_config();
+        smarthydro::EnvironmentConfig config;
         config.soil_type = soil_type;
         smarthydro::EnvironmentSimulator environment(config, seed);
         smarthydro::SensorSimulator sensors(seed ^ 0x9E3779B9U);

@@ -36,9 +36,6 @@ void validate_non_negative(double value, const char* name) {
 }
 
 void validate_config(const EnvironmentConfig& config) {
-    if (config.crop_name.empty()) {
-        throw std::invalid_argument("crop_name must not be empty");
-    }
     switch (config.soil_type) {
         case SoilType::AERATED_UNIVERSAL:
         case SoilType::DRAINING:
@@ -139,10 +136,6 @@ const FertilizerProfile* find_profile(
 }
 
 }  // namespace
-
-EnvironmentConfig make_default_tomato_environment_config() {
-    return {};
-}
 
 const char* to_string(SoilType soil_type) noexcept {
     switch (soil_type) {
@@ -353,10 +346,6 @@ void EnvironmentSimulator::integrate_substep(
 
 const EnvironmentState& EnvironmentSimulator::state() const noexcept {
     return state_;
-}
-
-const EnvironmentConfig& EnvironmentSimulator::config() const noexcept {
-    return config_;
 }
 
 }  // namespace smarthydro

@@ -114,8 +114,7 @@ ExperimentResult run_closed_loop(
     std::string datablock_name,
     std::string color,
     ControlStep control_step) {
-    auto environment_config =
-        smarthydro::make_default_tomato_environment_config();
+    smarthydro::EnvironmentConfig environment_config;
     environment_config.soil_type =
         smarthydro::SoilType::AERATED_UNIVERSAL;
 

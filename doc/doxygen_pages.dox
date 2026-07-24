@@ -9,6 +9,19 @@
  *
  * La @ref md__r_e_a_d_m_e descrive invece compilazione, test ed esperimenti
  * dell'intero progetto.
+ *
+ * @section architecture Architettura generale
+ *
+ * L'Edge Controller mantiene il modello fisico e produce misure simulate. Il
+ * Backend espone invece l'interfaccia HTTP; nella fase attuale le due
+ * componenti non comunicano ancora fra loro.
+ *
+ * Il ciclo previsto nell'Edge Controller e:
+ *
+ * 1. un comando manuale o un controllore configura gli attuatori;
+ * 2. ActuatorSimulator::step() calcola l'uscita fisica;
+ * 3. EnvironmentSimulator::step() applica l'uscita all'ambiente;
+ * 4. SensorSimulator::read() osserva lo stato risultante.
  */
 
 /**
@@ -17,12 +30,47 @@
  * Componente C++17 che simula ambiente, sensori e attuatori e mette a
  * disposizione controllori a soglia, PID e predittivi.
  *
- * Punti di accesso:
+ * @section edge_execution Flusso di esecuzione
+ *
+ * @code{.cpp}
+ * smarthydro::ActuatorSimulator actuators;
+ * smarthydro::EnvironmentSimulator environment;
+ * smarthydro::SensorSimulator sensors;
+ *
+ * actuators.request_irrigation_volume_liters(0.5);
+ * actuators.step(900.0);
+ * environment.step(900.0, actuators.output());
+ * const auto readings = sensors.read(environment.state());
+ * @endcode
+ *
+ * Separare i quattro passaggi evita di confondere:
+ *
+ * - il comando logico richiesto al dispositivo;
+ * - l'uscita fisica realmente erogata;
+ * - lo stato fisico dell'ambiente;
+ * - la misura strumentale, che puo contenere rumore o dropout.
+ *
+ * @section edge_components Componenti
  *
  * - @ref smarthydro::EnvironmentSimulator
  * - @ref smarthydro::SensorSimulator
  * - @ref smarthydro::ActuatorSimulator
+ * - @ref smarthydro::ThresholdController
  * - @ref smarthydro::PidController
+ * - @ref smarthydro::PredictiveController
+ *
+ * @section edge_environment Ambiente
+ *
+ * Il modello ambientale dipende da condizioni esterne, terriccio, casualita
+ * meteorologica e ingressi degli attuatori. Non dipende dalla specie coltivata.
+ * Le grandezze possedute dal modello sono temperatura, umidita dell'aria,
+ * umidita del terriccio, pH, EC e PPFD.
+ *
+ * @section edge_reproducibility Riproducibilita
+ *
+ * Ambiente e sensori possiedono generatori casuali distinti. Per ripetere una
+ * simulazione occorre riutilizzare configurazioni, seed, ingressi, durate dei
+ * passi e ordine delle letture.
  */
 
 /**
@@ -30,7 +78,17 @@
  *
  * Componente FastAPI che espone gli endpoint HTTP di SmartHydro.
  *
- * Punti di accesso:
+ * @section backend_endpoints Endpoint disponibili
+ *
+ * | Metodo | Percorso | Funzione | Significato |
+ * | ------ | -------- | -------- | ----------- |
+ * | GET | `/` | backend.app.main.read_root() | Nome e versione del servizio |
+ * | GET | `/health` | backend.app.main.read_health() | Disponibilita del processo |
+ *
+ * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
+ * sensori, database o comunicazione con l'Edge Controller.
+ *
+ * @section backend_api Punto di accesso
  *
  * - @ref backend.app.main
  */

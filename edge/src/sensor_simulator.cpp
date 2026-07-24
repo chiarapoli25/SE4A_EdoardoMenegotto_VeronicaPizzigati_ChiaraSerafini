@@ -87,8 +87,4 @@ SensorReadings SensorSimulator::read(const EnvironmentState& environment_state) 
     };
 }
 
-const SensorConfig& SensorSimulator::config() const noexcept {
-    return config_;
-}
-
 }  // namespace smarthydro
