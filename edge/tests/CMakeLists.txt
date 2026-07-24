@@ -94,27 +94,6 @@ if(BUILD_EXPERIMENTS)
         )
     endif()
 
-    set(STANDARD_EXPERIMENT_SMOKE_SCRIPT
-        "${CMAKE_CURRENT_SOURCE_DIR}/standard_experiment_smoke.cmake")
-    if(GNUPLOT_EXECUTABLE)
-        set(STANDARD_EXPECT_PNG ON)
-    else()
-        set(STANDARD_EXPECT_PNG OFF)
-    endif()
-
-    function(add_standard_experiment_smoke_test test_name target_name base_name line_count)
-        add_test(
-            NAME ${test_name}
-            COMMAND ${CMAKE_COMMAND}
-                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:${target_name}>
-                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/${target_name}
-                -DBASE_NAME=${base_name}
-                -DEXPECTED_LINES=${line_count}
-                -DEXPECT_PNG=${STANDARD_EXPECT_PNG}
-                -P ${STANDARD_EXPERIMENT_SMOKE_SCRIPT}
-        )
-    endfunction()
-
     if(GNUPLOT_EXECUTABLE)
         add_test(
             NAME experiment_actuator_simulation
@@ -123,23 +102,21 @@ if(BUILD_EXPERIMENTS)
                 -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/actuator_simulation
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/actuator_simulation_smoke.cmake
         )
+        add_test(
+            NAME experiment_controller_irrigation_comparison
+            COMMAND ${CMAKE_COMMAND}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:controller_irrigation_comparison>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/controller_irrigation_comparison
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/controller_comparison_smoke.cmake
+        )
+        add_test(
+            NAME experiment_controller_generic_comparison
+            COMMAND ${CMAKE_COMMAND}
+                -DEXPERIMENT_EXECUTABLE=$<TARGET_FILE:controller_generic_comparison>
+                -DOUTPUT_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/smoke/controller_generic_comparison
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/controller_comparison_smoke.cmake
+        )
     endif()
-
-    add_standard_experiment_smoke_test(
-        experiment_threshold_step_response
-        threshold_step_response
-        threshold_step_response
-        25)
-    add_standard_experiment_smoke_test(
-        experiment_pid_step_response
-        pid_step_response
-        pid_step_response
-        36)
-    add_standard_experiment_smoke_test(
-        experiment_predictive_step_response
-        predictive_step_response
-        predictive_step_response
-        26)
 endif()
 
 # Per cambiare solo il nome di un file senza rinominare il target CMake:

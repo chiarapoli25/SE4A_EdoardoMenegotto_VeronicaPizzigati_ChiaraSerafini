@@ -152,7 +152,7 @@ Gli experiments sono programmi dimostrativi separati dagli unit test e usano
 direttamente le librerie di sensori, attuatori e controllori. Gli experiment di
 sensori e attuatori usano una finestra gnuplot interattiva. Quello dei sensori
 salva un solo CSV multivariato ma nessun PNG; quello degli attuatori non salva
-file. Gli experiment dei controllori salvano invece CSV e grafici PNG.
+file. I confronti dei controllori usano soltanto finestre gnuplot interattive.
 
 L'experiment dei sensori e un unico programma interattivo che simula una
 giornata o una settimana con passo di 15 minuti. Tutti gli attuatori rimangono
@@ -192,10 +192,9 @@ Verificare che il comando sia raggiungibile dal terminale:
 gnuplot --version
 ```
 
-Se gnuplot non e presente, gli experiments dei controllori conservano il CSV e
-mostrano un avviso per il PNG non generato. Gli experiment live di sensori e
-attuatori segnalano invece che gnuplot e necessario e terminano senza avviare
-la sessione interattiva.
+Se gnuplot non e presente, gli experiment interattivi di sensori, attuatori e
+confronto dei controllori segnalano che gnuplot e necessario e terminano senza
+avviare la sessione.
 
 ### Compilazione degli experiments
 
@@ -207,9 +206,8 @@ cmake -S edge -B edge/build -DBUILD_EXPERIMENTS=ON -DBUILD_TESTING=OFF
 cmake --build edge/build --target \
     sensor_simulation \
     actuator_simulation \
-    threshold_step_response \
-    pid_step_response \
-    predictive_step_response
+    controller_generic_comparison \
+    controller_irrigation_comparison
 ```
 
 `BUILD_EXPERIMENTS` e attivo per impostazione predefinita, quindi una normale
@@ -225,9 +223,8 @@ Gli eseguibili sono creati in `edge/build/bin`. Avviarli separatamente con:
 ```bash
 ./edge/build/bin/sensor_simulation
 ./edge/build/bin/actuator_simulation
-./edge/build/bin/threshold_step_response
-./edge/build/bin/pid_step_response
-./edge/build/bin/predictive_step_response
+./edge/build/bin/controller_generic_comparison
+./edge/build/bin/controller_irrigation_comparison
 ```
 
 `sensor_simulation` apre una sola finestra gnuplot con quattro pannelli
@@ -261,18 +258,26 @@ distinti per portata d'acqua in L/h, portata di concime in mL/h e potenza
 elettrica in W. Il comando `q` termina il ciclo e chiude il grafico. Questo
 experiment richiede gnuplot e non crea CSV o PNG.
 
-Gli experiments dei controllori eseguono invece scenari standard senza
-richiedere input:
+`controller_generic_comparison` isola il comportamento matematico di Threshold,
+PID e Predictive su tre copie identiche di un processo normalizzato del primo
+ordine. Il processo include inerzia dell'attuatore, ritardo di trasporto,
+saturazione, rumore di misura e un disturbo temporaneo. Una finestra gnuplot
+mostra risposta, comando, errore istantaneo con segno e variazione cumulativa
+del comando.
 
-- `threshold_step_response` evidenzia l'isteresi tra le soglie 40% e 60%;
-- `pid_step_response` applica gradini attorno al setpoint 50 e mostra la
-  combinazione dei termini PID nel comando percentuale;
-- `predictive_step_response` combina gradini e una rampa per mostrare come il
-  trend modifica previsione e comando.
+`controller_irrigation_comparison` verifica invece l'integrazione completa
+dell'edge in tre anelli chiusi di irrigazione. Gli anelli partono dallo stesso
+stato, usano gli stessi seed, lo stesso rumore di misura, lo stesso setpoint e
+gli stessi limiti della pompa. Una finestra gnuplot mostra risposta
+dell'umidita del terriccio, dose richiesta, errore istantaneo con segno e acqua
+cumulativa.
+
+Entrambi i confronti mantengono i dati in memoria e non creano CSV o PNG; la
+finestra rimane aperta finche non si preme Invio nel terminale.
 
 I dropout dei sensori vengono salvati come celle CSV vuote e visualizzati come
-interruzioni delle curve. Il CSV dei sensori e i risultati dei controllori
-vengono salvati in `experiment_results` relativa alla directory di avvio.
+interruzioni delle curve. Il CSV dei sensori viene salvato in
+`experiment_results` relativa alla directory di avvio.
 
 ## Preparazione del backend Python
 
