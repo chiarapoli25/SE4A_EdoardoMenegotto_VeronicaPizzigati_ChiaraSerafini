@@ -12,9 +12,10 @@
  *
  * @section architecture Architettura generale
  *
- * L'Edge Controller mantiene il modello fisico e produce misure simulate. Il
- * Backend espone invece l'interfaccia HTTP; nella fase attuale le due
- * componenti non comunicano ancora fra loro.
+ * L'Edge Controller mantiene il modello fisico, produce misure simulate e
+ * applica ricette versionate tramite controllori Strategy. Il Backend espone
+ * invece l'interfaccia HTTP; nella fase attuale le due componenti non
+ * comunicano ancora fra loro.
  *
  * Il ciclo previsto nell'Edge Controller e:
  *
@@ -60,6 +61,41 @@
  * - @ref smarthydro::ThresholdController
  * - @ref smarthydro::PidController
  * - @ref smarthydro::PredictiveController
+ * - @ref smarthydro::RecipeControlSystem
+ *
+ * @section edge_recipe_control Ricette e controllo Strategy
+ *
+ * Ogni @ref smarthydro::Recipe identifica pianta, substrato e versione e
+ * contiene una sequenza di @ref smarthydro::RecipePhase. Ogni fase specifica
+ * setpoint, intervallo ammesso, limiti di sicurezza, fotoperiodo e dose N/P/K
+ * suggerita. Le configurazioni associano esplicitamente variabile, sorgente,
+ * attuatore, unita, strategia e parametri. Il substrato deve essere dichiarato
+ * nella ricetta: non esiste un terriccio implicito di fallback.
+ *
+ * @ref smarthydro::IController e l'interfaccia comune implementata da
+ * Threshold, PID e Predictive. @ref smarthydro::ControllerFactory istanzia la
+ * scelta dell'agronomo. Acqua e luce usano Threshold con isteresi come
+ * default; il pH usa un PID bidirezionale limitato a piccoli dosaggi; N/P/K
+ * usano Predictive.
+ * Per N/P/K la sorgente e un modello, mai un sensore fittizio.
+ *
+ * @ref smarthydro::RecipeControlSystem::execute() blocca ogni configurazione
+ * non confermata o non valida. Una modifica tramite select_strategy() o
+ * replace_recipe() incrementa o sostituisce la versione e invalida tutte le
+ * conferme. Il passaggio temporale tra fasi della stessa ricetta non modifica
+ * la versione e conserva l'approvazione.
+ *
+ * Dopo il calcolo, l'orchestratore limita volume d'acqua, durata della pompa,
+ * dose singola e giornaliera e intervallo tra dosaggi. Per il pH applica anche
+ * il tempo di assestamento e la mutua esclusione fra pH+ e pH-.
+ *
+ * @section edge_recipe_json Formato JSON
+ *
+ * load_recipe_json() e save_recipe_json() leggono e scrivono l'intero modello,
+ * incluse configurazioni e versioni. Il file `config/example_recipe.json`
+ * contiene una ricetta dimostrativa per pomodoro, con crescita vegetativa e
+ * fioritura. I valori sono didattici e devono essere validati prima dell'uso
+ * agronomico reale.
  *
  * @section edge_environment Ambiente
  *

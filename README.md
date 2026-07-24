@@ -6,9 +6,9 @@ Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
 una ricetta di coltivazione di esempio.
 
 L'area Edge include un simulatore dinamico della serra, sensori con errori
-strumentali, attuatori e controllori. Non sono ancora presenti dispositivi reali,
-controllori automatici, database, autenticazione, comunicazione tra Edge e
-backend o Docker.
+strumentali, attuatori e un sistema di controllo configurabile basato su
+ricette versionate e pattern Strategy. Non sono ancora presenti dispositivi
+reali, database, autenticazione, comunicazione tra Edge e backend o Docker.
 
 ## Struttura del progetto
 
@@ -140,11 +140,12 @@ sensore osserva quel valore aggiungendo i soli errori strumentali configurati.
 
 ### Controllori
 
-Il file `controllers.cpp` implementa tre controllori scalari. Ciascuno riceve
-una misura e restituisce un comando nell'unita scelta dall'anello di controllo.
-Per l'irrigazione il comando puo quindi essere una dose in litri; per le
-lampade puo rimanere una percentuale. I controllori non sono collegati
-automaticamente a uno specifico sensore o attuatore.
+Il file `controllers.cpp` implementa tre controllori scalari compatibili con
+l'interfaccia comune `IController`. `ControllerFactory` crea la Strategy scelta
+tramite `StrategyType`. Le API precedenti `update()` restano disponibili. Ogni
+controllore restituisce un comando nell'unita scelta dall'anello: per
+l'irrigazione una dose in litri, per le lampade una percentuale e per i prodotti
+liquidi una dose in mL.
 
 - `ThresholdController` usa due soglie e mantiene lo stato nella zona
   intermedia, introducendo isteresi ed evitando accensioni e spegnimenti
@@ -173,6 +174,54 @@ actuators.step(delta_time_seconds);
 environment.step(delta_time_seconds, actuators.output());
 ```
 
+### Ricette e conferma agronomica
+
+`RecipeControlSystem` associa una ricetta a sei variabili: umidita del
+terriccio, luce, pH, azoto, fosforo e potassio. Ogni fase contiene setpoint,
+intervallo ammesso, limiti di sicurezza, fotoperiodo e dosi N/P/K suggerite.
+Ogni `ControllerConfiguration` registra inoltre sensore o modello, attuatore,
+Strategy predefinita e selezionata, parametri, unita, limiti d'uscita, stato di
+conferma e versione.
+
+Il tipo di terriccio e un campo obbligatorio della ricetta JSON (`substrate`):
+non viene applicato alcun valore predefinito se manca. La scelta alimenta il
+modello predittivo N/P/K e deve essere una fra `aerated-universal`, `draining`
+e `organic-retentive`.
+
+Le impostazioni predefinite sono:
+
+| Variabile | Strategy predefinita | Sorgente |
+| --- | --- | --- |
+| Umidita del terreno | Threshold con isteresi | sensore di umidita |
+| Luce | Threshold con isteresi e fotoperiodo | sensore PPFD |
+| pH | PID bidirezionale con piccoli dosaggi | sensore pH |
+| N, P, K | Predictive | modello fisico e storico dosi |
+
+L'agronomo puo sostituire una Strategy con Threshold, PID o Predictive e
+modificarne i parametri. Nessun comando viene calcolato prima della conferma.
+Gli stati possibili sono `PENDING_CONFIRMATION`, `CONFIRMED`, `REJECTED` e
+`INVALID`. Un cambio di ricetta, Strategy o parametri invalida tutte le
+conferme; il passaggio automatico tra fasi della stessa versione le mantiene.
+
+N/P/K non espongono sensori inesistenti: usano le concentrazioni stimate dal
+modello, il target della fase, il substrato, l'acqua erogata e la dose
+cumulativa. Threshold e PID vengono quindi rifiutati per N/P/K come
+incompatibili con la sorgente disponibile.
+
+Prima dell'uscita, il supervisore applica con priorita:
+
+- volume massimo d'acqua e durata massima della pompa;
+- dose massima per comando e giornaliera;
+- intervallo minimo tra dosaggi;
+- tempo di assestamento del pH;
+- mutua esclusione fra pH+ e pH-;
+- blocco per input non valido, superamento dei limiti fisici o configurazione
+  non confermata.
+
+`load_recipe_json()` e `save_recipe_json()` serializzano l'intero modello. La
+ricetta dimostrativa e in `config/example_recipe.json` e descrive due fasi del
+pomodoro su substrato universale aerato. I coefficienti sono didattici.
+
 ## Experiments C++
 
 Gli experiments sono programmi dimostrativi separati dagli unit test e usano
@@ -180,6 +229,8 @@ direttamente le librerie di sensori, attuatori e controllori. Gli experiment di
 sensori e attuatori usano una finestra gnuplot interattiva. Quello dei sensori
 salva un solo CSV multivariato ma nessun PNG; quello degli attuatori non salva
 file. I confronti dei controllori usano soltanto finestre gnuplot interattive.
+Anche l'experiment della ricetta apre una finestra interattiva e salva i soli
+dati CSV, senza generare immagini.
 
 L'experiment dei sensori e un unico programma interattivo che simula una
 giornata o una settimana con passo di 15 minuti. Tutti gli attuatori rimangono
@@ -219,9 +270,9 @@ Verificare che il comando sia raggiungibile dal terminale:
 gnuplot --version
 ```
 
-Se gnuplot non e presente, gli experiment interattivi di sensori, attuatori e
-confronto dei controllori segnalano che gnuplot e necessario e terminano senza
-avviare la sessione.
+Se gnuplot non e presente, gli experiment interattivi di sensori, attuatori,
+ricette e confronto dei controllori segnalano che gnuplot e necessario e
+terminano senza avviare la sessione.
 
 ### Compilazione degli experiments
 
@@ -234,7 +285,8 @@ cmake --build edge/build --target \
     sensor_simulation \
     actuator_simulation \
     controller_generic_comparison \
-    controller_irrigation_comparison
+    controller_irrigation_comparison \
+    recipe_control_simulation
 ```
 
 `BUILD_EXPERIMENTS` e attivo per impostazione predefinita, quindi una normale
@@ -252,6 +304,7 @@ Gli eseguibili sono creati in `edge/build/bin`. Avviarli separatamente con:
 ./edge/build/bin/actuator_simulation
 ./edge/build/bin/controller_generic_comparison
 ./edge/build/bin/controller_irrigation_comparison
+./edge/build/bin/recipe_control_simulation
 ```
 
 `sensor_simulation` apre una sola finestra gnuplot con quattro pannelli
@@ -268,8 +321,8 @@ mantengono la scala fisica 0-100% e il PPFD parte da zero. Il programma salva
 tutte le misure in un unico CSV, non crea PNG e mantiene il grafico aperto
 finche non si preme Invio nel terminale. Gli attuatori restano sempre spenti.
 
-Gli experiments non accettano opzioni da riga di comando. Dopo l'avvio
-la simulazione dei sensori richiede interattivamente:
+La simulazione dei sensori non accetta opzioni da riga di comando e richiede
+interattivamente:
 
 - giornata oppure settimana;
 - substrato universale aerato, drenante oppure organico ritentivo;
@@ -299,6 +352,21 @@ cumulativa.
 
 Entrambi i confronti mantengono i dati in memoria e non creano CSV o PNG; la
 finestra rimane aperta finche non si preme Invio nel terminale.
+
+`recipe_control_simulation` carica `config/example_recipe.json`, simula la
+conferma dell'agronomo ed esegue per intero la prima fase con passo di 15
+minuti. Il processo dimostrativo applica i comandi sicuri di acqua, luce, pH e
+N/P/K. Salva `recipe_phase_simulation.csv`, con stato, comandi e dosi
+cumulative, e apre un'unica finestra gnuplot con otto pannelli affiancati:
+umidita e acqua, PPFD e lampade, pH e relativo dosaggio, concentrazioni N/P/K e
+relative dosi. Non genera file PNG e mantiene il grafico aperto fino alla
+pressione di Invio nel terminale.
+
+La directory di output puo essere passata come primo argomento:
+
+```bash
+./edge/build/bin/recipe_control_simulation edge/build/recipe_results
+```
 
 I dropout dei sensori vengono salvati come celle CSV vuote e visualizzati come
 interruzioni delle curve. Il CSV dei sensori viene salvato in
@@ -354,9 +422,8 @@ lo stato visualizzato a `Dashboard ready`.
 
 ## Ricetta JSON
 
-Il file `config/example_recipe.json` contiene una ricetta di esempio per il
-pomodoro (`Tomato`) nella fase di crescita vegetativa
-(`VegetativeGrowth`). Definisce gli intervalli consigliati di temperatura,
-umidita relativa e pH, oltre al nome, rapporto NPK, concentrazione e frequenza
-di somministrazione del fertilizzante. I valori hanno finalita dimostrativa e
-non vengono ancora utilizzati da Edge Controller o backend.
+Il file `config/example_recipe.json` e caricato dai test, dal sistema di
+controllo Edge e dall'experiment dedicato. Contiene le fasi
+`VegetativeGrowth` e `Flowering`, i target delle sei variabili, le
+configurazioni Strategy e tutti i limiti prioritari. I valori hanno finalita
+dimostrativa e non sostituiscono la validazione di un agronomo.

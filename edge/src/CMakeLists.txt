@@ -34,6 +34,33 @@ target_include_directories(controllers
 target_compile_features(controllers PUBLIC cxx_std_17)
 set_target_properties(controllers PROPERTIES CXX_EXTENSIONS OFF)
 
+# Orchestratore delle ricette versionate e delle Strategy confermate.
+add_library(control_system control_system.cpp)
+target_include_directories(control_system
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(control_system PUBLIC cxx_std_17)
+target_link_libraries(control_system
+    PUBLIC
+        controllers
+        environment_simulator
+)
+set_target_properties(control_system PROPERTIES CXX_EXTENSIONS OFF)
+
+# Serializzazione JSON separata dal dominio per non esporre la dipendenza.
+add_library(recipe_json recipe_json.cpp)
+target_include_directories(recipe_json
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(recipe_json PUBLIC cxx_std_17)
+target_link_libraries(recipe_json
+    PUBLIC
+        control_system
+    PRIVATE
+        nlohmann_json::nlohmann_json
+)
+set_target_properties(recipe_json PROPERTIES CXX_EXTENSIONS OFF)
+
 # NOME DELL'ESEGUIBILE PRINCIPALE:
 # "edge" e sia il nome del target CMake sia, per impostazione
 # predefinita, il nome del file generato in build/bin. Per cambiarlo occorre

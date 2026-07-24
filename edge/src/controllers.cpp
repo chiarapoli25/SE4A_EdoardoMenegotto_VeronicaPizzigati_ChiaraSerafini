@@ -32,7 +32,26 @@ double directed_error(
     return measured_value - setpoint;
 }
 
+std::optional<double> process_value(const ControllerInput& input) {
+    if (input.measured_value.has_value()) {
+        return input.measured_value;
+    }
+    return input.model_estimate;
+}
+
 }  // namespace
+
+const char* to_string(StrategyType type) noexcept {
+    switch (type) {
+        case StrategyType::THRESHOLD:
+            return "Threshold";
+        case StrategyType::PID:
+            return "PID";
+        case StrategyType::PREDICTIVE:
+            return "Predictive";
+    }
+    return "Unknown";
+}
 
 ThresholdController::ThresholdController(
     double lower_threshold,
@@ -40,11 +59,21 @@ ThresholdController::ThresholdController(
     ControlDirection direction,
     double active_command,
     double inactive_command)
-    : lower_threshold_(lower_threshold),
-      upper_threshold_(upper_threshold),
-      direction_(direction),
-      active_command_(active_command),
-      inactive_command_(inactive_command) {
+    : ThresholdController(ThresholdConfig{
+          lower_threshold,
+          upper_threshold,
+          direction,
+          active_command,
+          inactive_command,
+          false}) {}
+
+ThresholdController::ThresholdController(ThresholdConfig config)
+    : lower_threshold_(config.lower_threshold),
+      upper_threshold_(config.upper_threshold),
+      direction_(config.direction),
+      active_command_(config.active_command),
+      inactive_command_(config.inactive_command),
+      bidirectional_(config.bidirectional) {
     require_finite(lower_threshold_, "lower threshold");
     require_finite(upper_threshold_, "upper threshold");
     if (lower_threshold_ >= upper_threshold_) {
@@ -72,6 +101,34 @@ double ThresholdController::update(double measured_value) {
     }
 
     return active_ ? active_command_ : inactive_command_;
+}
+
+StrategyType ThresholdController::strategy_type() const noexcept {
+    return StrategyType::THRESHOLD;
+}
+
+ControllerResult ThresholdController::compute(const ControllerInput& input) {
+    const auto value = process_value(input);
+    if (!value.has_value()) {
+        return {false, 0.0, std::nullopt, "missing process value"};
+    }
+    if (!std::isfinite(*value)) {
+        return {false, 0.0, std::nullopt, "process value must be finite"};
+    }
+    if (bidirectional_) {
+        if (*value < lower_threshold_) {
+            return {true, std::abs(active_command_), std::nullopt, {}};
+        }
+        if (*value > upper_threshold_) {
+            return {true, -std::abs(active_command_), std::nullopt, {}};
+        }
+        return {true, 0.0, std::nullopt, {}};
+    }
+    return {true, update(*value), std::nullopt, {}};
+}
+
+void ThresholdController::reset() noexcept {
+    active_ = false;
 }
 
 PidController::PidController(PidConfig config)
@@ -125,6 +182,26 @@ double PidController::update(double measured_value, double delta_time_seconds) {
     return command;
 }
 
+StrategyType PidController::strategy_type() const noexcept {
+    return StrategyType::PID;
+}
+
+ControllerResult PidController::compute(const ControllerInput& input) {
+    const auto value = process_value(input);
+    if (!value.has_value()) {
+        return {false, 0.0, std::nullopt, "missing process value"};
+    }
+    try {
+        return {
+            true,
+            update(*value, input.delta_time_seconds),
+            std::nullopt,
+            {}};
+    } catch (const std::invalid_argument& error) {
+        return {false, 0.0, std::nullopt, error.what()};
+    }
+}
+
 void PidController::reset() noexcept {
     integral_ = 0.0;
     previous_error_.reset();
@@ -136,12 +213,17 @@ PredictiveController::PredictiveController(PredictiveConfig config)
     require_finite(config_.prediction_horizon_steps, "prediction horizon");
     require_finite(config_.response_gain, "response gain");
     require_finite(config_.neutral_command, "neutral command");
+    require_finite(config_.water_dilution_gain, "water dilution gain");
+    require_finite(config_.cumulative_dose_gain, "cumulative dose gain");
+    require_finite(config_.substrate_gain, "substrate gain");
     validate_command_limits(config_.command_limits);
     if (config_.prediction_horizon_steps < 0.0) {
         throw std::invalid_argument("prediction horizon must not be negative");
     }
-    if (config_.response_gain < 0.0) {
-        throw std::invalid_argument("response gain must not be negative");
+    if (config_.response_gain < 0.0 || config_.water_dilution_gain < 0.0 ||
+        config_.cumulative_dose_gain < 0.0 ||
+        config_.substrate_gain < 0.0) {
+        throw std::invalid_argument("predictive gains must not be negative");
     }
     if (config_.neutral_command < config_.command_limits.minimum ||
         config_.neutral_command > config_.command_limits.maximum) {
@@ -168,8 +250,81 @@ PredictiveControlResult PredictiveController::update(double measured_value) {
     return {trend, predicted_value, command};
 }
 
+StrategyType PredictiveController::strategy_type() const noexcept {
+    return StrategyType::PREDICTIVE;
+}
+
+ControllerResult PredictiveController::compute(const ControllerInput& input) {
+    const auto value = process_value(input);
+    if (!value.has_value()) {
+        return {false, 0.0, std::nullopt, "missing process or model value"};
+    }
+    if (!std::isfinite(*value) ||
+        !std::isfinite(input.water_delivered_liters) ||
+        !std::isfinite(input.cumulative_dose_milliliters) ||
+        !std::isfinite(input.phase_target_dose_milliliters) ||
+        !std::isfinite(input.substrate_factor)) {
+        return {false, 0.0, std::nullopt, "predictive context must be finite"};
+    }
+    if (input.water_delivered_liters < 0.0 ||
+        input.cumulative_dose_milliliters < 0.0 ||
+        input.phase_target_dose_milliliters < 0.0 ||
+        input.substrate_factor <= 0.0) {
+        return {
+            false,
+            0.0,
+            std::nullopt,
+            "predictive context must not contain negative quantities"};
+    }
+
+    const double trend = previous_measurement_.has_value()
+                             ? *value - *previous_measurement_
+                             : 0.0;
+    const double predicted =
+        *value + trend * config_.prediction_horizon_steps -
+        config_.water_dilution_gain * input.water_delivered_liters +
+        config_.substrate_gain * (input.substrate_factor - 1.0);
+    const double remaining_phase_dose = std::max(
+        0.0,
+        input.phase_target_dose_milliliters -
+            input.cumulative_dose_milliliters);
+    const double command = std::clamp(
+        config_.neutral_command +
+            config_.response_gain *
+                directed_error(config_.setpoint, predicted, config_.direction) +
+            config_.cumulative_dose_gain * remaining_phase_dose,
+        config_.command_limits.minimum,
+        config_.command_limits.maximum);
+    previous_measurement_ = *value;
+    return {true, command, predicted, {}};
+}
+
 void PredictiveController::reset() noexcept {
     previous_measurement_.reset();
+}
+
+std::unique_ptr<IController> ControllerFactory::create(
+    StrategyType type,
+    const ControllerParameters& parameters) {
+    switch (type) {
+        case StrategyType::THRESHOLD:
+            if (const auto* config = std::get_if<ThresholdConfig>(&parameters)) {
+                return std::make_unique<ThresholdController>(*config);
+            }
+            break;
+        case StrategyType::PID:
+            if (const auto* config = std::get_if<PidConfig>(&parameters)) {
+                return std::make_unique<PidController>(*config);
+            }
+            break;
+        case StrategyType::PREDICTIVE:
+            if (const auto* config = std::get_if<PredictiveConfig>(&parameters)) {
+                return std::make_unique<PredictiveController>(*config);
+            }
+            break;
+    }
+    throw std::invalid_argument(
+        "controller parameters do not match selected strategy");
 }
 
 }  // namespace smarthydro

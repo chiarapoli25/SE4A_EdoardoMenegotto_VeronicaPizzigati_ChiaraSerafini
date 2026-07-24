@@ -2,3 +2,4 @@
 add_subdirectory(sensors)
 add_subdirectory(actuators)
 add_subdirectory(controllers)
+add_subdirectory(recipes)

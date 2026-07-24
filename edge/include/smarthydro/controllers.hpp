@@ -9,9 +9,19 @@
  * attuatore applicarlo.
  */
 
+#include <memory>
 #include <optional>
+#include <string>
+#include <variant>
 
 namespace smarthydro {
+
+/** @brief Strategie selezionabili dall'agronomo. */
+enum class StrategyType {
+    THRESHOLD,
+    PID,
+    PREDICTIVE,
+};
 
 /**
  * @brief Segno dell'effetto dell'attuatore sulla variabile controllata.
@@ -41,6 +51,72 @@ struct CommandLimits {
 };
 
 /**
+ * @brief Contesto uniforme fornito a qualsiasi strategia.
+ *
+ * I controllori sensor-based usano measured_value; quelli model-based usano
+ * model_estimate. I campi aggiuntivi alimentano la previsione N/P/K.
+ */
+struct ControllerInput {
+    /** Misura fisica per i controlli dotati di sensore. */
+    std::optional<double> measured_value;
+    /** Stima del modello per una variabile senza sensore. */
+    std::optional<double> model_estimate;
+    /** Intervallo trascorso dall'ultimo calcolo, in secondi. */
+    double delta_time_seconds = 1.0;
+    /** Acqua erogata nell'intervallo corrente, in litri. */
+    double water_delivered_liters = 0.0;
+    /** Dose del prodotto gia erogata nella fase, in millilitri. */
+    double cumulative_dose_milliliters = 0.0;
+    /** Dose totale suggerita dalla ricetta per la fase, in millilitri. */
+    double phase_target_dose_milliliters = 0.0;
+    /** Fattore correttivo adimensionale del substrato. */
+    double substrate_factor = 1.0;
+};
+
+/** @brief Risultato comune prodotto da una strategia. */
+struct ControllerResult {
+    /** Indica se il calcolo ha prodotto un risultato utilizzabile. */
+    bool valid = false;
+    /** Comando nell'unita definita dalla configurazione. */
+    double command = 0.0;
+    /** Valore futuro stimato, presente per il controllo predittivo. */
+    std::optional<double> predicted_value;
+    /** Diagnostica valorizzata quando valid e false. */
+    std::string error;
+};
+
+/** @brief Interfaccia Strategy comune a tutti i controllori. */
+class IController {
+public:
+    virtual ~IController() = default;
+    /** @brief Restituisce il tipo concreto della strategia. */
+    virtual StrategyType strategy_type() const noexcept = 0;
+    /** @brief Calcola un comando a partire dal contesto uniforme. */
+    virtual ControllerResult compute(const ControllerInput& input) = 0;
+    /** @brief Azzera lo stato dinamico accumulato dalla strategia. */
+    virtual void reset() noexcept = 0;
+};
+
+/** @brief Parametri completi del controllore a soglia. */
+struct ThresholdConfig {
+    /** Soglia inferiore della banda di isteresi. */
+    double lower_threshold = 0.0;
+    /** Soglia superiore della banda di isteresi. */
+    double upper_threshold = 1.0;
+    /** Segno dell'effetto dell'attuatore. */
+    ControlDirection direction = ControlDirection::INCREASES_PROCESS_VALUE;
+    /** Comando prodotto quando il controllo e attivo. */
+    double active_command = 100.0;
+    /** Comando prodotto quando il controllo e inattivo. */
+    double inactive_command = 0.0;
+    /**
+     * Se true produce un comando positivo sotto la banda, negativo sopra e
+     * zero al suo interno. E usato dal controllo pH.
+     */
+    bool bidirectional = false;
+};
+
+/**
  * @brief Controllore a doppia soglia con isteresi.
  *
  * @details Conserva lo stato nella zona tra le due soglie per evitare
@@ -53,7 +129,7 @@ struct CommandLimits {
  *
  * Lo stato iniziale e inattivo.
  */
-class ThresholdController {
+class ThresholdController : public IController {
 public:
     /**
      * @brief Configura soglie e valori di comando del controllore.
@@ -77,6 +153,9 @@ public:
         double active_command = 100.0,
         double inactive_command = 0.0);
 
+    /** @brief Costruisce la strategia dalla configurazione serializzabile. */
+    explicit ThresholdController(ThresholdConfig config);
+
     /**
      * @brief Aggiorna il controllo usando una nuova misura.
      *
@@ -90,6 +169,13 @@ public:
      */
     double update(double measured_value);
 
+    /** @copydoc IController::strategy_type */
+    StrategyType strategy_type() const noexcept override;
+    /** @copydoc IController::compute */
+    ControllerResult compute(const ControllerInput& input) override;
+    /** @copydoc IController::reset */
+    void reset() noexcept override;
+
 private:
     double lower_threshold_;
     double upper_threshold_;
@@ -97,6 +183,7 @@ private:
     double active_command_;
     double inactive_command_;
     bool active_ = false;
+    bool bidirectional_ = false;
 };
 
 /**
@@ -134,7 +221,7 @@ struct PidConfig {
  * il comando oltre un limite nella stessa direzione dell'errore, il candidato
  * integrale viene scartato per evitare wind-up.
  */
-class PidController {
+class PidController : public IController {
 public:
     /**
      * @brief Costruisce un controllore PID dalla configurazione indicata.
@@ -163,13 +250,17 @@ public:
      */
     double update(double measured_value, double delta_time_seconds);
 
+    /** @copydoc IController::strategy_type */
+    StrategyType strategy_type() const noexcept override;
+    /** @copydoc IController::compute */
+    ControllerResult compute(const ControllerInput& input) override;
     /**
      * @brief Azzera integrale ed errore precedente.
      *
      * Dopo il reset il successivo aggiornamento si comporta come il primo:
      * derivata nulla e integrale ricostruito dal nuovo campione.
      */
-    void reset() noexcept;
+    void reset() noexcept override;
 
 private:
     PidConfig config_;
@@ -197,6 +288,12 @@ struct PredictiveConfig {
     CommandLimits command_limits;
     /** Effetto dell'attuatore sulla variabile controllata. */
     ControlDirection direction = ControlDirection::INCREASES_PROCESS_VALUE;
+    /** Perdita stimata per litro d'acqua erogata. */
+    double water_dilution_gain = 0.0;
+    /** Peso della dose ancora da erogare nella fase. */
+    double cumulative_dose_gain = 0.0;
+    /** Correzione applicata al fattore del substrato. */
+    double substrate_gain = 0.0;
 };
 
 /**
@@ -226,7 +323,7 @@ struct PredictiveControlResult {
  * moltiplicato per response_gain, quindi saturando il risultato nei limiti.
  * Non e un MPC e non usa un modello fisico dell'ambiente.
  */
-class PredictiveController {
+class PredictiveController : public IController {
 public:
     /**
      * @brief Costruisce un controllore predittivo.
@@ -253,16 +350,39 @@ public:
      */
     PredictiveControlResult update(double measured_value);
 
+    /** @copydoc IController::strategy_type */
+    StrategyType strategy_type() const noexcept override;
+    /** @copydoc IController::compute */
+    ControllerResult compute(const ControllerInput& input) override;
     /**
      * @brief Dimentica la misura precedente e azzera il trend implicito.
      *
      * Il successivo update() restituira measured_trend uguale a zero.
      */
-    void reset() noexcept;
+    void reset() noexcept override;
 
 private:
     PredictiveConfig config_;
     std::optional<double> previous_measurement_;
 };
+
+/** @brief Parametri associati alla strategia selezionata. */
+using ControllerParameters =
+    std::variant<ThresholdConfig, PidConfig, PredictiveConfig>;
+
+/** @brief Factory del pattern Strategy. */
+class ControllerFactory {
+public:
+    /**
+     * @brief Crea il controllore corrispondente a type.
+     * @throws std::invalid_argument Se il tipo dei parametri non coincide.
+     */
+    static std::unique_ptr<IController> create(
+        StrategyType type,
+        const ControllerParameters& parameters);
+};
+
+/** @brief Nomi stabili usati dalla serializzazione JSON. */
+const char* to_string(StrategyType type) noexcept;
 
 }  // namespace smarthydro

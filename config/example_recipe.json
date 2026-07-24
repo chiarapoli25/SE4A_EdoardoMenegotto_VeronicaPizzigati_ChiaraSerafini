@@ -1,0 +1,295 @@
+{
+  "id": "tomato_demo_v1",
+  "plant_type": "Tomato",
+  "substrate": "aerated-universal",
+  "version": 1,
+  "phases": [
+    {
+      "name": "VegetativeGrowth",
+      "duration_hours": 336,
+      "photoperiod": {
+        "start_hour": 6,
+        "duration_hours": 18
+      },
+      "targets": [
+        {
+          "variable": "soil_moisture",
+          "setpoint": 60,
+          "allowed_range": {"minimum": 50, "maximum": 70},
+          "safety_range": {"minimum": 25, "maximum": 90},
+          "suggested_phase_dose_milliliters": 0
+        },
+        {
+          "variable": "light",
+          "setpoint": 450,
+          "allowed_range": {"minimum": 400, "maximum": 500},
+          "safety_range": {"minimum": 0, "maximum": 1200},
+          "suggested_phase_dose_milliliters": 0
+        },
+        {
+          "variable": "ph",
+          "setpoint": 6.2,
+          "allowed_range": {"minimum": 6.0, "maximum": 6.4},
+          "safety_range": {"minimum": 4.5, "maximum": 8.0},
+          "suggested_phase_dose_milliliters": 6
+        },
+        {
+          "variable": "nitrogen",
+          "setpoint": 150,
+          "allowed_range": {"minimum": 130, "maximum": 170},
+          "safety_range": {"minimum": 50, "maximum": 300},
+          "suggested_phase_dose_milliliters": 30
+        },
+        {
+          "variable": "phosphorus",
+          "setpoint": 50,
+          "allowed_range": {"minimum": 40, "maximum": 60},
+          "safety_range": {"minimum": 10, "maximum": 120},
+          "suggested_phase_dose_milliliters": 12
+        },
+        {
+          "variable": "potassium",
+          "setpoint": 200,
+          "allowed_range": {"minimum": 170, "maximum": 230},
+          "safety_range": {"minimum": 50, "maximum": 400},
+          "suggested_phase_dose_milliliters": 35
+        }
+      ]
+    },
+    {
+      "name": "Flowering",
+      "duration_hours": 336,
+      "photoperiod": {
+        "start_hour": 6,
+        "duration_hours": 12
+      },
+      "targets": [
+        {
+          "variable": "soil_moisture",
+          "setpoint": 55,
+          "allowed_range": {"minimum": 45, "maximum": 65},
+          "safety_range": {"minimum": 25, "maximum": 90},
+          "suggested_phase_dose_milliliters": 0
+        },
+        {
+          "variable": "light",
+          "setpoint": 550,
+          "allowed_range": {"minimum": 500, "maximum": 600},
+          "safety_range": {"minimum": 0, "maximum": 1200},
+          "suggested_phase_dose_milliliters": 0
+        },
+        {
+          "variable": "ph",
+          "setpoint": 6.0,
+          "allowed_range": {"minimum": 5.8, "maximum": 6.2},
+          "safety_range": {"minimum": 4.5, "maximum": 8.0},
+          "suggested_phase_dose_milliliters": 6
+        },
+        {
+          "variable": "nitrogen",
+          "setpoint": 120,
+          "allowed_range": {"minimum": 100, "maximum": 140},
+          "safety_range": {"minimum": 40, "maximum": 280},
+          "suggested_phase_dose_milliliters": 20
+        },
+        {
+          "variable": "phosphorus",
+          "setpoint": 65,
+          "allowed_range": {"minimum": 55, "maximum": 75},
+          "safety_range": {"minimum": 10, "maximum": 140},
+          "suggested_phase_dose_milliliters": 18
+        },
+        {
+          "variable": "potassium",
+          "setpoint": 240,
+          "allowed_range": {"minimum": 210, "maximum": 270},
+          "safety_range": {"minimum": 60, "maximum": 450},
+          "suggested_phase_dose_milliliters": 45
+        }
+      ]
+    }
+  ],
+  "controllers": [
+    {
+      "variable": "soil_moisture",
+      "sensor": "soil_moisture_sensor",
+      "actuator": "water_pump",
+      "default_strategy": "Threshold",
+      "selected_strategy": "Threshold",
+      "parameters": {
+        "lower_threshold": 50,
+        "upper_threshold": 70,
+        "direction": "increases",
+        "active_command": 0.5,
+        "inactive_command": 0,
+        "bidirectional": false
+      },
+      "unit": "% soil moisture",
+      "output_limits": {
+        "maximum_water_volume_liters": 1,
+        "maximum_pump_duration_seconds": 1800,
+        "water_pump_flow_liters_per_hour": 2,
+        "maximum_dose_per_command_milliliters": 5,
+        "maximum_daily_dose_milliliters": 20,
+        "minimum_seconds_between_doses": 900,
+        "ph_settling_time_seconds": 1800
+      },
+      "confirmation_state": "PENDING_CONFIRMATION",
+      "version": 1,
+      "confirmed_recipe_version": 0
+    },
+    {
+      "variable": "light",
+      "sensor": "light_sensor",
+      "actuator": "lighting",
+      "default_strategy": "Threshold",
+      "selected_strategy": "Threshold",
+      "parameters": {
+        "lower_threshold": 400,
+        "upper_threshold": 500,
+        "direction": "increases",
+        "active_command": 100,
+        "inactive_command": 0,
+        "bidirectional": false
+      },
+      "unit": "umol/(m2 s)",
+      "output_limits": {
+        "maximum_water_volume_liters": 1,
+        "maximum_pump_duration_seconds": 1800,
+        "water_pump_flow_liters_per_hour": 2,
+        "maximum_dose_per_command_milliliters": 5,
+        "maximum_daily_dose_milliliters": 20,
+        "minimum_seconds_between_doses": 900,
+        "ph_settling_time_seconds": 1800
+      },
+      "confirmation_state": "PENDING_CONFIRMATION",
+      "version": 1,
+      "confirmed_recipe_version": 0
+    },
+    {
+      "variable": "ph",
+      "sensor": "ph_sensor",
+      "actuator": "ph_corrector_valves",
+      "default_strategy": "PID",
+      "selected_strategy": "PID",
+      "parameters": {
+        "setpoint": 6.2,
+        "proportional_gain": 1.0,
+        "integral_gain": 0.00001,
+        "derivative_gain": 0.0,
+        "command_minimum": -0.5,
+        "command_maximum": 0.5,
+        "direction": "increases"
+      },
+      "unit": "pH",
+      "output_limits": {
+        "maximum_water_volume_liters": 1,
+        "maximum_pump_duration_seconds": 1800,
+        "water_pump_flow_liters_per_hour": 2,
+        "maximum_dose_per_command_milliliters": 0.5,
+        "maximum_daily_dose_milliliters": 5,
+        "minimum_seconds_between_doses": 900,
+        "ph_settling_time_seconds": 1800
+      },
+      "confirmation_state": "PENDING_CONFIRMATION",
+      "version": 1,
+      "confirmed_recipe_version": 0
+    },
+    {
+      "variable": "nitrogen",
+      "sensor": "nitrogen_model",
+      "actuator": "nitrogen_valve",
+      "default_strategy": "Predictive",
+      "selected_strategy": "Predictive",
+      "parameters": {
+        "setpoint": 150,
+        "prediction_horizon_steps": 4,
+        "response_gain": 0.03,
+        "neutral_command": 0,
+        "command_minimum": 0,
+        "command_maximum": 4,
+        "direction": "increases",
+        "water_dilution_gain": 2,
+        "cumulative_dose_gain": 0.04,
+        "substrate_gain": 4
+      },
+      "unit": "mg/L",
+      "output_limits": {
+        "maximum_water_volume_liters": 1,
+        "maximum_pump_duration_seconds": 1800,
+        "water_pump_flow_liters_per_hour": 2,
+        "maximum_dose_per_command_milliliters": 4,
+        "maximum_daily_dose_milliliters": 12,
+        "minimum_seconds_between_doses": 3600,
+        "ph_settling_time_seconds": 1800
+      },
+      "confirmation_state": "PENDING_CONFIRMATION",
+      "version": 1,
+      "confirmed_recipe_version": 0
+    },
+    {
+      "variable": "phosphorus",
+      "sensor": "phosphorus_model",
+      "actuator": "phosphorus_valve",
+      "default_strategy": "Predictive",
+      "selected_strategy": "Predictive",
+      "parameters": {
+        "setpoint": 50,
+        "prediction_horizon_steps": 4,
+        "response_gain": 0.05,
+        "neutral_command": 0,
+        "command_minimum": 0,
+        "command_maximum": 3,
+        "direction": "increases",
+        "water_dilution_gain": 0.8,
+        "cumulative_dose_gain": 0.03,
+        "substrate_gain": 2
+      },
+      "unit": "mg/L",
+      "output_limits": {
+        "maximum_water_volume_liters": 1,
+        "maximum_pump_duration_seconds": 1800,
+        "water_pump_flow_liters_per_hour": 2,
+        "maximum_dose_per_command_milliliters": 3,
+        "maximum_daily_dose_milliliters": 8,
+        "minimum_seconds_between_doses": 3600,
+        "ph_settling_time_seconds": 1800
+      },
+      "confirmation_state": "PENDING_CONFIRMATION",
+      "version": 1,
+      "confirmed_recipe_version": 0
+    },
+    {
+      "variable": "potassium",
+      "sensor": "potassium_model",
+      "actuator": "potassium_valve",
+      "default_strategy": "Predictive",
+      "selected_strategy": "Predictive",
+      "parameters": {
+        "setpoint": 200,
+        "prediction_horizon_steps": 4,
+        "response_gain": 0.025,
+        "neutral_command": 0,
+        "command_minimum": 0,
+        "command_maximum": 4,
+        "direction": "increases",
+        "water_dilution_gain": 2.5,
+        "cumulative_dose_gain": 0.04,
+        "substrate_gain": 5
+      },
+      "unit": "mg/L",
+      "output_limits": {
+        "maximum_water_volume_liters": 1,
+        "maximum_pump_duration_seconds": 1800,
+        "water_pump_flow_liters_per_hour": 2,
+        "maximum_dose_per_command_milliliters": 4,
+        "maximum_daily_dose_milliliters": 12,
+        "minimum_seconds_between_doses": 3600,
+        "ph_settling_time_seconds": 1800
+      },
+      "confirmation_state": "PENDING_CONFIRMATION",
+      "version": 1,
+      "confirmed_recipe_version": 0
+    }
+  ]
+}

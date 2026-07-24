@@ -67,8 +67,23 @@ target_compile_features(controller_tests PRIVATE cxx_std_17)
 set_target_properties(controller_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(controller_tests)
 
-# Smoke test dei programmi dimostrativi. I sensori creano un solo CSV e nessun
-# PNG; gli altri output di test finiscono esclusivamente nella build.
+# Test di ricette, Strategy, conferma e limiti prioritari.
+add_executable(control_system_tests control_system_tests.cpp)
+target_link_libraries(control_system_tests
+    PRIVATE
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(control_system_tests PRIVATE cxx_std_17)
+target_compile_definitions(control_system_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(control_system_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(control_system_tests)
+
+# Smoke test dei programmi dimostrativi. Sensori e ricette creano un solo CSV
+# e nessun PNG; gli altri output di test finiscono esclusivamente nella build.
 if(BUILD_EXPERIMENTS)
     find_program(GNUPLOT_EXECUTABLE gnuplot)
     if(GNUPLOT_EXECUTABLE)
