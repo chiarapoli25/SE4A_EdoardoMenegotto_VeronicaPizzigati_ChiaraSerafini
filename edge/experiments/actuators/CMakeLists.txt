@@ -1,4 +1,4 @@
-# Unico experiment interattivo per pompa, dosatore e illuminazione.
+# Unico experiment interattivo per pompa, elettrovalvole e illuminazione.
 # Per cambiare il nome dell'eseguibile, modificare il primo argomento.
 add_executable(actuator_simulation actuator_simulation.cpp)
 target_link_libraries(actuator_simulation PRIVATE actuator_simulator)

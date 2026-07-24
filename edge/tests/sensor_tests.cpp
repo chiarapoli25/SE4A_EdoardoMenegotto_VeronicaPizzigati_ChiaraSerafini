@@ -15,8 +15,14 @@ smarthydro::SensorConfig ideal_sensor_config() {
 }
 
 TEST(SensorSimulatorTest, ReadDoesNotModifyEnvironment) {
-    const smarthydro::EnvironmentState environment{
-        900.0, 23.4, 67.0, 5.9, 2.4, 80.0, 512.0};
+    smarthydro::EnvironmentState environment;
+    environment.simulation_time_seconds = 900.0;
+    environment.temperature_c = 23.4;
+    environment.air_humidity_percent = 67.0;
+    environment.ph = 5.9;
+    environment.ec_ms_cm = 2.4;
+    environment.soil_moisture_percent = 80.0;
+    environment.light_ppfd_umol_m2_s = 512.0;
     const auto original = environment;
     smarthydro::SensorSimulator sensors(ideal_sensor_config(), 42);
 
@@ -70,8 +76,14 @@ TEST(SensorSimulatorTest, SupportsCompleteDropout) {
 TEST(SensorSimulatorTest, SeedMakesInstrumentNoiseReproducible) {
     smarthydro::SensorSimulator first(1234);
     smarthydro::SensorSimulator second(1234);
-    const smarthydro::EnvironmentState environment{
-        1800.0, 24.0, 65.0, 5.8, 2.5, 90.0, 600.0};
+    smarthydro::EnvironmentState environment;
+    environment.simulation_time_seconds = 1800.0;
+    environment.temperature_c = 24.0;
+    environment.air_humidity_percent = 65.0;
+    environment.ph = 5.8;
+    environment.ec_ms_cm = 2.5;
+    environment.soil_moisture_percent = 90.0;
+    environment.light_ppfd_umol_m2_s = 600.0;
 
     for (int sample = 0; sample < 20; ++sample) {
         const auto a = first.read(environment);

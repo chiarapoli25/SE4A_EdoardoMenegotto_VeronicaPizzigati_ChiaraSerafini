@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace smarthydro {
@@ -23,6 +24,32 @@ void validate_positive(double value, const char* field_name) {
 
 }  // namespace
 
+std::size_t fertilizer_index(FertilizerType type) {
+    const auto index = static_cast<std::size_t>(type);
+    if (index >= kFertilizerTypeCount) {
+        throw std::invalid_argument("unknown fertilizer type");
+    }
+    return index;
+}
+
+const char* to_string(FertilizerType type) noexcept {
+    switch (type) {
+        case FertilizerType::NITROGEN:
+            return "nitrogen";
+        case FertilizerType::PHOSPHORUS:
+            return "phosphorus";
+        case FertilizerType::POTASSIUM:
+            return "potassium";
+        case FertilizerType::PH_UP:
+            return "ph-up";
+        case FertilizerType::PH_DOWN:
+            return "ph-down";
+        case FertilizerType::COUNT:
+            break;
+    }
+    return "unknown";
+}
+
 ActuatorSimulator::ActuatorSimulator(ActuatorConfig config)
     : config_(std::move(config)) {
     validate_positive(
@@ -31,9 +58,9 @@ ActuatorSimulator::ActuatorSimulator(ActuatorConfig config)
     validate_positive(
         config_.maximum_irrigation_volume_liters,
         "maximum irrigation volume");
-    validate_positive(
-        config_.maximum_fertilizer_flow_milliliters_per_hour,
-        "maximum fertilizer flow");
+    for (const double flow : config_.fertilizer_flow_milliliters_per_hour) {
+        validate_positive(flow, "fertilizer valve flow");
+    }
     validate_positive(config_.maximum_lighting_power_watts, "maximum lighting power");
 }
 
@@ -65,6 +92,7 @@ void ActuatorSimulator::request_irrigation_volume_liters(double volume_liters) {
     output_.irrigation_volume_liters_last_step = 0.0;
     output_.water_pump_on_time_seconds_last_step = 0.0;
     output_.remaining_irrigation_volume_liters = volume_liters;
+    output_.fertilizer_volume_milliliters_last_step.fill(0.0);
 }
 
 void ActuatorSimulator::cancel_irrigation() noexcept {
@@ -74,6 +102,8 @@ void ActuatorSimulator::cancel_irrigation() noexcept {
     output_.irrigation_volume_liters_last_step = 0.0;
     output_.water_pump_on_time_seconds_last_step = 0.0;
     output_.remaining_irrigation_volume_liters = 0.0;
+    output_.fertilizer_volume_milliliters_last_step.fill(0.0);
+    close_fertilizer_valves_preserving_last_step();
 }
 
 double ActuatorSimulator::remaining_irrigation_time_seconds() const noexcept {
@@ -81,27 +111,66 @@ double ActuatorSimulator::remaining_irrigation_time_seconds() const noexcept {
            config_.water_pump_flow_liters_per_hour * 3600.0;
 }
 
-void ActuatorSimulator::select_fertilizer(const std::string& fertilizer_id) {
-    if (fertilizer_id.empty()) {
-        throw std::invalid_argument("fertilizer_id must not be empty");
+void ActuatorSimulator::set_fertilizer_valve_open(
+    FertilizerType type,
+    bool open) {
+    const auto index = fertilizer_index(type);
+    if (!open) {
+        command_.fertilizer_valves_open[index] = false;
+        output_.fertilizer_valves_open[index] = false;
+        output_.fertilizer_flow_milliliters_per_hour[index] = 0.0;
+        return;
     }
-    output_.selected_fertilizer_id = fertilizer_id;
+    if (!output_.water_pump_on) {
+        throw std::logic_error(
+            "fertilizer valves require an active irrigation");
+    }
+
+    if (type == FertilizerType::PH_UP &&
+        command_.fertilizer_valves_open[
+            fertilizer_index(FertilizerType::PH_DOWN)]) {
+        throw std::logic_error("pH up and pH down cannot be open together");
+    }
+    if (type == FertilizerType::PH_DOWN &&
+        command_.fertilizer_valves_open[
+            fertilizer_index(FertilizerType::PH_UP)]) {
+        throw std::logic_error("pH up and pH down cannot be open together");
+    }
+
+    command_.fertilizer_valves_open[index] = true;
+    output_.fertilizer_valves_open[index] = true;
+    output_.fertilizer_flow_milliliters_per_hour[index] =
+        config_.fertilizer_flow_milliliters_per_hour[index];
 }
 
-void ActuatorSimulator::clear_fertilizer_selection() noexcept {
-    command_.fertilizer_doser_percent = 0.0;
-    output_.fertilizer_flow_milliliters_per_hour = 0.0;
-    output_.selected_fertilizer_id.reset();
+void ActuatorSimulator::close_fertilizer_valves_preserving_last_step() noexcept {
+    command_.fertilizer_valves_open.fill(false);
+    output_.fertilizer_valves_open.fill(false);
+    output_.fertilizer_flow_milliliters_per_hour.fill(0.0);
 }
 
-void ActuatorSimulator::set_fertilizer_doser_command_percent(double value) {
-    validate_percentage(value, "fertilizer dosing command");
-    if (value > 0.0 && !output_.selected_fertilizer_id.has_value()) {
-        throw std::logic_error("a fertilizer must be selected before dosing");
-    }
-    command_.fertilizer_doser_percent = value;
-    output_.fertilizer_flow_milliliters_per_hour =
-        config_.maximum_fertilizer_flow_milliliters_per_hour * value / 100.0;
+void ActuatorSimulator::close_all_fertilizer_valves() noexcept {
+    close_fertilizer_valves_preserving_last_step();
+}
+
+bool ActuatorSimulator::fertilizer_valve_command(FertilizerType type) const {
+    return command_.fertilizer_valves_open[fertilizer_index(type)];
+}
+
+bool ActuatorSimulator::fertilizer_valve_open(FertilizerType type) const {
+    return output_.fertilizer_valves_open[fertilizer_index(type)];
+}
+
+double ActuatorSimulator::fertilizer_flow_milliliters_per_hour(
+    FertilizerType type) const {
+    return output_.fertilizer_flow_milliliters_per_hour[
+        fertilizer_index(type)];
+}
+
+double ActuatorSimulator::fertilizer_volume_milliliters_last_step(
+    FertilizerType type) const {
+    return output_.fertilizer_volume_milliliters_last_step[
+        fertilizer_index(type)];
 }
 
 void ActuatorSimulator::set_lighting_command_percent(double value) {
@@ -115,6 +184,7 @@ void ActuatorSimulator::step(double delta_time_seconds) {
     validate_positive(delta_time_seconds, "actuator step duration");
     output_.irrigation_volume_liters_last_step = 0.0;
     output_.water_pump_on_time_seconds_last_step = 0.0;
+    output_.fertilizer_volume_milliliters_last_step.fill(0.0);
     if (!output_.water_pump_on) {
         return;
     }
@@ -128,11 +198,18 @@ void ActuatorSimulator::step(double delta_time_seconds) {
     output_.irrigation_volume_liters_last_step = delivered_volume;
     output_.remaining_irrigation_volume_liters -= delivered_volume;
 
+    for (std::size_t index = 0; index < kFertilizerTypeCount; ++index) {
+        output_.fertilizer_volume_milliliters_last_step[index] =
+            output_.fertilizer_flow_milliliters_per_hour[index] *
+            on_time_seconds / 3600.0;
+    }
+
     constexpr double kCompletedToleranceLiters = 1e-12;
     if (output_.remaining_irrigation_volume_liters <= kCompletedToleranceLiters) {
         output_.remaining_irrigation_volume_liters = 0.0;
         output_.water_pump_on = false;
         output_.water_pump_flow_liters_per_hour = 0.0;
+        close_fertilizer_valves_preserving_last_step();
     }
 }
 

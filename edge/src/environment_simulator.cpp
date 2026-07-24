@@ -57,6 +57,30 @@ void validate_config(const EnvironmentConfig& config) {
     validate_percentage(config.day_relative_humidity_percent, "day RH");
     require_finite(config.initial_ph, "initial_ph");
     require_finite(config.initial_ec_ms_cm, "initial_ec_ms_cm");
+    validate_non_negative(
+        config.initial_nitrogen_mg_per_liter,
+        "initial nitrogen concentration");
+    validate_non_negative(
+        config.initial_phosphorus_mg_per_liter,
+        "initial phosphorus concentration");
+    validate_non_negative(
+        config.initial_potassium_mg_per_liter,
+        "initial potassium concentration");
+    validate_non_negative(
+        config.nitrogen_uptake_milligrams_per_hour,
+        "nitrogen uptake");
+    validate_non_negative(
+        config.phosphorus_uptake_milligrams_per_hour,
+        "phosphorus uptake");
+    validate_non_negative(
+        config.potassium_uptake_milligrams_per_hour,
+        "potassium uptake");
+    require_finite(
+        config.minimum_effective_root_water_liters,
+        "minimum effective root water");
+    require_finite(
+        config.maximum_nutrient_concentration_mg_per_liter,
+        "maximum nutrient concentration");
     require_finite(config.natural_light_peak_ppfd, "natural_light_peak_ppfd");
     require_finite(config.mean_cloud_transmission, "mean cloud transmission");
     validate_non_negative(
@@ -74,16 +98,46 @@ void validate_config(const EnvironmentConfig& config) {
         config.mean_cloud_transmission > 1.0 ||
         config.cloud_persistence_hours <= 0.0 ||
         config.lamp_ppfd_umol_m2_s_per_watt < 0.0 ||
-        config.lamp_heating_c_per_watt < 0.0) {
+        config.lamp_heating_c_per_watt < 0.0 ||
+        config.minimum_effective_root_water_liters <= 0.0 ||
+        config.maximum_nutrient_concentration_mg_per_liter <= 0.0 ||
+        config.initial_nitrogen_mg_per_liter >
+            config.maximum_nutrient_concentration_mg_per_liter ||
+        config.initial_phosphorus_mg_per_liter >
+            config.maximum_nutrient_concentration_mg_per_liter ||
+        config.initial_potassium_mg_per_liter >
+            config.maximum_nutrient_concentration_mg_per_liter) {
         throw std::invalid_argument(
-            "pH, EC, cloud and PPFD configuration values are out of range");
+            "pH, EC, nutrient, cloud and PPFD configuration values are out of range");
     }
-    for (const auto& profile : config.fertilizer_profiles) {
-        if (profile.id.empty()) {
-            throw std::invalid_argument("fertilizer profile id must not be empty");
+    for (std::size_t index = 0; index < kFertilizerTypeCount; ++index) {
+        const auto& profile = config.fertilizer_profiles[index];
+        if (fertilizer_index(profile.type) != index) {
+            throw std::invalid_argument(
+                "fertilizer profiles must match their reservoir index");
         }
-        require_finite(profile.ec_increase_ms_cm_per_milliliter, "fertilizer EC effect");
+        validate_non_negative(
+            profile.nitrogen_milligrams_per_milliliter,
+            "fertilizer nitrogen content");
+        validate_non_negative(
+            profile.phosphorus_milligrams_per_milliliter,
+            "fertilizer phosphorus content");
+        validate_non_negative(
+            profile.potassium_milligrams_per_milliliter,
+            "fertilizer potassium content");
+        validate_non_negative(
+            profile.ec_increase_ms_cm_per_milliliter,
+            "fertilizer EC effect");
         require_finite(profile.ph_change_per_milliliter, "fertilizer pH effect");
+    }
+    const auto& ph_up = config.fertilizer_profiles[
+        fertilizer_index(FertilizerType::PH_UP)];
+    const auto& ph_down = config.fertilizer_profiles[
+        fertilizer_index(FertilizerType::PH_DOWN)];
+    if (ph_up.ph_change_per_milliliter <= 0.0 ||
+        ph_down.ph_change_per_milliliter >= 0.0) {
+        throw std::invalid_argument(
+            "pH corrector profiles must change pH in the declared direction");
     }
 }
 
@@ -125,16 +179,6 @@ SoilDynamics soil_dynamics(SoilType soil_type) {
     return {0.020, 4.0, 0.90, 0.55, 0.78, 75.0, 0.06, 0.15, 7.0};
 }
 
-const FertilizerProfile* find_profile(
-    const EnvironmentConfig& config,
-    const std::string& id) {
-    const auto found = std::find_if(
-        config.fertilizer_profiles.begin(),
-        config.fertilizer_profiles.end(),
-        [&id](const FertilizerProfile& profile) { return profile.id == id; });
-    return found == config.fertilizer_profiles.end() ? nullptr : &*found;
-}
-
 }  // namespace
 
 const char* to_string(SoilType soil_type) noexcept {
@@ -167,8 +211,19 @@ EnvironmentSimulator::EnvironmentSimulator(EnvironmentConfig config, std::uint32
     state_.air_humidity_percent = config_.night_relative_humidity_percent;
     state_.ph = config_.initial_ph;
     state_.ec_ms_cm = config_.initial_ec_ms_cm;
+    state_.nitrogen_mg_per_liter = config_.initial_nitrogen_mg_per_liter;
+    state_.phosphorus_mg_per_liter = config_.initial_phosphorus_mg_per_liter;
+    state_.potassium_mg_per_liter = config_.initial_potassium_mg_per_liter;
     state_.soil_moisture_percent =
         soil_dynamics(config_.soil_type).initial_soil_moisture_percent;
+    const double initial_root_water_liters =
+        soil_dynamics(config_.soil_type).available_water_capacity_liters *
+        state_.soil_moisture_percent / 100.0;
+    nutrient_masses_milligrams_ = {
+        state_.nitrogen_mg_per_liter * initial_root_water_liters,
+        state_.phosphorus_mg_per_liter * initial_root_water_liters,
+        state_.potassium_mg_per_liter * initial_root_water_liters,
+    };
     vapor_density_g_m3_ = saturation_vapor_density(state_.temperature_c) *
                           state_.air_humidity_percent / 100.0;
 }
@@ -183,15 +238,24 @@ void EnvironmentSimulator::step(
     validate_non_negative(
         actuator_output.irrigation_volume_liters_last_step,
         "irrigation volume");
-    validate_non_negative(
-        actuator_output.fertilizer_flow_milliliters_per_hour,
-        "fertilizer flow");
     validate_non_negative(actuator_output.lighting_power_watts, "lighting power");
-    if (actuator_output.fertilizer_flow_milliliters_per_hour > 0.0) {
-        if (!actuator_output.selected_fertilizer_id.has_value() ||
-            find_profile(config_, *actuator_output.selected_fertilizer_id) == nullptr) {
-            throw std::invalid_argument("unknown fertilizer selected for positive dosing");
-        }
+    bool has_fertilizer = false;
+    for (const double volume :
+         actuator_output.fertilizer_volume_milliliters_last_step) {
+        validate_non_negative(volume, "fertilizer volume");
+        has_fertilizer = has_fertilizer || volume > 0.0;
+    }
+    if (has_fertilizer &&
+        actuator_output.irrigation_volume_liters_last_step <= 0.0) {
+        throw std::invalid_argument(
+            "fertilizer requires irrigation water for dilution");
+    }
+    if (actuator_output.fertilizer_volume_milliliters_last_step[
+            fertilizer_index(FertilizerType::PH_UP)] > 0.0 &&
+        actuator_output.fertilizer_volume_milliliters_last_step[
+            fertilizer_index(FertilizerType::PH_DOWN)] > 0.0) {
+        throw std::invalid_argument(
+            "pH up and pH down cannot be delivered together");
     }
 
     double remaining = delta_time_seconds;
@@ -201,6 +265,11 @@ void EnvironmentSimulator::step(
         substep_output.irrigation_volume_liters_last_step =
             actuator_output.irrigation_volume_liters_last_step *
             substep / delta_time_seconds;
+        for (std::size_t index = 0; index < kFertilizerTypeCount; ++index) {
+            substep_output.fertilizer_volume_milliliters_last_step[index] =
+                actuator_output.fertilizer_volume_milliliters_last_step[index] *
+                substep / delta_time_seconds;
+        }
         integrate_substep(substep, substep_output);
         remaining -= substep;
     }
@@ -282,10 +351,16 @@ void EnvironmentSimulator::integrate_substep(
         soil_water_fraction + recovery - depletion * delta_hours;
     const double drainage = soil.drainage_per_hour *
                             std::max(0.0, provisional_water - soil.field_capacity);
+    const double root_water_liters_before_drainage =
+        std::max(0.0, provisional_water) *
+        soil.available_water_capacity_liters;
     soil_water_fraction = std::clamp(
-        provisional_water - drainage * delta_hours,
+        provisional_water - drainage * delta_hours, 0.0, 1.0);
+    const double root_water_liters_after =
+        soil_water_fraction * soil.available_water_capacity_liters;
+    const double drained_or_overflow_liters = std::max(
         0.0,
-        1.0);
+        root_water_liters_before_drainage - root_water_liters_after);
     state_.soil_moisture_percent = soil_water_fraction * 100.0;
 
     const double external_rh =
@@ -324,21 +399,68 @@ void EnvironmentSimulator::integrate_substep(
                            soil.ec_leaching_per_liter * irrigation_volume_liters;
     }
 
-    if (actuator_output.fertilizer_flow_milliliters_per_hour > 0.0) {
-        const auto* profile = find_profile(config_, *actuator_output.selected_fertilizer_id);
-        const double effective_irrigation_flow_liters_per_hour =
-            delta_hours > 0.0 ? irrigation_volume_liters / delta_hours : 0.0;
-        const double mixing = std::clamp(
-            0.15 + 0.425 * effective_irrigation_flow_liters_per_hour,
-            0.15,
-            1.0);
+    for (std::size_t index = 0; index < kFertilizerTypeCount; ++index) {
         const double fertilizer_volume_milliliters =
-            actuator_output.fertilizer_flow_milliliters_per_hour * delta_hours;
-        state_.ph += profile->ph_change_per_milliliter *
-                     fertilizer_volume_milliliters * mixing;
-        state_.ec_ms_cm += profile->ec_increase_ms_cm_per_milliliter *
-                           fertilizer_volume_milliliters * mixing;
+            actuator_output.fertilizer_volume_milliliters_last_step[index];
+        if (fertilizer_volume_milliliters <= 0.0) {
+            continue;
+        }
+        const auto& profile = config_.fertilizer_profiles[index];
+        nutrient_masses_milligrams_[0] +=
+            profile.nitrogen_milligrams_per_milliliter *
+            fertilizer_volume_milliliters;
+        nutrient_masses_milligrams_[1] +=
+            profile.phosphorus_milligrams_per_milliliter *
+            fertilizer_volume_milliliters;
+        nutrient_masses_milligrams_[2] +=
+            profile.potassium_milligrams_per_milliliter *
+            fertilizer_volume_milliliters;
+        state_.ph += profile.ph_change_per_milliliter *
+                     fertilizer_volume_milliliters;
+        state_.ec_ms_cm += profile.ec_increase_ms_cm_per_milliliter *
+                           fertilizer_volume_milliliters;
     }
+
+    // Il drenaggio rimuove la stessa frazione di ogni massa presente nella
+    // soluzione ben miscelata. La massa non puo diventare negativa.
+    const double mixed_root_water_liters = std::max(
+        root_water_liters_before_drainage,
+        config_.minimum_effective_root_water_liters);
+    const double drained_fraction = std::clamp(
+        drained_or_overflow_liters / mixed_root_water_liters, 0.0, 1.0);
+    for (double& mass : nutrient_masses_milligrams_) {
+        mass *= 1.0 - drained_fraction;
+    }
+
+    const std::array<double, 3> uptake_rates{
+        config_.nitrogen_uptake_milligrams_per_hour,
+        config_.phosphorus_uptake_milligrams_per_hour,
+        config_.potassium_uptake_milligrams_per_hour,
+    };
+    for (std::size_t index = 0; index < nutrient_masses_milligrams_.size();
+         ++index) {
+        const double uptake =
+            uptake_rates[index] * uptake_activity * delta_hours;
+        nutrient_masses_milligrams_[index] = std::max(
+            0.0,
+            nutrient_masses_milligrams_[index] - uptake);
+    }
+
+    const double effective_root_water_liters = std::max(
+        root_water_liters_after,
+        config_.minimum_effective_root_water_liters);
+    state_.nitrogen_mg_per_liter = std::clamp(
+        nutrient_masses_milligrams_[0] / effective_root_water_liters,
+        0.0,
+        config_.maximum_nutrient_concentration_mg_per_liter);
+    state_.phosphorus_mg_per_liter = std::clamp(
+        nutrient_masses_milligrams_[1] / effective_root_water_liters,
+        0.0,
+        config_.maximum_nutrient_concentration_mg_per_liter);
+    state_.potassium_mg_per_liter = std::clamp(
+        nutrient_masses_milligrams_[2] / effective_root_water_liters,
+        0.0,
+        config_.maximum_nutrient_concentration_mg_per_liter);
 
     state_.ph = std::clamp(state_.ph, 3.0, 9.0);
     state_.ec_ms_cm = std::clamp(state_.ec_ms_cm, 0.0, 8.0);

@@ -11,10 +11,9 @@
 
 #include "smarthydro/actuator_simulator.hpp"
 
+#include <array>
 #include <cstdint>
 #include <random>
-#include <string>
-#include <vector>
 
 namespace smarthydro {
 
@@ -35,28 +34,20 @@ enum class SoilType {
 };
 
 /**
- * @brief Effetti lineari di un concime sulla soluzione nel terriccio.
- *
- * Quando il dosatore e attivo, EnvironmentSimulator cerca il profilo tramite
- * id e moltiplica i due coefficienti per i millilitri erogati e per il fattore
- * di miscelazione con l'irrigazione.
+ * @brief Composizione ed effetti didattici di un concentrato liquido.
  */
 struct FertilizerProfile {
-    /**
-     * Identificativo usato da ActuatorOutput::selected_fertilizer_id.
-     * Deve essere non vuoto; un identificativo sconosciuto viene rifiutato
-     * quando la portata del dosatore e positiva.
-     */
-    std::string id;
-    /**
-     * Incremento di EC per millilitro efficacemente miscelato, in
-     * mS/cm per mL. Un valore negativo e ammesso dal modello.
-     */
+    /** Serbatoio al quale si applica il profilo. */
+    FertilizerType type = FertilizerType::NITROGEN;
+    /** Massa di azoto aggiunta da un millilitro di prodotto. */
+    double nitrogen_milligrams_per_milliliter = 0.0;
+    /** Massa di fosforo aggiunta da un millilitro di prodotto. */
+    double phosphorus_milligrams_per_milliliter = 0.0;
+    /** Massa di potassio aggiunta da un millilitro di prodotto. */
+    double potassium_milligrams_per_milliliter = 0.0;
+    /** Incremento didattico di EC, in mS/cm per mL. */
     double ec_increase_ms_cm_per_milliliter = 0.0;
-    /**
-     * Variazione di pH per millilitro efficacemente miscelato.
-     * Un valore negativo acidifica la soluzione; uno positivo la alcalinizza.
-     */
+    /** Variazione di pH per mL; negativa acidifica, positiva alcalinizza. */
     double ph_change_per_milliliter = 0.0;
 };
 
@@ -95,6 +86,25 @@ struct EnvironmentConfig {
     double initial_ph = 6.3;
     /** EC iniziale non negativa della soluzione nei pori, in mS/cm. */
     double initial_ec_ms_cm = 1.8;
+    /** Concentrazione iniziale di azoto nella soluzione radicale, in mg/L. */
+    double initial_nitrogen_mg_per_liter = 150.0;
+    /** Concentrazione iniziale di fosforo nella soluzione radicale, in mg/L. */
+    double initial_phosphorus_mg_per_liter = 50.0;
+    /** Concentrazione iniziale di potassio nella soluzione radicale, in mg/L. */
+    double initial_potassium_mg_per_liter = 200.0;
+    /** Assorbimento nominale di azoto ad attivita unitaria, in mg/h. */
+    double nitrogen_uptake_milligrams_per_hour = 1.5;
+    /** Assorbimento nominale di fosforo ad attivita unitaria, in mg/h. */
+    double phosphorus_uptake_milligrams_per_hour = 0.3;
+    /** Assorbimento nominale di potassio ad attivita unitaria, in mg/h. */
+    double potassium_uptake_milligrams_per_hour = 1.8;
+    /**
+     * Volume minimo usato per rendere definita la concentrazione quando il
+     * terriccio e quasi asciutto, in litri.
+     */
+    double minimum_effective_root_water_liters = 0.1;
+    /** Limite numerico delle concentrazioni pubblicate, in mg/L. */
+    double maximum_nutrient_concentration_mg_per_liter = 2000.0;
     /**
      * PPFD naturale non negativo al picco della semionda solare prima
      * dell'attenuazione dovuta alle nuvole, in umol/(m2 s).
@@ -130,13 +140,14 @@ struct EnvironmentConfig {
      * elettrico delle lampade, in gradi Celsius per watt.
      */
     double lamp_heating_c_per_watt = 0.015;
-    /**
-     * Profili di concime riconosciuti durante il dosaggio. Il profilo
-     * predefinito aumenta l'EC e riduce il pH.
-     */
-    std::vector<FertilizerProfile> fertilizer_profiles{
-        {"tomato-growth", 0.04, -0.003},
-    };
+    /** Un profilo configurabile per ciascuno dei cinque serbatoi. */
+    FertilizerValues<FertilizerProfile> fertilizer_profiles{{
+        {FertilizerType::NITROGEN, 50.0, 0.0, 0.0, 0.040, -0.001},
+        {FertilizerType::PHOSPHORUS, 0.0, 20.0, 0.0, 0.030, -0.002},
+        {FertilizerType::POTASSIUM, 0.0, 0.0, 50.0, 0.035, 0.0},
+        {FertilizerType::PH_UP, 0.0, 0.0, 0.0, 0.010, 0.020},
+        {FertilizerType::PH_DOWN, 0.0, 0.0, 0.0, 0.010, -0.020},
+    }};
 };
 
 /**
@@ -156,6 +167,12 @@ struct EnvironmentState {
     double ph = 6.3;
     /** EC della soluzione nei pori, limitata tra 0 e 8 mS/cm. */
     double ec_ms_cm = 1.8;
+    /** Concentrazione disponibile di azoto, in mg/L. */
+    double nitrogen_mg_per_liter = 150.0;
+    /** Concentrazione disponibile di fosforo, in mg/L. */
+    double phosphorus_mg_per_liter = 50.0;
+    /** Concentrazione disponibile di potassio, in mg/L. */
+    double potassium_mg_per_liter = 200.0;
     /** Acqua disponibile rispetto alla capacita utile, nell'intervallo [0, 100]%. */
     double soil_moisture_percent = 75.0;
     /** PPFD naturale e artificiale totale, in umol/(m2 s), mai negativo. */
@@ -172,7 +189,7 @@ struct EnvironmentState {
  * 3. temperatura con una risposta del primo ordine;
  * 4. bilancio idrico del terriccio;
  * 5. densita di vapore e umidita relativa;
- * 6. pH ed EC per assorbimento, irrigazione e concime.
+ * 6. pH, EC e bilancio di massa N/P/K.
  *
  * Nelle formule seguenti \f$\Delta t_h\f$ e la durata del sotto-passo in ore
  * e \f$\xi_k \sim \mathcal{N}(0,1)\f$ e un campione gaussiano standard.
@@ -327,26 +344,12 @@ struct EnvironmentState {
  * EC \leftarrow EC+(0.60-EC)k_{\mathrm{leach}}V_w.
  * \f]
  *
- * Per il concime, con portata \f$Q_f\f$ in mL/h e portata irrigua efficace
- * \f$Q_w=V_w/\Delta t_h\f$:
- *
- * \f[
- * m=\mathrm{clamp}(0.15+0.425Q_w,\ 0.15,\ 1.0),
- * \qquad V_f=Q_f\Delta t_h,
- * \f]
- *
- * \f[
- * pH \leftarrow pH+\alpha_{pH}V_fm, \qquad
- * EC \leftarrow EC+\alpha_{EC}V_fm.
- * \f]
- *
- * I coefficienti \f$\alpha_{pH}\f$ e \f$\alpha_{EC}\f$ provengono dal
- * FertilizerProfile selezionato.
- *
- * Gli intervalli superiori a cinque minuti vengono suddivisi internamente in
- * sotto-passi di massimo 300 secondi. Il volume d'acqua ricevuto viene
- * ripartito proporzionalmente, mentre portata del dosatore e potenza luminosa
- * restano costanti sull'intero intervallo.
+ * I millilitri consegnati da ogni serbatoio aggiungono la massa N/P/K definita
+ * dal relativo FertilizerProfile. L'irrigazione diluisce, l'evaporazione
+ * concentra, il drenaggio rimuove soluzione miscelata e l'assorbimento
+ * sottrae massa senza poterla rendere negativa. Gli intervalli superiori a
+ * cinque minuti vengono suddivisi in sotto-passi; acqua e cinque concentrati
+ * sono ripartiti proporzionalmente.
  */
 class EnvironmentSimulator {
 public:
@@ -380,8 +383,8 @@ public:
      * @brief Fa avanzare l'ambiente sotto l'effetto degli attuatori.
      *
      * Il campo ActuatorOutput::irrigation_volume_liters_last_step rappresenta
-     * una quantita totale gia erogata; la portata del concime e la potenza
-     * luminosa rappresentano invece valori mantenuti durante il passo.
+     * una quantita totale gia erogata. Anche i cinque volumi di concentrato
+     * sono quantita integrate; la potenza luminosa e un valore continuo.
      *
      * L'ordine di chiamata previsto e:
      * @code
@@ -391,11 +394,11 @@ public:
      * @endcode
      *
      * @param delta_time_seconds Durata positiva del passo, in secondi.
-     * @param actuator_output Volume d'acqua erogato nel passo, portata del
-     *         dosatore e potenza delle lampade.
+     * @param actuator_output Volumi d'acqua e concentrati erogati nel passo,
+     *         piu la potenza delle lampade.
      * @throws std::invalid_argument Se la durata non e finita o positiva, se
-     * un ingresso e negativo/non finito, oppure se il dosaggio positivo non
-     * specifica un profilo di concime configurato.
+     * un ingresso e negativo/non finito, oppure se viene indicato concentrato
+     * senza acqua di diluizione.
      * @post EnvironmentState::simulation_time_seconds aumenta esattamente di
      * delta_time_seconds e tutte le grandezze rimangono nei limiti documentati.
      */
@@ -420,6 +423,8 @@ private:
     std::uint64_t cloud_regime_day_ = 0;
     double temperature_disturbance_c_ = 0.0;
     double vapor_density_g_m3_ = 0.0;
+    /** Masse N, P e K conservate nel terriccio, in milligrammi. */
+    std::array<double, 3> nutrient_masses_milligrams_{};
 };
 
 /**

@@ -38,6 +38,8 @@
  * smarthydro::SensorSimulator sensors;
  *
  * actuators.request_irrigation_volume_liters(0.5);
+ * actuators.set_fertilizer_valve_open(
+ *     smarthydro::FertilizerType::NITROGEN, true);
  * actuators.step(900.0);
  * environment.step(900.0, actuators.output());
  * const auto readings = sensors.read(environment.state());
@@ -64,7 +66,12 @@
  * Il modello ambientale dipende da condizioni esterne, terriccio, casualita
  * meteorologica e ingressi degli attuatori. Non dipende dalla specie coltivata.
  * Le grandezze possedute dal modello sono temperatura, umidita dell'aria,
- * umidita del terriccio, pH, EC e PPFD.
+ * umidita del terriccio, pH, EC, concentrazioni N/P/K e PPFD. Le
+ * concentrazioni nutritive sono stato fisico e non canali del sensore.
+ *
+ * I cinque serbatoi liquidi N, P, K, pH+ e pH- confluiscono nella pompa
+ * d'irrigazione tramite elettrovalvole. N/P/K possono fluire insieme, mentre
+ * i correttori pH+ e pH- sono interbloccati.
  *
  * @section edge_reproducibility Riproducibilita
  *

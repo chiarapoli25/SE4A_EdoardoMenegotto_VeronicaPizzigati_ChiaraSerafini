@@ -30,17 +30,36 @@ int main() {
               << "pH: " << readings.ph.value_or(0.0) << "\n"
               << "Light: " << readings.light_ppfd_umol_m2_s.value_or(0.0)
               << " umol/(m2 s)\n"
+              << "Physical nutrients (not directly sensed): N "
+              << environment.state().nitrogen_mg_per_liter << ", P "
+              << environment.state().phosphorus_mg_per_liter << ", K "
+              << environment.state().potassium_mg_per_liter << " mg/L\n"
               << "Actuator safe state (command -> physical output):\n"
               << "Water pump request: "
               << actuator_command.requested_irrigation_volume_liters << " L\n"
               << "Water delivered in step: "
               << actuator_output.irrigation_volume_liters_last_step << " L\n"
-              << "Fertilizer: none selected\n"
-              << "Fertilizer dosing: " << actuator_command.fertilizer_doser_percent
-              << " % -> " << actuator_output.fertilizer_flow_milliliters_per_hour
-              << " mL/h\n"
               << "Lighting: " << actuator_command.lighting_percent << " % -> "
               << actuator_output.lighting_power_watts << " W\n";
+
+    std::cout << "Fertilizer valves (command -> flow -> last volume):\n";
+    for (const auto type : {
+             smarthydro::FertilizerType::NITROGEN,
+             smarthydro::FertilizerType::PHOSPHORUS,
+             smarthydro::FertilizerType::POTASSIUM,
+             smarthydro::FertilizerType::PH_UP,
+             smarthydro::FertilizerType::PH_DOWN}) {
+        std::cout << "  " << smarthydro::to_string(type) << ": "
+                  << (actuator_command.fertilizer_valves_open[
+                          smarthydro::fertilizer_index(type)]
+                          ? "OPEN"
+                          : "CLOSED")
+                  << " -> "
+                  << actuators.fertilizer_flow_milliliters_per_hour(type)
+                  << " mL/h -> "
+                  << actuators.fertilizer_volume_milliliters_last_step(type)
+                  << " mL\n";
+    }
 
     return 0;
 }

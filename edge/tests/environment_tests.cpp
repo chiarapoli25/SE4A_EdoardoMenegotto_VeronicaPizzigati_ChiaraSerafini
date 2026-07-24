@@ -268,28 +268,218 @@ TEST(EnvironmentSimulatorTest, ManagedIrrigationOutperformsNaturalScenarioForAWe
     EXPECT_LE(managed.state().soil_moisture_percent, 85.0);
 }
 
-TEST(EnvironmentSimulatorTest, FertilizerProfileChangesPhAndEc) {
+TEST(EnvironmentSimulatorTest, NutrientProductsAffectOnlyTheirOwnConcentration) {
     smarthydro::EnvironmentSimulator baseline({}, 15);
-    smarthydro::EnvironmentSimulator fertilized({}, 15);
-    smarthydro::ActuatorOutput off;
-    smarthydro::ActuatorOutput dosing;
-    dosing.irrigation_volume_liters_last_step = 2.0;
-    dosing.selected_fertilizer_id = "tomato-growth";
-    dosing.fertilizer_flow_milliliters_per_hour = 20.0;
+    smarthydro::EnvironmentSimulator nitrogen({}, 15);
+    smarthydro::EnvironmentSimulator phosphorus({}, 15);
+    smarthydro::EnvironmentSimulator potassium({}, 15);
+    smarthydro::ActuatorOutput water;
+    water.irrigation_volume_liters_last_step = 0.5;
+    auto nitrogen_dose = water;
+    auto phosphorus_dose = water;
+    auto potassium_dose = water;
+    nitrogen_dose.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::NITROGEN)] = 1.0;
+    phosphorus_dose.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PHOSPHORUS)] = 1.0;
+    potassium_dose.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::POTASSIUM)] = 1.0;
 
-    baseline.step(3600.0, off);
-    fertilized.step(3600.0, dosing);
+    baseline.step(300.0, water);
+    nitrogen.step(300.0, nitrogen_dose);
+    phosphorus.step(300.0, phosphorus_dose);
+    potassium.step(300.0, potassium_dose);
 
-    EXPECT_LT(fertilized.state().ph, baseline.state().ph);
-    EXPECT_GT(fertilized.state().ec_ms_cm, baseline.state().ec_ms_cm + 0.50);
+    EXPECT_GT(nitrogen.state().nitrogen_mg_per_liter,
+              baseline.state().nitrogen_mg_per_liter);
+    EXPECT_DOUBLE_EQ(nitrogen.state().phosphorus_mg_per_liter,
+                     baseline.state().phosphorus_mg_per_liter);
+    EXPECT_DOUBLE_EQ(nitrogen.state().potassium_mg_per_liter,
+                     baseline.state().potassium_mg_per_liter);
+
+    EXPECT_DOUBLE_EQ(phosphorus.state().nitrogen_mg_per_liter,
+                     baseline.state().nitrogen_mg_per_liter);
+    EXPECT_GT(phosphorus.state().phosphorus_mg_per_liter,
+              baseline.state().phosphorus_mg_per_liter);
+    EXPECT_DOUBLE_EQ(phosphorus.state().potassium_mg_per_liter,
+                     baseline.state().potassium_mg_per_liter);
+
+    EXPECT_DOUBLE_EQ(potassium.state().nitrogen_mg_per_liter,
+                     baseline.state().nitrogen_mg_per_liter);
+    EXPECT_DOUBLE_EQ(potassium.state().phosphorus_mg_per_liter,
+                     baseline.state().phosphorus_mg_per_liter);
+    EXPECT_GT(potassium.state().potassium_mg_per_liter,
+              baseline.state().potassium_mg_per_liter);
 }
 
-TEST(EnvironmentSimulatorTest, RejectsUnknownFertilizerWhenDosing) {
-    smarthydro::EnvironmentSimulator environment({}, 16);
-    smarthydro::ActuatorOutput dosing;
-    dosing.selected_fertilizer_id = "unknown";
-    dosing.fertilizer_flow_milliliters_per_hour = 1.0;
-    EXPECT_THROW(environment.step(kQuarterHour, dosing), std::invalid_argument);
+TEST(EnvironmentSimulatorTest, PhCorrectorsChangePhWithoutAddingNutrients) {
+    smarthydro::EnvironmentSimulator baseline({}, 16);
+    smarthydro::EnvironmentSimulator ph_up({}, 16);
+    smarthydro::EnvironmentSimulator ph_down({}, 16);
+    smarthydro::ActuatorOutput water;
+    water.irrigation_volume_liters_last_step = 0.5;
+    auto up_dose = water;
+    auto down_dose = water;
+    up_dose.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PH_UP)] = 1.0;
+    down_dose.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PH_DOWN)] = 1.0;
+
+    baseline.step(300.0, water);
+    ph_up.step(300.0, up_dose);
+    ph_down.step(300.0, down_dose);
+
+    EXPECT_GT(ph_up.state().ph, baseline.state().ph);
+    EXPECT_LT(ph_down.state().ph, baseline.state().ph);
+    EXPECT_DOUBLE_EQ(ph_up.state().nitrogen_mg_per_liter,
+                     baseline.state().nitrogen_mg_per_liter);
+    EXPECT_DOUBLE_EQ(ph_up.state().phosphorus_mg_per_liter,
+                     baseline.state().phosphorus_mg_per_liter);
+    EXPECT_DOUBLE_EQ(ph_up.state().potassium_mg_per_liter,
+                     baseline.state().potassium_mg_per_liter);
+}
+
+TEST(EnvironmentSimulatorTest, FertilizerRequiresWaterAndOppositePhIsRejected) {
+    smarthydro::EnvironmentSimulator environment({}, 17);
+    smarthydro::ActuatorOutput without_water;
+    without_water.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::NITROGEN)] = 1.0;
+    EXPECT_THROW(
+        environment.step(300.0, without_water),
+        std::invalid_argument);
+
+    smarthydro::ActuatorOutput conflicting_ph;
+    conflicting_ph.irrigation_volume_liters_last_step = 0.5;
+    conflicting_ph.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PH_UP)] = 1.0;
+    conflicting_ph.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PH_DOWN)] = 1.0;
+    EXPECT_THROW(
+        environment.step(300.0, conflicting_ph),
+        std::invalid_argument);
+}
+
+TEST(EnvironmentSimulatorTest, IrrigationDilutesNutrientsAndUptakeStaysNonNegative) {
+    smarthydro::EnvironmentConfig no_uptake;
+    no_uptake.nitrogen_uptake_milligrams_per_hour = 0.0;
+    no_uptake.phosphorus_uptake_milligrams_per_hour = 0.0;
+    no_uptake.potassium_uptake_milligrams_per_hour = 0.0;
+    smarthydro::EnvironmentSimulator dry(no_uptake, 18);
+    smarthydro::EnvironmentSimulator irrigated(no_uptake, 18);
+    smarthydro::ActuatorOutput water;
+    water.irrigation_volume_liters_last_step = 0.5;
+
+    dry.step(300.0, {});
+    irrigated.step(300.0, water);
+
+    EXPECT_LT(irrigated.state().nitrogen_mg_per_liter,
+              dry.state().nitrogen_mg_per_liter);
+    EXPECT_LT(irrigated.state().phosphorus_mg_per_liter,
+              dry.state().phosphorus_mg_per_liter);
+    EXPECT_LT(irrigated.state().potassium_mg_per_liter,
+              dry.state().potassium_mg_per_liter);
+
+    smarthydro::EnvironmentConfig strong_uptake;
+    strong_uptake.initial_nitrogen_mg_per_liter = 0.01;
+    strong_uptake.initial_phosphorus_mg_per_liter = 0.01;
+    strong_uptake.initial_potassium_mg_per_liter = 0.01;
+    strong_uptake.nitrogen_uptake_milligrams_per_hour = 1000.0;
+    strong_uptake.phosphorus_uptake_milligrams_per_hour = 1000.0;
+    strong_uptake.potassium_uptake_milligrams_per_hour = 1000.0;
+    smarthydro::EnvironmentSimulator depleted(strong_uptake, 19);
+    depleted.step(3600.0, {});
+    EXPECT_GE(depleted.state().nitrogen_mg_per_liter, 0.0);
+    EXPECT_GE(depleted.state().phosphorus_mg_per_liter, 0.0);
+    EXPECT_GE(depleted.state().potassium_mg_per_liter, 0.0);
+}
+
+TEST(EnvironmentSimulatorTest, DrainageRemovesMixedNutrientMass) {
+    smarthydro::EnvironmentConfig config;
+    config.soil_type = smarthydro::SoilType::DRAINING;
+    config.nitrogen_uptake_milligrams_per_hour = 0.0;
+    config.phosphorus_uptake_milligrams_per_hour = 0.0;
+    config.potassium_uptake_milligrams_per_hour = 0.0;
+    smarthydro::EnvironmentSimulator environment(config, 20);
+    smarthydro::ActuatorOutput mixture;
+    mixture.irrigation_volume_liters_last_step = 2.0;
+    mixture.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::NITROGEN)] = 1.0;
+
+    // Il terriccio drenante parte al 65% di 3 L: 292.5 mg di N.
+    // Il prodotto ne aggiunge 50 mg; dopo il drenaggio deve rimanerne meno
+    // dei 342.5 mg disponibili prima della perdita di soluzione.
+    environment.step(300.0, mixture);
+    const double final_root_water_liters =
+        environment.state().soil_moisture_percent / 100.0 * 3.0;
+    const double inferred_nitrogen_mass =
+        environment.state().nitrogen_mg_per_liter * final_root_water_liters;
+
+    EXPECT_GT(inferred_nitrogen_mass, 0.0);
+    EXPECT_LT(inferred_nitrogen_mass, 342.5);
+}
+
+TEST(EnvironmentSimulatorTest, ActuatorMixtureUpdatesWaterNutrientsEcAndPh) {
+    smarthydro::ActuatorSimulator actuators;
+    smarthydro::EnvironmentSimulator baseline({}, 20);
+    smarthydro::EnvironmentSimulator treated({}, 20);
+    actuators.request_irrigation_volume_liters(0.5);
+    actuators.set_fertilizer_valve_open(
+        smarthydro::FertilizerType::NITROGEN, true);
+    actuators.set_fertilizer_valve_open(
+        smarthydro::FertilizerType::PHOSPHORUS, true);
+    actuators.set_fertilizer_valve_open(
+        smarthydro::FertilizerType::POTASSIUM, true);
+    actuators.set_fertilizer_valve_open(
+        smarthydro::FertilizerType::PH_DOWN, true);
+    actuators.step(900.0);
+
+    smarthydro::ActuatorOutput water_only;
+    water_only.irrigation_volume_liters_last_step =
+        actuators.output().irrigation_volume_liters_last_step;
+    baseline.step(900.0, water_only);
+    treated.step(900.0, actuators.output());
+
+    EXPECT_GT(treated.state().nitrogen_mg_per_liter,
+              baseline.state().nitrogen_mg_per_liter);
+    EXPECT_GT(treated.state().phosphorus_mg_per_liter,
+              baseline.state().phosphorus_mg_per_liter);
+    EXPECT_GT(treated.state().potassium_mg_per_liter,
+              baseline.state().potassium_mg_per_liter);
+    EXPECT_GT(treated.state().ec_ms_cm, baseline.state().ec_ms_cm);
+    EXPECT_LT(treated.state().ph, baseline.state().ph);
+}
+
+TEST(EnvironmentSimulatorTest, SplitsWaterAndAllFertilizersAcrossSubsteps) {
+    smarthydro::EnvironmentSimulator single_step({}, 21);
+    smarthydro::EnvironmentSimulator three_steps({}, 21);
+    smarthydro::ActuatorOutput combined;
+    combined.irrigation_volume_liters_last_step = 0.3;
+    combined.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::NITROGEN)] = 3.0;
+    combined.fertilizer_volume_milliliters_last_step[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PH_DOWN)] = 1.5;
+    smarthydro::ActuatorOutput partial = combined;
+    partial.irrigation_volume_liters_last_step /= 3.0;
+    for (double& volume :
+         partial.fertilizer_volume_milliliters_last_step) {
+        volume /= 3.0;
+    }
+
+    single_step.step(900.0, combined);
+    for (int step = 0; step < 3; ++step) {
+        three_steps.step(300.0, partial);
+    }
+
+    EXPECT_NEAR(single_step.state().soil_moisture_percent,
+                three_steps.state().soil_moisture_percent, 1e-12);
+    EXPECT_NEAR(single_step.state().nitrogen_mg_per_liter,
+                three_steps.state().nitrogen_mg_per_liter, 1e-12);
+    EXPECT_NEAR(single_step.state().phosphorus_mg_per_liter,
+                three_steps.state().phosphorus_mg_per_liter, 1e-12);
+    EXPECT_NEAR(single_step.state().potassium_mg_per_liter,
+                three_steps.state().potassium_mg_per_liter, 1e-12);
+    EXPECT_NEAR(single_step.state().ph, three_steps.state().ph, 1e-12);
+    EXPECT_NEAR(single_step.state().ec_ms_cm, three_steps.state().ec_ms_cm, 1e-12);
 }
 
 TEST(EnvironmentSimulatorTest, SeedMakesPhysicalDynamicsReproducible) {
@@ -306,6 +496,12 @@ TEST(EnvironmentSimulatorTest, SeedMakesPhysicalDynamicsReproducible) {
     EXPECT_DOUBLE_EQ(first.state().air_humidity_percent, second.state().air_humidity_percent);
     EXPECT_DOUBLE_EQ(first.state().ph, second.state().ph);
     EXPECT_DOUBLE_EQ(first.state().ec_ms_cm, second.state().ec_ms_cm);
+    EXPECT_DOUBLE_EQ(first.state().nitrogen_mg_per_liter,
+                     second.state().nitrogen_mg_per_liter);
+    EXPECT_DOUBLE_EQ(first.state().phosphorus_mg_per_liter,
+                     second.state().phosphorus_mg_per_liter);
+    EXPECT_DOUBLE_EQ(first.state().potassium_mg_per_liter,
+                     second.state().potassium_mg_per_liter);
     EXPECT_DOUBLE_EQ(first.state().soil_moisture_percent,
                      second.state().soil_moisture_percent);
     EXPECT_DOUBLE_EQ(first.state().light_ppfd_umol_m2_s,
@@ -336,6 +532,30 @@ TEST(EnvironmentSimulatorTest, RejectsInvalidCloudConfiguration) {
     config.cloud_persistence_hours = 0.0;
     EXPECT_THROW(
         smarthydro::EnvironmentSimulator(config, 22),
+        std::invalid_argument);
+}
+
+TEST(EnvironmentSimulatorTest, RejectsInvalidNutrientProfilesAndLimits) {
+    smarthydro::EnvironmentConfig config;
+    config.fertilizer_profiles[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::NITROGEN)]
+        .type = smarthydro::FertilizerType::POTASSIUM;
+    EXPECT_THROW(
+        smarthydro::EnvironmentSimulator(config, 23),
+        std::invalid_argument);
+
+    config = {};
+    config.fertilizer_profiles[
+        smarthydro::fertilizer_index(smarthydro::FertilizerType::PH_UP)]
+        .ph_change_per_milliliter = -0.01;
+    EXPECT_THROW(
+        smarthydro::EnvironmentSimulator(config, 23),
+        std::invalid_argument);
+
+    config = {};
+    config.maximum_nutrient_concentration_mg_per_liter = 100.0;
+    EXPECT_THROW(
+        smarthydro::EnvironmentSimulator(config, 23),
         std::invalid_argument);
 }
 

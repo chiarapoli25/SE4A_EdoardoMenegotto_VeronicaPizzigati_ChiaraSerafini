@@ -5,7 +5,7 @@ endif()
 file(REMOVE_RECURSE "${OUTPUT_DIRECTORY}")
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 set(input_path "${OUTPUT_DIRECTORY}/input.txt")
-file(WRITE "${input_path}" "1\n0.5\n2\n42\n3\n68\nq\n")
+file(WRITE "${input_path}" "1\n0.5\n1\n0\n1\n2\n2\n68\nq\n")
 
 # Il terminale testuale evita di aprire una finestra grafica durante CTest.
 execute_process(
@@ -21,8 +21,10 @@ if(NOT result EQUAL 0)
 endif()
 
 foreach(expected_text
-    "Pompa: dose richiesta 0.5 L, OFF, portata 0 L/h, ultimo volume erogato 0.5 L"
-    "Dosatore: 42% -> 8.4 mL/h"
+    "Pompa: dose richiesta 0.5 L, OFF, portata 0 L/h, ultimo volume 0.5 L"
+    "Valvola nitrogen: CLOSED, portata 0 mL/h, ultimo volume 5 mL"
+    "Valvola potassium: CLOSED, portata 0 mL/h, ultimo volume 5 mL"
+    "Valvola ph-down: CLOSED, portata 0 mL/h, ultimo volume 5 mL"
     "Illuminazione: 68% -> 136 W"
     "Simulazione terminata.")
     string(FIND "${output}" "${expected_text}" position)

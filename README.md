@@ -56,11 +56,13 @@ separatamente.
 ### Ambiente e sensori simulati
 
 `EnvironmentSimulator` possiede lo stato fisico condiviso della serra. Il
-metodo `step(delta_time_seconds, actuator_state)` evolve gradualmente:
+metodo `step(delta_time_seconds, actuator_output)` evolve gradualmente:
 
 - temperatura e umidita relativa, accoppiate al profilo esterno, alla luce,
   alla traspirazione e al ricambio d'aria;
 - pH ed EC della soluzione presente nei pori del terriccio;
+- concentrazioni disponibili di azoto, fosforo e potassio in mg/L, conservate
+  tramite un bilancio di massa;
 - umidita del terriccio in percentuale, con ritenzione e drenaggio diversi per
   substrato universale aerato, drenante e organico ritentivo;
 - luce naturale e supplementare espressa come PPFD in `umol/(m2 s)`.
@@ -68,7 +70,22 @@ metodo `step(delta_time_seconds, actuator_state)` evolve gradualmente:
 La configurazione predefinita usa un substrato universale aerato, con alba alle
 06:00 e fotoperiodo di 14 ore. Sono disponibili anche un substrato drenante e
 uno organico ritentivo. La dinamica ambientale non dipende dalla specie
-coltivata. Il profilo di concime incluso e `tomato-growth`.
+coltivata. I cinque profili liquidi predefiniti rappresentano azoto, fosforo,
+potassio, pH+ e pH-. I coefficienti sono didattici e possono essere sostituiti
+in `EnvironmentConfig` usando le schede tecniche dei prodotti. N/P/K
+appartengono allo stato fisico ma non sono letture di sensori.
+
+| Prodotto | N (mg/mL) | P (mg/mL) | K (mg/mL) | Delta EC (mS/cm per mL) | Delta pH per mL |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Azoto | 50 | 0 | 0 | 0.040 | -0.001 |
+| Fosforo | 0 | 20 | 0 | 0.030 | -0.002 |
+| Potassio | 0 | 0 | 50 | 0.035 | 0 |
+| pH+ | 0 | 0 | 0 | 0.010 | 0.020 |
+| pH- | 0 | 0 | 0 | 0.010 | -0.020 |
+
+Le concentrazioni iniziali sono 150 mg/L di N, 50 mg/L di P e 200 mg/L di K.
+Gli assorbimenti nominali configurabili sono rispettivamente 1.5, 0.3 e
+1.8 mg/h, scalati dall'attivita della pianta.
 
 La luce naturale combina il ciclo solare con due livelli di nuvolosita
 stocastica. Ogni giorno viene estratto un regime atmosferico piu sereno o piu
@@ -93,26 +110,29 @@ plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 fisica dell'attuatore. La configurazione predefinita rappresenta:
 
 - pompa ON/OFF con portata fissa di 2 L/h e dose massima di 5 L;
-- selettore del concime tramite un identificativo testuale;
-- dosatore di concime concentrato con portata massima di 20 mL/h;
+- cinque serbatoi di concentrato liquido per N, P, K, pH+ e pH-;
+- cinque elettrovalvole ON/OFF da 20 mL/h collegate alla stessa pompa
+  dell'acqua;
 - lampade LED con potenza elettrica massima di 200 W.
 
 Gli attuatori partono spenti. Per l'irrigazione,
 `request_irrigation_volume_liters()` riceve direttamente la dose decisa dal
 controllore. `step(delta_time_seconds)` mantiene la pompa accesa alla portata
 fissa finche la dose non e stata completata e registra i litri realmente
-erogati nel passo. Dosatore e lampade continuano a ricevere comandi tra 0% e
-100%, convertiti rispettivamente in mL/h e W.
+erogati nel passo. Le elettrovalvole sono comandi binari; le lampade ricevono
+un comando tra 0% e 100%, convertito in watt.
 
-Non e possibile avviare il dosaggio senza avere prima selezionato un concime;
-rimuovere la selezione arresta anche il dosaggio. Il metodo `stop_all()` riporta
-immediatamente comando e uscita alla condizione sicura. Il simulatore degli
-attuatori non contiene logica decisionale. Le uscite fisiche vengono applicate
-all'ambiente: i litri realmente erogati modificano l'umidita del terriccio; i
-watt delle lampade
-determinano PPFD e carico termico; i millilitri di concime modificano pH ed EC
-secondo il profilo selezionato. L'irrigazione distribuisce il concime e puo
-diluire o lisciviare i sali, soprattutto nel substrato drenante.
+Una valvola di concentrato puo essere aperta solo durante un'irrigazione
+attiva. N, P e K possono fluire insieme e con uno solo fra pH+ e pH-; i due
+correttori sono interbloccati. La portata d'acqua resta invariata. Se la dose
+d'acqua termina durante uno `step()`, i millilitri vengono integrati soltanto
+per il tempo effettivo di pompaggio e tutte le valvole vengono chiuse.
+`cancel_irrigation()` e `stop_all()` applicano la stessa protezione.
+
+I volumi fisici vengono applicati all'ambiente: l'acqua modifica l'umidita e
+diluisce i nutrienti; N/P/K aggiungono masse separate; drenaggio e assorbimento
+le riducono; pH+ e pH- correggono il pH. L'accodamento delle dosi esatte in mL
+e la chiusura al raggiungimento del volume appartengono al futuro regolatore.
 
 Il sensore di umidita del terriccio continua a restituire una percentuale:
 l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e il
@@ -122,8 +142,8 @@ sensore osserva quel valore aggiungendo i soli errori strumentali configurati.
 
 Il file `controllers.cpp` implementa tre controllori scalari. Ciascuno riceve
 una misura e restituisce un comando nell'unita scelta dall'anello di controllo.
-Per l'irrigazione il comando puo quindi essere una dose in litri; per lampade o
-dosatore puo rimanere una percentuale. I controllori non sono collegati
+Per l'irrigazione il comando puo quindi essere una dose in litri; per le
+lampade puo rimanere una percentuale. I controllori non sono collegati
 automaticamente a uno specifico sensore o attuatore.
 
 - `ThresholdController` usa due soglie e mantiene lo stato nella zona
@@ -255,15 +275,13 @@ la simulazione dei sensori richiede interattivamente:
 - substrato universale aerato, drenante oppure organico ritentivo;
 - seed numerico riproducibile oppure invio per generarne uno casuale.
 
-`actuator_simulation` apre un'unica finestra gnuplot con tre grafici:
-pompa di irrigazione, dosatore di concime e illuminazione. Dal terminale si
-sceglie ripetutamente quale attuatore modificare. Per la pompa si inserisce il
-volume richiesto in litri: il programma calcola la durata, mostra la portata
-costante durante l'intervallo ON e lo spegnimento al termine. Dosatore e lampade
-ricevono invece una percentuale. Il grafico usa il tempo simulato e colori
-distinti per portata d'acqua in L/h, portata di concime in mL/h e potenza
-elettrica in W. Il comando `q` termina il ciclo e chiude il grafico. Questo
-experiment richiede gnuplot e non crea CSV o PNG.
+`actuator_simulation` apre un'unica finestra gnuplot con tre grafici: pompa di
+irrigazione, cinque elettrovalvole dei concentrati e illuminazione. Per ogni
+irrigazione si inseriscono il volume d'acqua, le scelte N/P/K e al massimo un
+correttore di pH. Il programma mostra le cinque portate in mL/h separatamente,
+la portata d'acqua invariata e la chiusura sicura al termine. Le lampade
+ricevono una percentuale. Il comando `q` termina il ciclo e chiude il grafico;
+l'experiment richiede gnuplot e non crea CSV o PNG.
 
 `controller_generic_comparison` isola il comportamento matematico di Threshold,
 PID e Predictive su tre copie identiche di un processo normalizzato del primo

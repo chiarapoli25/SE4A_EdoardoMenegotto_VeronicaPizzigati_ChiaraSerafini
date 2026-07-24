@@ -5,45 +5,69 @@
  * @brief Comandi, uscite fisiche e modello degli attuatori simulati.
  */
 
-#include <optional>
-#include <string>
+#include <array>
+#include <cstddef>
 
 namespace smarthydro {
 
 /**
- * @brief Limiti fisici degli attuatori installati.
+ * @brief Liquidi concentrati disponibili nei cinque serbatoi.
  *
- * Tutti i valori devono essere finiti e strettamente positivi. La
- * configurazione viene validata una sola volta dal costruttore.
+ * I valori sono stabili e vengono usati come indici nelle collezioni
+ * FertilizerValues. COUNT non identifica un prodotto valido.
  */
+enum class FertilizerType : std::size_t {
+    NITROGEN = 0,
+    PHOSPHORUS,
+    POTASSIUM,
+    PH_UP,
+    PH_DOWN,
+    COUNT,
+};
+
+/** Numero dei serbatoi di concentrato supportati. */
+constexpr std::size_t kFertilizerTypeCount =
+    static_cast<std::size_t>(FertilizerType::COUNT);
+
+/** Collezione con un valore per ciascuno dei cinque serbatoi. */
+template <typename T>
+using FertilizerValues = std::array<T, kFertilizerTypeCount>;
+
+/**
+ * @brief Converte un tipo di fertilizzante nel relativo indice.
+ * @throws std::invalid_argument Se type non identifica uno dei cinque prodotti.
+ */
+std::size_t fertilizer_index(FertilizerType type);
+
+/**
+ * @brief Restituisce un nome breve e stabile del prodotto.
+ * @return `"nitrogen"`, `"phosphorus"`, `"potassium"`, `"ph-up"`,
+ * `"ph-down"` oppure `"unknown"`.
+ */
+const char* to_string(FertilizerType type) noexcept;
+
+/** @brief Limiti fisici degli attuatori installati. */
 struct ActuatorConfig {
     /** Portata fissa della pompa ON/OFF, in litri all'ora. */
     double water_pump_flow_liters_per_hour = 2.0;
     /** Volume massimo accettato per una singola irrigazione, in litri. */
     double maximum_irrigation_volume_liters = 5.0;
-    /** Portata massima del dosatore, in millilitri all'ora. */
-    double maximum_fertilizer_flow_milliliters_per_hour = 20.0;
+    /**
+     * Portata del concentrato attraverso ciascuna elettrovalvola aperta,
+     * in millilitri all'ora. La portata d'acqua non viene ridotta.
+     */
+    FertilizerValues<double> fertilizer_flow_milliliters_per_hour{
+        20.0, 20.0, 20.0, 20.0, 20.0};
     /** Potenza elettrica massima delle lampade, in watt. */
     double maximum_lighting_power_watts = 200.0;
 };
 
-/**
- * @brief Richieste logiche prodotte manualmente o da un controllore.
- *
- * I comandi descrivono cio che e stato richiesto; ActuatorOutput descrive
- * invece cio che l'attuatore sta erogando fisicamente. Per questo, durante
- * un'irrigazione, il volume richiesto rimane costante mentre il volume residuo
- * e la portata effettiva cambiano.
- */
+/** @brief Richieste logiche prodotte manualmente o da un controllore. */
 struct ActuatorCommand {
-    /**
-     * Dose totale richiesta per l'irrigazione corrente, in litri. Non e una
-     * portata e rimane memorizzata anche quando la pompa completa la dose,
-     * finche una cancellazione o stop_all() non azzera il comando.
-     */
+    /** Dose totale richiesta per l'irrigazione corrente, in litri. */
     double requested_irrigation_volume_liters = 0.0;
-    /** Comando del dosatore di concime, tra 0% e 100%. */
-    double fertilizer_doser_percent = 0.0;
+    /** Comando ON/OFF delle cinque elettrovalvole dei concentrati. */
+    FertilizerValues<bool> fertilizer_valves_open{};
     /** Comando dell'illuminazione, tra 0% e 100%. */
     double lighting_percent = 0.0;
 };
@@ -51,181 +75,113 @@ struct ActuatorCommand {
 /**
  * @brief Stato e uscite fisiche effettivamente erogate dagli attuatori.
  *
- * Questa struttura e l'ingresso fisico di EnvironmentSimulator::step().
- * I campi `*_last_step` rappresentano quantita integrate nell'ultimo passo;
- * portata del concime e potenza luminosa rappresentano invece valori continui.
+ * I campi `*_last_step` sono quantita integrate nell'ultima chiamata a step().
+ * Le portate rappresentano invece valori istantanei e diventano nulle quando
+ * la pompa comune o la relativa elettrovalvola sono chiuse.
  */
 struct ActuatorOutput {
-    /** Indica se la pompa ON/OFF e attualmente accesa. */
+    /** Indica se la pompa comune e accesa. */
     bool water_pump_on = false;
-    /** Portata corrente della pompa, in litri all'ora; zero quando e spenta. */
+    /** Portata d'acqua corrente, in L/h. */
     double water_pump_flow_liters_per_hour = 0.0;
-    /** Volume realmente erogato nell'ultima chiamata a step(), in litri. */
+    /** Acqua erogata nell'ultimo passo, in litri. */
     double irrigation_volume_liters_last_step = 0.0;
-    /** Tempo di accensione della pompa nell'ultima step(), in secondi. */
+    /** Tempo effettivo di pompaggio nell'ultimo passo, in secondi. */
     double water_pump_on_time_seconds_last_step = 0.0;
-    /** Volume ancora da erogare per completare la richiesta, in litri. */
+    /** Acqua ancora da erogare, in litri. */
     double remaining_irrigation_volume_liters = 0.0;
 
-    /**
-     * Identificativo del concime selezionato, oppure nessun valore. La
-     * selezione non garantisce che EnvironmentSimulator conosca il profilo.
-     */
-    std::optional<std::string> selected_fertilizer_id;
+    /** Stato fisico delle cinque elettrovalvole. */
+    FertilizerValues<bool> fertilizer_valves_open{};
+    /** Portata corrente per prodotto, in mL/h. */
+    FertilizerValues<double> fertilizer_flow_milliliters_per_hour{};
+    /** Volume realmente erogato per prodotto nell'ultimo passo, in mL. */
+    FertilizerValues<double> fertilizer_volume_milliliters_last_step{};
 
-    /** Portata di concime concentrato, in millilitri all'ora. */
-    double fertilizer_flow_milliliters_per_hour = 0.0;
-
-    /** Potenza elettrica assorbita dalle lampade, in watt. */
+    /** Potenza elettrica corrente delle lampade, in watt. */
     double lighting_power_watts = 0.0;
 };
 
 /**
- * @brief Simula una pompa ON/OFF a dose e attuatori continui ideali.
+ * @brief Simula una pompa ON/OFF condivisa da acqua e cinque concentrati.
  *
- * @details Il controllore richiede alla pompa una dose in litri. La pompa si
- * accende immediatamente alla portata fissa configurata, mentre step() integra
- * la portata nel tempo e la spegne al completamento della dose.
- *
- * Dosatore e lampade sono attuatori continui ideali: un comando percentuale
- * viene trasformato immediatamente e linearmente in mL/h o watt. Il loro stato
- * non cambia durante step().
- *
- * @note Non vengono rappresentati ritardi di attuazione, guasti, isteresi
- * meccanica o errori di inseguimento.
+ * La pompa eroga la dose d'acqua richiesta alla portata configurata. Le
+ * elettrovalvole possono essere aperte solo mentre l'irrigazione e attiva e
+ * aggiungono piccole portate di concentrato senza ridurre quella dell'acqua.
+ * N, P e K possono fluire insieme; PH_UP e PH_DOWN sono interbloccati.
  */
 class ActuatorSimulator {
 public:
     /**
-     * @brief Costruisce tutti gli attuatori spenti con limiti predefiniti.
-     *
-     * Comandi e uscite sono inizializzati a zero e nessun concime e
-     * selezionato.
-     *
-     * @param config Portata della pompa, dose massima e limiti degli attuatori.
-     * @throws std::invalid_argument Se almeno un limite non e finito o non e
-     * strettamente positivo.
+     * @brief Costruisce tutti gli attuatori nello stato sicuro.
+     * @throws std::invalid_argument Se una portata o un limite non e positivo.
      */
     explicit ActuatorSimulator(ActuatorConfig config = {});
 
-    /**
-     * @brief Restituisce i comandi correnti.
-     * @return Riferimento costante valido per la vita del simulatore. Il
-     * contenuto cambia quando viene impartito o annullato un comando.
-     */
+    /** @brief Restituisce i comandi logici correnti. */
     const ActuatorCommand& command() const noexcept;
-
-    /**
-     * @brief Restituisce le uscite fisiche correnti.
-     * @return Riferimento costante valido per la vita del simulatore. Dopo
-     * step() contiene volume e tempo di accensione relativi solo a quel passo.
-     */
+    /** @brief Restituisce le uscite fisiche correnti. */
     const ActuatorOutput& output() const noexcept;
-
-    /**
-     * @brief Restituisce i limiti fisici configurati.
-     * @return Riferimento costante alla configurazione validata e immutabile.
-     */
+    /** @brief Restituisce la configurazione fisica validata. */
     const ActuatorConfig& config() const noexcept;
 
     /**
-     * @brief Avvia una richiesta di irrigazione espressa come volume.
-     *
-     * La funzione accende immediatamente la pompa e inizializza il volume
-     * residuo, ma non eroga ancora acqua: il volume consegnato viene calcolato
-     * dalla successiva chiamata a step().
-     *
-     * @param volume_liters Volume positivo da erogare, in litri.
-     * @throws std::invalid_argument Se il volume non e finito, positivo o
-     *         supera ActuatorConfig::maximum_irrigation_volume_liters.
-     * @throws std::logic_error Se una precedente irrigazione e ancora attiva.
-     * @post output().water_pump_on e true, la portata e quella configurata e il
-     * volume residuo coincide con volume_liters.
+     * @brief Avvia l'erogazione della dose d'acqua indicata.
+     * @throws std::invalid_argument Se la dose non e valida.
+     * @throws std::logic_error Se un'irrigazione e gia attiva.
      */
     void request_irrigation_volume_liters(double volume_liters);
 
     /**
-     * @brief Annulla l'irrigazione corrente e spegne immediatamente la pompa.
-     *
-     * Azzera richiesta, portata, volume residuo e contatori dell'ultimo passo.
-     * Non modifica dosatore, selezione del concime o illuminazione.
+     * @brief Annulla l'irrigazione e chiude tutte le elettrovalvole.
      */
     void cancel_irrigation() noexcept;
 
-    /**
-     * @brief Stima il tempo necessario a completare l'irrigazione corrente.
-     * @return `volume residuo / portata * 3600`, in secondi; zero se non esiste
-     * un'irrigazione attiva.
-     */
+    /** @brief Restituisce i secondi necessari a completare la dose d'acqua. */
     double remaining_irrigation_time_seconds() const noexcept;
 
     /**
-     * @brief Seleziona il concime utilizzabile dal dosatore.
+     * @brief Apre o chiude l'elettrovalvola del prodotto indicato.
      *
-     * La funzione controlla soltanto che l'identificativo sia non vuoto.
-     * L'appartenenza ai profili di EnvironmentConfig viene verificata
-     * dall'ambiente quando la portata del dosatore e positiva.
+     * L'apertura richiede un'irrigazione attiva. PH_UP e PH_DOWN non possono
+     * essere aperti contemporaneamente. La chiusura e sempre consentita.
      *
-     * @param fertilizer_id Identificativo non vuoto del concime.
-     * @throws std::invalid_argument Se fertilizer_id e vuoto.
+     * @throws std::invalid_argument Se type non e valido.
+     * @throws std::logic_error Se si tenta un'apertura senza pompa attiva o
+     * in conflitto con il correttore di pH opposto.
      */
-    void select_fertilizer(const std::string& fertilizer_id);
+    void set_fertilizer_valve_open(FertilizerType type, bool open);
 
-    /**
-     * @brief Rimuove il concime selezionato e arresta immediatamente il dosaggio.
-     *
-     * Il comando percentuale e la portata tornano a zero. Irrigazione e
-     * illuminazione non vengono modificate.
-     */
-    void clear_fertilizer_selection() noexcept;
+    /** @brief Chiude simultaneamente tutte le elettrovalvole. */
+    void close_all_fertilizer_valves() noexcept;
 
-    /**
-     * @brief Imposta il comando del dosatore e aggiorna subito la portata.
-     *
-     * La conversione e lineare:
-     * `portata = portata massima * value / 100`.
-     * Il valore zero e sempre ammesso, anche senza concime selezionato.
-     *
-     * @param value Comando percentuale compreso tra 0 e 100.
-     * @throws std::invalid_argument Se value non e finito o non e nell'intervallo.
-     * @throws std::logic_error Se si richiede un valore positivo senza concime.
-     */
-    void set_fertilizer_doser_command_percent(double value);
+    /** @brief Restituisce il comando logico della valvola indicata. */
+    bool fertilizer_valve_command(FertilizerType type) const;
+    /** @brief Restituisce lo stato fisico della valvola indicata. */
+    bool fertilizer_valve_open(FertilizerType type) const;
+    /** @brief Restituisce la portata corrente del prodotto, in mL/h. */
+    double fertilizer_flow_milliliters_per_hour(FertilizerType type) const;
+    /** @brief Restituisce il volume erogato nell'ultimo passo, in mL. */
+    double fertilizer_volume_milliliters_last_step(FertilizerType type) const;
 
-    /**
-     * @brief Imposta il comando delle lampade e aggiorna subito la potenza.
-     *
-     * La conversione e lineare:
-     * `potenza = potenza massima * value / 100`.
-     *
-     * @param value Comando percentuale compreso tra 0 e 100.
-     * @throws std::invalid_argument Se value non e finito o non e nell'intervallo.
-     */
+    /** @brief Imposta il comando percentuale delle lampade. */
     void set_lighting_command_percent(double value);
 
     /**
-     * @brief Fa avanzare la pompa ON/OFF e calcola il volume erogato nel passo.
+     * @brief Integra acqua e concentrati per la durata effettiva della pompa.
      *
-     * Se la pompa e spenta, azzera solamente i contatori `*_last_step`. Se la
-     * dose termina prima della fine dell'intervallo, registra il tempo effettivo
-     * di accensione, consegna solo il volume residuo e spegne la pompa.
-     * Dosatore e lampade non richiedono integrazione e rimangono invariati.
-     *
-     * @param delta_time_seconds Durata positiva del passo, in secondi.
-     * @throws std::invalid_argument Se la durata non e finita o positiva.
-     * @post Il volume erogato non supera mai il volume residuo precedente.
+     * Se l'irrigazione termina prima di delta_time_seconds, i volumi dei
+     * concentrati vengono integrati solo fino a quell'istante. Al termine
+     * tutte le elettrovalvole vengono riportate nello stato sicuro chiuso.
      */
     void step(double delta_time_seconds);
 
-    /**
-     * @brief Riporta tutti gli attuatori alla condizione sicura.
-     *
-     * Azzera comandi e uscite, spegne pompa e lampade e rimuove la selezione
-     * del concime. L'operazione e immediata e non puo generare eccezioni.
-     */
+    /** @brief Azzera comandi, uscite e volumi integrati. */
     void stop_all() noexcept;
 
 private:
+    void close_fertilizer_valves_preserving_last_step() noexcept;
+
     ActuatorConfig config_;
     ActuatorCommand command_;
     ActuatorOutput output_;

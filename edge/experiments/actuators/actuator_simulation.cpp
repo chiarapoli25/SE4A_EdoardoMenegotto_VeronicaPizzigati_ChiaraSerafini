@@ -1,6 +1,7 @@
 #include "smarthydro/actuator_simulator.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +13,17 @@
 #include <vector>
 
 namespace {
+
+constexpr std::array<smarthydro::FertilizerType, 5> kFertilizerTypes{
+    smarthydro::FertilizerType::NITROGEN,
+    smarthydro::FertilizerType::PHOSPHORUS,
+    smarthydro::FertilizerType::POTASSIUM,
+    smarthydro::FertilizerType::PH_UP,
+    smarthydro::FertilizerType::PH_DOWN,
+};
+
+using FertilizerHistory =
+    smarthydro::FertilizerValues<std::vector<double>>;
 
 #ifdef _WIN32
 FILE* open_pipe(const char* command) {
@@ -65,10 +77,10 @@ double read_value(
 char read_actuator_choice() {
     std::string line;
     while (true) {
-        std::cout << "\nScegli l'attuatore da modificare:\n"
-                  << "  1 - Pompa di irrigazione\n"
-                  << "  2 - Dosatore di concime\n"
-                  << "  3 - Illuminazione\n"
+        std::cout << "\nScegli l'azione:\n"
+                  << "  1 - Irrigazione con miscela\n"
+                  << "  2 - Illuminazione\n"
+                  << "  3 - Arresto di sicurezza\n"
                   << "  q - Termina\n"
                   << "Scelta: ";
         if (!std::getline(std::cin, line)) {
@@ -77,7 +89,8 @@ char read_actuator_choice() {
         if (line.size() == 1) {
             const char choice = static_cast<char>(
                 std::tolower(static_cast<unsigned char>(line.front())));
-            if (choice == '1' || choice == '2' || choice == '3' || choice == 'q') {
+            if (choice == '1' || choice == '2' || choice == '3' ||
+                choice == 'q') {
                 return choice;
             }
         }
@@ -108,7 +121,7 @@ public:
     void redraw(
         const std::vector<double>& time_minutes,
         const std::vector<double>& irrigation_flow,
-        const std::vector<double>& fertilizer_flow,
+        const FertilizerHistory& fertilizer_flows,
         const std::vector<double>& lighting_power,
         const smarthydro::ActuatorConfig& config) {
         const double x_max = std::max(5.0, time_minutes.back() + 1.0);
@@ -126,23 +139,16 @@ public:
         draw_series(
             "Pompa di irrigazione",
             "Portata acqua (L/h)",
-            "Portata d'acqua erogata",
+            "Acqua",
             "#0072BD",
             config.water_pump_flow_liters_per_hour,
             time_minutes,
             irrigation_flow);
-        draw_series(
-            "Dosatore di concime",
-            "Portata concime (mL/h)",
-            "Portata di concime erogata",
-            "#D95319",
-            config.maximum_fertilizer_flow_milliliters_per_hour,
-            time_minutes,
-            fertilizer_flow);
+        draw_fertilizer_series(time_minutes, fertilizer_flows, config);
         draw_series(
             "Illuminazione",
             "Potenza elettrica (W)",
-            "Potenza elettrica erogata",
+            "Lampade",
             "#EDB120",
             config.maximum_lighting_power_watts,
             time_minutes,
@@ -175,6 +181,35 @@ private:
             maximum_value * 1.10,
             color,
             legend);
+        write_series(steps, values);
+    }
+
+    void draw_fertilizer_series(
+        const std::vector<double>& steps,
+        const FertilizerHistory& histories,
+        const smarthydro::ActuatorConfig& config) {
+        const double maximum_flow = *std::max_element(
+            config.fertilizer_flow_milliliters_per_hour.begin(),
+            config.fertilizer_flow_milliliters_per_hour.end());
+        std::fprintf(
+            pipe_,
+            "set title 'Elettrovalvole dei concentrati'\n"
+            "set ylabel 'Portata (mL/h)'\n"
+            "set yrange [0:%.6f]\n"
+            "plot '-' using 1:2 with lines linewidth 2 title 'N', "
+            "'-' using 1:2 with lines linewidth 2 title 'P', "
+            "'-' using 1:2 with lines linewidth 2 title 'K', "
+            "'-' using 1:2 with lines linewidth 2 title 'pH+', "
+            "'-' using 1:2 with lines linewidth 2 title 'pH-'\n",
+            maximum_flow * 1.10);
+        for (std::size_t index = 0; index < kFertilizerTypes.size(); ++index) {
+            write_series(steps, histories[index]);
+        }
+    }
+
+    void write_series(
+        const std::vector<double>& steps,
+        const std::vector<double>& values) {
         for (std::size_t index = 0; index < steps.size(); ++index) {
             std::fprintf(pipe_, "%.6f %.6f\n", steps[index], values[index]);
         }
@@ -184,19 +219,43 @@ private:
     FILE* pipe_ = nullptr;
 };
 
-void print_state(
-    const smarthydro::ActuatorCommand& command,
-    const smarthydro::ActuatorOutput& output) {
+void append_sample(
+    double time_minutes,
+    double irrigation_flow,
+    const smarthydro::FertilizerValues<double>& fertilizer_flows,
+    double lighting_power,
+    std::vector<double>& times,
+    std::vector<double>& irrigation_history,
+    FertilizerHistory& fertilizer_history,
+    std::vector<double>& lighting_history) {
+    times.push_back(time_minutes);
+    irrigation_history.push_back(irrigation_flow);
+    for (std::size_t index = 0; index < kFertilizerTypes.size(); ++index) {
+        fertilizer_history[index].push_back(fertilizer_flows[index]);
+    }
+    lighting_history.push_back(lighting_power);
+}
+
+void print_state(const smarthydro::ActuatorSimulator& actuators) {
+    const auto& command = actuators.command();
+    const auto& output = actuators.output();
     std::cout << "\nComandi e uscite fisiche:\n"
               << "  Pompa: dose richiesta "
               << command.requested_irrigation_volume_liters << " L, "
               << (output.water_pump_on ? "ON" : "OFF")
               << ", portata " << output.water_pump_flow_liters_per_hour
-              << " L/h, ultimo volume erogato "
-              << output.irrigation_volume_liters_last_step << " L\n"
-              << "  Dosatore: " << command.fertilizer_doser_percent << "% -> "
-              << output.fertilizer_flow_milliliters_per_hour << " mL/h\n"
-              << "  Illuminazione: " << command.lighting_percent << "% -> "
+              << " L/h, ultimo volume " << output.irrigation_volume_liters_last_step
+              << " L\n";
+    for (const auto type : kFertilizerTypes) {
+        std::cout << "  Valvola " << smarthydro::to_string(type) << ": "
+                  << (actuators.fertilizer_valve_open(type) ? "OPEN" : "CLOSED")
+                  << ", portata "
+                  << actuators.fertilizer_flow_milliliters_per_hour(type)
+                  << " mL/h, ultimo volume "
+                  << actuators.fertilizer_volume_milliliters_last_step(type)
+                  << " mL\n";
+    }
+    std::cout << "  Illuminazione: " << command.lighting_percent << "% -> "
               << output.lighting_power_watts << " W\n";
 }
 
@@ -211,26 +270,25 @@ int main() {
 
     try {
         smarthydro::ActuatorSimulator actuators;
-        actuators.select_fertilizer("tomato-growth");
-
         std::vector<double> time_minutes{0.0};
         std::vector<double> irrigation_flow{0.0};
-        std::vector<double> fertilizer_flow{0.0};
+        FertilizerHistory fertilizer_flows;
+        for (auto& history : fertilizer_flows) {
+            history.push_back(0.0);
+        }
         std::vector<double> lighting_power{0.0};
         LiveGnuplot graph;
         graph.redraw(
             time_minutes,
             irrigation_flow,
-            fertilizer_flow,
+            fertilizer_flows,
             lighting_power,
             actuators.config());
 
-        std::cout << "=== Simulazione live dei tre attuatori ===\n"
-                  << "Il grafico rimane aperto e viene aggiornato dopo ogni comando.\n"
-                  << "Per la pompa il controllore richiede una dose in litri; "
-                     "la pompa ON/OFF calcola automaticamente la durata.\n"
-                  << "Dosatore e lampade usano ancora comandi percentuali.\n";
-        print_state(actuators.command(), actuators.output());
+        std::cout << "=== Simulazione live di pompa, valvole e lampade ===\n"
+                  << "I concentrati possono fluire soltanto durante "
+                     "l'irrigazione; pH+ e pH- sono interbloccati.\n";
+        print_state(actuators);
 
         double simulated_time_minutes = 0.0;
         while (true) {
@@ -246,60 +304,99 @@ int main() {
                     actuators.config().maximum_irrigation_volume_liters);
                 actuators.request_irrigation_volume_liters(volume_liters);
 
-                // La pompa passa subito a ON alla portata fissa configurata.
-                time_minutes.push_back(simulated_time_minutes);
-                irrigation_flow.push_back(
-                    actuators.output().water_pump_flow_liters_per_hour);
-                fertilizer_flow.push_back(
-                    actuators.output().fertilizer_flow_milliliters_per_hour);
-                lighting_power.push_back(actuators.output().lighting_power_watts);
+                for (const auto type : {
+                         smarthydro::FertilizerType::NITROGEN,
+                         smarthydro::FertilizerType::PHOSPHORUS,
+                         smarthydro::FertilizerType::POTASSIUM}) {
+                    const bool open = read_value(
+                        std::string("Aprire ") + smarthydro::to_string(type) +
+                            "? [0=no, 1=si]: ",
+                        0.0,
+                        1.0) == 1.0;
+                    actuators.set_fertilizer_valve_open(type, open);
+                }
+                const int ph_choice = static_cast<int>(read_value(
+                    "Correzione pH [0=nessuna, 1=pH+, 2=pH-]: ",
+                    0.0,
+                    2.0));
+                if (ph_choice == 1) {
+                    actuators.set_fertilizer_valve_open(
+                        smarthydro::FertilizerType::PH_UP, true);
+                } else if (ph_choice == 2) {
+                    actuators.set_fertilizer_valve_open(
+                        smarthydro::FertilizerType::PH_DOWN, true);
+                }
+
+                const auto active_fertilizer_flows =
+                    actuators.output().fertilizer_flow_milliliters_per_hour;
+                append_sample(
+                    simulated_time_minutes,
+                    actuators.output().water_pump_flow_liters_per_hour,
+                    active_fertilizer_flows,
+                    actuators.output().lighting_power_watts,
+                    time_minutes,
+                    irrigation_flow,
+                    fertilizer_flows,
+                    lighting_power);
 
                 const double duration_seconds =
                     actuators.remaining_irrigation_time_seconds();
                 actuators.step(duration_seconds);
                 simulated_time_minutes += duration_seconds / 60.0;
 
-                // Due campioni allo stesso istante rappresentano lo spegnimento
-                // netto della pompa ON/OFF al termine della dose.
-                time_minutes.push_back(simulated_time_minutes);
-                irrigation_flow.push_back(
-                    actuators.config().water_pump_flow_liters_per_hour);
-                fertilizer_flow.push_back(
-                    actuators.output().fertilizer_flow_milliliters_per_hour);
-                lighting_power.push_back(actuators.output().lighting_power_watts);
-                time_minutes.push_back(simulated_time_minutes);
-                irrigation_flow.push_back(0.0);
-                fertilizer_flow.push_back(
-                    actuators.output().fertilizer_flow_milliliters_per_hour);
-                lighting_power.push_back(actuators.output().lighting_power_watts);
-
+                append_sample(
+                    simulated_time_minutes,
+                    actuators.config().water_pump_flow_liters_per_hour,
+                    active_fertilizer_flows,
+                    actuators.output().lighting_power_watts,
+                    time_minutes,
+                    irrigation_flow,
+                    fertilizer_flows,
+                    lighting_power);
+                append_sample(
+                    simulated_time_minutes,
+                    0.0,
+                    actuators.output().fertilizer_flow_milliliters_per_hour,
+                    actuators.output().lighting_power_watts,
+                    time_minutes,
+                    irrigation_flow,
+                    fertilizer_flows,
+                    lighting_power);
                 std::cout << "Durata automatica dell'irrigazione: "
                           << duration_seconds << " s.\n";
             } else if (choice == '2') {
                 const double value = read_value(
-                    "Comando del dosatore [0-100%]: ", 0.0, 100.0);
-                actuators.set_fertilizer_doser_command_percent(value);
-            } else {
-                const double value = read_value(
                     "Comando delle lampade [0-100%]: ", 0.0, 100.0);
                 actuators.set_lighting_command_percent(value);
+                append_sample(
+                    simulated_time_minutes,
+                    actuators.output().water_pump_flow_liters_per_hour,
+                    actuators.output().fertilizer_flow_milliliters_per_hour,
+                    actuators.output().lighting_power_watts,
+                    time_minutes,
+                    irrigation_flow,
+                    fertilizer_flows,
+                    lighting_power);
+            } else {
+                actuators.stop_all();
+                append_sample(
+                    simulated_time_minutes,
+                    0.0,
+                    actuators.output().fertilizer_flow_milliliters_per_hour,
+                    0.0,
+                    time_minutes,
+                    irrigation_flow,
+                    fertilizer_flows,
+                    lighting_power);
             }
 
-            if (choice != '1') {
-                time_minutes.push_back(simulated_time_minutes);
-                irrigation_flow.push_back(
-                    actuators.output().water_pump_flow_liters_per_hour);
-                fertilizer_flow.push_back(
-                    actuators.output().fertilizer_flow_milliliters_per_hour);
-                lighting_power.push_back(actuators.output().lighting_power_watts);
-            }
             graph.redraw(
                 time_minutes,
                 irrigation_flow,
-                fertilizer_flow,
+                fertilizer_flows,
                 lighting_power,
                 actuators.config());
-            print_state(actuators.command(), actuators.output());
+            print_state(actuators);
         }
 
         std::cout << "Simulazione terminata.\n";
