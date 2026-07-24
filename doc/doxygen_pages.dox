@@ -1,0 +1,36 @@
+/**
+ * @mainpage Doxygen
+ *
+ * La documentazione tecnica di SmartHydro e raccolta in un unico sito e
+ * organizzata nelle due componenti software del progetto:
+ *
+ * - @subpage edge_controller_cpp
+ * - @subpage backend_python
+ *
+ * La @ref md__r_e_a_d_m_e descrive invece compilazione, test ed esperimenti
+ * dell'intero progetto.
+ */
+
+/**
+ * @page edge_controller_cpp Edge Controller C++
+ *
+ * Componente C++17 che simula ambiente, sensori e attuatori e mette a
+ * disposizione controllori a soglia, PID e predittivi.
+ *
+ * Punti di accesso:
+ *
+ * - @ref smarthydro::EnvironmentSimulator
+ * - @ref smarthydro::SensorSimulator
+ * - @ref smarthydro::ActuatorSimulator
+ * - @ref smarthydro::PidController
+ */
+
+/**
+ * @page backend_python Backend Python
+ *
+ * Componente FastAPI che espone gli endpoint HTTP di SmartHydro.
+ *
+ * Punti di accesso:
+ *
+ * - @ref backend.app.main
+ */

@@ -14,11 +14,11 @@ __pycache__/
 .idea/
 .vscode/
 
-*.pdf
-**.pdf
 
 # File prodotti dagli experiments
 edge/experiment_results/
 
 # Immagini generate
 *.png
+
+doc/doxygen/
