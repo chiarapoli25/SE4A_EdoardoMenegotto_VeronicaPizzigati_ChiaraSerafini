@@ -10,6 +10,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Database SQLite del backend
+backend/data/
+
 # Editors
 .idea/
 .vscode/
