@@ -15,7 +15,7 @@ invece di fidarsi soltanto di un filtro sui caratteri.
 
 from pathlib import Path
 
-from backend.app.models import Recipe
+from app.models import Recipe
 
 DEFAULT_EXPORT_DIRECTORY = Path(__file__).resolve().parent.parent / "data" / "recipes"
 

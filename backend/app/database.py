@@ -13,7 +13,7 @@ sostituzione strettamente maggiore di quella corrente).
 import sqlite3
 from pathlib import Path
 
-from backend.app.models import Recipe
+from app.models import Recipe
 
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "data" / "smarthydro.db"
 

@@ -13,15 +13,15 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 
-from backend.app.database import (
+from app.database import (
     RecipeVersionConflict,
     get_connection,
     get_recipe,
     init_db,
     save_recipe,
 )
-from backend.app.models import Recipe
-from backend.app.recipe_export import (
+from app.models import Recipe
+from app.recipe_export import (
     DEFAULT_EXPORT_DIRECTORY,
     UnsafeRecipeId,
     assert_safe_recipe_id,
