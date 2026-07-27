@@ -1,9 +1,10 @@
-"""Applicazione FastAPI e relativi endpoint HTTP di SmartHydro.
+"""@file main.py
+@brief Applicazione FastAPI e relativi endpoint HTTP di SmartHydro.
 
-Il modulo costruisce l'oggetto ASGI importato dal server e definisce gli
-endpoint pubblici disponibili nella fase corrente. Mantiene le ricette in
-SQLite e le esporta come file JSON a ogni salvataggio; non esiste ancora
-un canale diretto verso il processo dell'Edge Controller.
+@details Il modulo costruisce l'oggetto ASGI importato dal server e definisce
+gli endpoint pubblici disponibili nella fase corrente. Mantiene le ricette in
+SQLite e le esporta come file JSON a ogni salvataggio; non esiste ancora un
+canale diretto verso il processo dell'Edge Controller.
 """
 
 import sqlite3
@@ -31,7 +32,11 @@ from app.recipe_export import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Crea la tabella delle ricette all'avvio, se non esiste gia."""
+    """@brief Inizializza il database durante l'avvio dell'applicazione.
+
+    @param app Applicazione FastAPI gestita dal contesto di vita.
+    @return Generatore asincrono che cede il controllo dopo l'inizializzazione.
+    """
     connection = get_connection()
     try:
         init_db(connection)
@@ -40,12 +45,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
-## Applicazione ASGI principale, con titolo e versione esposti da OpenAPI.
+## @brief Applicazione ASGI principale esposta al server Uvicorn.
 app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 
 
 def get_db() -> Generator[sqlite3.Connection, None, None]:
-    """Apre una connessione SQLite per la durata di una singola richiesta."""
+    """@brief Fornisce una connessione SQLite per una singola richiesta.
+
+    @return Generatore che espone la connessione e la chiude al termine della
+        richiesta.
+    """
     connection = get_connection()
     try:
         yield connection
@@ -54,28 +63,35 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 
 
 def get_export_directory() -> Path:
-    """Cartella in cui viene scritto il file JSON per l'Edge Controller."""
+    """@brief Restituisce la cartella di esportazione delle ricette.
+
+    @return Percorso predefinito dei file JSON destinati all'Edge Controller.
+    """
     return DEFAULT_EXPORT_DIRECTORY
 
 
 @app.get("/")
 def read_root() -> dict[str, str]:
-    """Restituisce l'identita pubblica del servizio.
+    """@brief Restituisce l'identita pubblica del servizio.
 
-    Restituisce un dizionario JSON-serializzabile con nome del backend e
+    @details Restituisce un dizionario JSON-serializzabile con nome del backend e
     versione applicativa. La funzione non modifica stato e non accede a
     risorse esterne.
+
+    @return Nome e versione del backend.
     """
     return {"name": "SmartHydro Backend", "version": "0.1.0"}
 
 
 @app.get("/health")
 def read_health() -> dict[str, str]:
-    """Segnala che il processo HTTP e in esecuzione.
+    """@brief Segnala che il processo HTTP e in esecuzione.
 
-    Restituisce un dizionario JSON-serializzabile con ``status`` uguale a
-    ``"healthy"``. Il risultato e statico: non verifica database, sensori,
+    @details Restituisce un dizionario JSON-serializzabile con `status` uguale a
+    `"healthy"`. Il risultato e statico: non verifica database, sensori,
     attuatori o collegamento con l'Edge Controller.
+
+    @return Stato statico di disponibilita del processo.
     """
     return {"status": "healthy"}
 
@@ -86,13 +102,19 @@ def create_recipe(
     connection: sqlite3.Connection = Depends(get_db),
     export_directory: Path = Depends(get_export_directory),
 ) -> Recipe:
-    """Riceve una ricetta, la valida via Pydantic, la salva in SQLite e la
-    esporta come file JSON per l'Edge Controller.
+    """@brief Valida, salva ed esporta una ricetta.
 
-    La ricetta e identificata dal proprio campo ``id``: un nuovo invio con
-    lo stesso id sostituisce quello salvato solo se ``version`` e
+    @details La ricetta e identificata dal proprio campo `id`: un nuovo invio con
+    lo stesso id sostituisce quello salvato solo se `version` e
     maggiore, altrimenti la richiesta e rifiutata con 409 e il file
     esportato in precedenza resta invariato.
+
+    @param recipe Ricetta gia validata da Pydantic.
+    @param connection Connessione SQLite associata alla richiesta.
+    @param export_directory Directory di destinazione del file JSON.
+    @return Ricetta salvata, usata da FastAPI come corpo della risposta 201.
+    @throws HTTPException Se l'identificativo non e sicuro o la versione non e
+        strettamente maggiore di quella memorizzata.
     """
     try:
         assert_safe_recipe_id(recipe.id, export_directory)
@@ -113,8 +135,16 @@ def read_recipe(
     recipe_id: str,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Recipe:
-    """Restituisce la ricetta salvata, nello stesso formato JSON atteso
-    da ``recipe_from_json`` lato Edge Controller.
+    """@brief Recupera una ricetta tramite il suo identificativo.
+
+    @details La risposta usa lo stesso formato JSON atteso da
+    `recipe_from_json()` lato Edge Controller.
+
+    @param recipe_id Identificativo univoco della ricetta.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Ricetta deserializzata dal database.
+    @throws HTTPException Se non esiste una ricetta con l'identificativo
+        richiesto.
     """
     recipe = get_recipe(connection, recipe_id)
     if recipe is None:

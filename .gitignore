@@ -25,3 +25,4 @@ edge/experiment_results/
 *.png
 
 doc/doxygen/
+output/
