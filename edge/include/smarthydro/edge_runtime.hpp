@@ -1,0 +1,139 @@
+#pragma once
+
+/**
+ * @file edge_runtime.hpp
+ * @brief Ciclo operativo che collega ricetta, sensori, controllori e attuatori.
+ */
+
+#include "smarthydro/actuator_simulator.hpp"
+#include "smarthydro/control_system.hpp"
+#include "smarthydro/environment_simulator.hpp"
+#include "smarthydro/sensor_simulator.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace smarthydro {
+
+/**
+ * @brief Risultato osservabile di un singolo ciclo operativo dell'Edge.
+ *
+ * Le letture e le decisioni appartengono all'inizio del passo; stato ambientale
+ * e volumi erogati descrivono invece il risultato fisico alla fine del passo.
+ */
+struct EdgeStepResult {
+    /** Tempo simulato all'inizio del ciclo, in secondi. */
+    double start_time_seconds = 0.0;
+    /** Durata del ciclo, in secondi. */
+    double duration_seconds = 0.0;
+    /** Nome della fase usata per calcolare i comandi. */
+    std::string phase_name;
+    /** Campione sincronizzato letto prima del controllo. */
+    SensorReadings readings;
+    /** Decisione sicura per ciascuna delle sei variabili controllate. */
+    ControlledValues<ControlDecision> decisions;
+    /** Acqua realmente erogata nell'intero ciclo, in litri. */
+    double delivered_water_liters = 0.0;
+    /** Concentrati realmente erogati nell'intero ciclo, in millilitri. */
+    FertilizerValues<double> delivered_fertilizer_milliliters{};
+    /** Comando logico degli attuatori alla fine del ciclo. */
+    ActuatorCommand actuator_command;
+    /** Stato fisico degli attuatori alla fine del ciclo. */
+    ActuatorOutput actuator_output;
+    /** Stato ambientale raggiunto alla fine del ciclo. */
+    EnvironmentState environment_state;
+};
+
+/**
+ * @brief Runtime locale dell'Edge Controller guidato da una ricetta.
+ *
+ * La classe realizza il ciclo:
+ *
+ * 1. lettura dei sensori e dei modelli N/P/K;
+ * 2. esecuzione delle sei Strategy tramite RecipeControlSystem;
+ * 3. applicazione dei comandi sicuri agli attuatori;
+ * 4. avanzamento dell'ambiente;
+ * 5. aggiornamento dello storico di dose giornaliero e di fase.
+ *
+ * Non dipende dal backend e puo quindi continuare a usare una ricetta JSON
+ * locale quando la rete non e disponibile.
+ */
+class EdgeRuntime {
+public:
+    /**
+     * @brief Costruisce il runtime nello stato fisico iniziale.
+     *
+     * Il tipo di substrato dell'ambiente viene sempre preso dalla ricetta,
+     * sostituendo l'eventuale valore presente in environment_config.
+     *
+     * @param recipe Ricetta validata da acquisire.
+     * @param actuator_config Configurazione fisica degli attuatori.
+     * @param environment_config Configurazione del modello ambientale.
+     * @param sensor_config Configurazione degli errori strumentali.
+     * @param environment_seed Seed riproducibile dell'ambiente.
+     * @param sensor_seed Seed riproducibile dei sensori.
+     */
+    explicit EdgeRuntime(
+        Recipe recipe,
+        ActuatorConfig actuator_config = {},
+        EnvironmentConfig environment_config = {},
+        SensorConfig sensor_config = {},
+        std::uint32_t environment_seed = 0x53484D31U,
+        std::uint32_t sensor_seed = 0x53484D32U);
+
+    /**
+     * @brief Valida e conferma localmente tutte le configurazioni della ricetta.
+     *
+     * @throws std::runtime_error Se almeno una configurazione non puo essere
+     * confermata.
+     */
+    void confirm_all_configurations();
+
+    /**
+     * @brief Esegue un ciclo completo di controllo e simulazione.
+     *
+     * @param delta_time_seconds Durata positiva e finita del ciclo.
+     * @return Letture, decisioni, volumi erogati e stato finale.
+     * @throws std::invalid_argument Se la durata non e positiva e finita.
+     */
+    EdgeStepResult step(double delta_time_seconds);
+
+    /** @brief Espone l'orchestratore della ricetta per ispezione. */
+    const RecipeControlSystem& control_system() const noexcept;
+    /** @brief Espone lo stato ambientale corrente. */
+    const EnvironmentState& environment_state() const noexcept;
+    /** @brief Espone lo stato fisico corrente degli attuatori. */
+    const ActuatorOutput& actuator_output() const noexcept;
+    /** @brief Dose cumulativa realmente erogata nella fase corrente. */
+    double cumulative_phase_dose_milliliters(
+        ControlledVariable variable) const;
+    /** @brief Dose cumulativa realmente erogata nel giorno corrente. */
+    double daily_dose_milliliters(ControlledVariable variable) const;
+
+private:
+    ControlRequest base_request(double delta_time_seconds) const;
+    std::size_t active_phase_index(double elapsed_recipe_hours) const;
+    void reset_histories_if_needed();
+    void apply_decisions(
+        double delta_time_seconds,
+        EdgeStepResult& result);
+    void advance_physics(
+        double delta_time_seconds,
+        EdgeStepResult& result);
+    void update_dose_histories(
+        double delta_time_seconds,
+        const EdgeStepResult& result);
+
+    RecipeControlSystem control_system_;
+    ActuatorSimulator actuators_;
+    EnvironmentSimulator environment_;
+    SensorSimulator sensors_;
+    ControlledValues<double> cumulative_phase_dose_milliliters_{};
+    ControlledValues<double> daily_dose_milliliters_{};
+    ControlledValues<double> seconds_since_last_dose_{};
+    std::size_t history_phase_index_ = kControlledVariableCount;
+    std::uint64_t history_day_index_ = 0;
+};
+
+}  // namespace smarthydro

@@ -19,10 +19,12 @@
  *
  * Il ciclo previsto nell'Edge Controller e:
  *
- * 1. un comando manuale o un controllore configura gli attuatori;
- * 2. ActuatorSimulator::step() calcola l'uscita fisica;
- * 3. EnvironmentSimulator::step() applica l'uscita all'ambiente;
- * 4. SensorSimulator::read() osserva lo stato risultante.
+ * 1. EdgeRuntime legge sensori e modelli N/P/K;
+ * 2. RecipeControlSystem calcola le sei decisioni sicure;
+ * 3. EdgeRuntime configura gli attuatori;
+ * 4. ActuatorSimulator::step() calcola l'uscita fisica;
+ * 5. EnvironmentSimulator::step() applica l'uscita all'ambiente;
+ * 6. EdgeRuntime aggiorna lo storico delle dosi realmente erogate.
  */
 
 /**
@@ -62,6 +64,7 @@
  * - @ref smarthydro::PidController
  * - @ref smarthydro::PredictiveController
  * - @ref smarthydro::RecipeControlSystem
+ * - @ref smarthydro::EdgeRuntime
  *
  * @section edge_recipe_control Ricette e controllo Strategy
  *

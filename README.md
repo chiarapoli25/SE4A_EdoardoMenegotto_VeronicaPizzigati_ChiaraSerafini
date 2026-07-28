@@ -43,9 +43,24 @@ ctest --test-dir edge/build --output-on-failure
 ./edge/build/bin/edge
 ```
 
-L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
-campione sincronizzato ottenuto applicando lo stato degli attuatori
-all'avanzamento dell'ambiente e leggendo infine i sensori.
+L'eseguibile principale carica `config/example_recipe.json`, valida e conferma
+localmente le sei configurazioni, quindi esegue un ciclo completo:
+
+1. legge sensori e modelli N/P/K;
+2. calcola i comandi tramite `RecipeControlSystem`;
+3. applica i comandi sicuri a pompa, lampade e valvole;
+4. fa avanzare l'ambiente e aggiorna lo storico delle dosi.
+
+Per usare una ricetta diversa o simulare piu cicli:
+
+```bash
+./edge/build/bin/edge --recipe backend/data/recipes/tomato_demo_v1.json
+./edge/build/bin/edge --steps 96 --step-seconds 900
+```
+
+`--steps` indica il numero di cicli e `--step-seconds` la durata simulata di
+ciascun ciclo. L'Edge usa esclusivamente il JSON locale durante l'esecuzione e
+non richiede che il backend sia raggiungibile.
 
 I test C++ di ambiente, sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
 scarica automaticamente la versione fissata al primo comando di configurazione

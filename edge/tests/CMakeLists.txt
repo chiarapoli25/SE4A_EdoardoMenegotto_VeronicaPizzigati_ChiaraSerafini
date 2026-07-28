@@ -82,6 +82,37 @@ target_compile_definitions(control_system_tests
 set_target_properties(control_system_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(control_system_tests)
 
+# Test del ciclo operativo completo guidato dalla ricetta.
+add_executable(edge_runtime_tests edge_runtime_tests.cpp)
+target_link_libraries(edge_runtime_tests
+    PRIVATE
+        edge_runtime
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(edge_runtime_tests PRIVATE cxx_std_17)
+target_compile_definitions(edge_runtime_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(edge_runtime_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(edge_runtime_tests)
+
+# Il main deve caricare la ricetta e completare almeno un ciclo senza servizi
+# esterni o interazione utente.
+add_test(
+    NAME edge_main_recipe_smoke
+    COMMAND $<TARGET_FILE:edge>
+        --recipe "${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        --steps 1
+        --step-seconds 900
+)
+set_tests_properties(
+    edge_main_recipe_smoke
+    PROPERTIES
+        PASS_REGULAR_EXPRESSION "Status: recipe runtime ready"
+)
+
 # Smoke test dei programmi dimostrativi. Sensori e ricette creano un solo CSV
 # e nessun PNG; gli altri output di test finiscono esclusivamente nella build.
 if(BUILD_EXPERIMENTS)

@@ -61,6 +61,21 @@ target_link_libraries(recipe_json
 )
 set_target_properties(recipe_json PROPERTIES CXX_EXTENSIONS OFF)
 
+# Ciclo operativo che collega ricetta, sensori, attuatori e ambiente.
+add_library(edge_runtime edge_runtime.cpp)
+target_include_directories(edge_runtime
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(edge_runtime PUBLIC cxx_std_17)
+target_link_libraries(edge_runtime
+    PUBLIC
+        control_system
+        sensor_simulator
+        environment_simulator
+        actuator_simulator
+)
+set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
+
 # NOME DELL'ESEGUIBILE PRINCIPALE:
 # "edge" e sia il nome del target CMake sia, per impostazione
 # predefinita, il nome del file generato in build/bin. Per cambiarlo occorre
@@ -70,9 +85,12 @@ target_compile_features(edge PRIVATE cxx_std_17)
 # Collega all'eseguibile le librerie necessarie.
 target_link_libraries(edge
     PRIVATE
-        sensor_simulator
-        environment_simulator
-        actuator_simulator
+        edge_runtime
+        recipe_json
+)
+target_compile_definitions(edge
+    PRIVATE
+        SMARTHYDRO_DEFAULT_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
 )
 set_target_properties(edge PROPERTIES CXX_EXTENSIONS OFF)
 
