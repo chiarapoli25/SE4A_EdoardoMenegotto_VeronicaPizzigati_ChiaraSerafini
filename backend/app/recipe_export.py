@@ -16,7 +16,7 @@ invece di fidarsi soltanto di un filtro sui caratteri.
 
 from pathlib import Path
 
-from app.models import Recipe
+from .models import Recipe
 
 ## @brief Directory predefinita dei file JSON destinati all'Edge Controller.
 DEFAULT_EXPORT_DIRECTORY = Path(__file__).resolve().parent.parent / "data" / "recipes"

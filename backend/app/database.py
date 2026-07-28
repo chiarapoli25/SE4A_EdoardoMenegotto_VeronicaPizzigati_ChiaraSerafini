@@ -14,7 +14,7 @@ sostituzione strettamente maggiore di quella corrente).
 import sqlite3
 from pathlib import Path
 
-from app.models import Recipe
+from .models import Recipe
 
 ## @brief Percorso predefinito del database SQLite del backend.
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parent.parent / "data" / "smarthydro.db"
