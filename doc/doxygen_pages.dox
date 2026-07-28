@@ -130,11 +130,16 @@
  * | ------ | -------- | -------- | ----------- |
  * | GET | `/` | backend.app.main.read_root() | Nome e versione del servizio |
  * | GET | `/health` | backend.app.main.read_health() | Disponibilita del processo |
+ * | POST | `/recipes` | backend.app.main.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
+ * | GET | `/recipes/{recipe_id}` | backend.app.main.read_recipe() | Lettura di una ricetta salvata |
  *
  * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
  * sensori, database o comunicazione con l'Edge Controller.
  *
- * @section backend_api Punto di accesso
+ * @section backend_components Componenti
  *
- * - @ref backend.app.main
+ * - backend/app/main.py: applicazione ASGI ed endpoint HTTP;
+ * - backend/app/models.py: contratto Pydantic condiviso con l'Edge Controller;
+ * - backend/app/database.py: persistenza SQLite delle ricette;
+ * - backend/app/recipe_export.py: esportazione JSON sicura per l'Edge.
  */
