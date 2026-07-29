@@ -1,19 +1,239 @@
 <!doctype html>
-<html lang="en">
+<html lang="it">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SmartHydro Dashboard</title>
+    <meta name="description" content="Dashboard locale SmartHydro per ricette e simulazione Edge.">
+    <title>SmartHydro · Control room</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main class="status-card">
-      <h1>SmartHydro Dashboard</h1>
-      <p>System status: <strong id="system-status">initialization completed</strong></p>
-      <p>Version: 0.1.0</p>
-      <button id="check-status" type="button">Check local status</button>
-    </main>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#overview" aria-label="SmartHydro home">
+          <span class="brand-mark" aria-hidden="true">S</span>
+          <span><strong>SmartHydro</strong><small>Control room</small></span>
+        </a>
 
+        <nav class="main-nav" aria-label="Sezioni principali">
+          <button class="nav-item active" data-view="overview" type="button">
+            <span class="nav-icon" aria-hidden="true">◫</span>Panoramica
+          </button>
+          <button class="nav-item" data-view="recipe" type="button">
+            <span class="nav-icon" aria-hidden="true">⌁</span>Ricetta
+          </button>
+          <button class="nav-item" data-view="simulation" type="button">
+            <span class="nav-icon" aria-hidden="true">▶</span>Simulazione Edge
+          </button>
+        </nav>
+
+        <div class="sidebar-status">
+          <p class="eyebrow">Stato sistema</p>
+          <div class="status-row"><span>Dashboard</span><span id="side-dashboard" class="dot pending"></span></div>
+          <div class="status-row"><span>Backend</span><span id="side-backend" class="dot pending"></span></div>
+          <div class="status-row"><span>Edge C++</span><span id="side-edge" class="dot pending"></span></div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <button id="mobile-menu" class="mobile-menu" type="button" aria-label="Apri menu">☰</button>
+          <div>
+            <p class="eyebrow">Serra didattica · Pomodoro</p>
+            <h1 id="page-title">Panoramica</h1>
+          </div>
+          <div class="topbar-actions">
+            <span id="connection-pill" class="pill neutral"><span class="pulse"></span>Connessione in verifica</span>
+            <button class="primary compact" data-go-to="simulation" type="button">Avvia Edge</button>
+          </div>
+        </header>
+
+        <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+        <section id="view-overview" class="view active" aria-labelledby="page-title">
+          <div class="hero-grid">
+            <article class="hero-card">
+              <div>
+                <p class="eyebrow light">Ricetta attiva</p>
+                <h2 id="overview-recipe-name">Nessuna ricetta salvata</h2>
+                <p id="overview-recipe-meta">Crea la prima ricetta per iniziare la simulazione.</p>
+              </div>
+              <div class="hero-phase">
+                <span>Fase corrente</span>
+                <strong id="overview-phase">—</strong>
+              </div>
+              <button class="secondary light" data-go-to="recipe" type="button">Apri ricetta</button>
+            </article>
+
+            <article class="system-card">
+              <div class="section-heading">
+                <div><p class="eyebrow">Disponibilità</p><h2>Tre componenti, un flusso</h2></div>
+                <span id="overview-system-badge" class="badge neutral">Verifica</span>
+              </div>
+              <div class="component-flow">
+                <div><span class="component-icon">UI</span><strong>Dashboard</strong><small id="flow-dashboard">In verifica</small></div>
+                <i>→</i>
+                <div><span class="component-icon">API</span><strong>Backend</strong><small id="flow-backend">In verifica</small></div>
+                <i>→</i>
+                <div><span class="component-icon">C++</span><strong>Edge</strong><small id="flow-edge">In verifica</small></div>
+              </div>
+            </article>
+          </div>
+
+          <div class="section-heading spaced">
+            <div><p class="eyebrow">Ultimo ciclo</p><h2>Sensori e modelli</h2></div>
+            <span id="overview-cycle" class="muted">Simulazione non avviata</span>
+          </div>
+          <div id="sensor-grid" class="metric-grid"></div>
+
+          <div class="split-grid spaced">
+            <article class="panel">
+              <div class="section-heading">
+                <div><p class="eyebrow">Output fisico</p><h2>Attuatori</h2></div>
+                <span id="actuator-live-badge" class="badge neutral">In attesa</span>
+              </div>
+              <div id="overview-actuators" class="actuator-list"></div>
+            </article>
+            <article class="panel">
+              <div class="section-heading">
+                <div><p class="eyebrow">Decisioni</p><h2>Controllo ricetta</h2></div>
+                <span class="badge outline">6 variabili</span>
+              </div>
+              <div id="overview-decisions" class="decision-summary empty-message">
+                Avvia una simulazione per osservare le decisioni dell’Edge.
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-recipe" class="view" aria-labelledby="page-title">
+          <div class="toolbar panel">
+            <div class="toolbar-field">
+              <label for="recipe-selector">Ricetta salvata</label>
+              <select id="recipe-selector"><option value="">Nessuna ricetta</option></select>
+            </div>
+            <div class="toolbar-actions">
+              <button id="new-recipe" class="secondary" type="button">Nuova ricetta</button>
+              <button id="save-recipe" class="primary" type="button">Salva ricetta</button>
+            </div>
+          </div>
+
+          <form id="recipe-form" novalidate>
+            <article class="panel">
+              <div class="section-heading">
+                <div><p class="eyebrow">Identità</p><h2>Ricetta del pomodoro</h2></div>
+                <span id="recipe-version" class="badge outline">Versione 1</span>
+              </div>
+              <div class="form-grid three">
+                <label>Identificativo
+                  <input id="recipe-id" data-path="id" required pattern="[A-Za-z0-9._-]+" autocomplete="off">
+                  <small>Solo lettere, numeri, punto, trattino e underscore.</small>
+                </label>
+                <label>Specie
+                  <input id="plant-type" value="Tomato" readonly>
+                  <small>Unica specie supportata in questa versione.</small>
+                </label>
+                <label>Substrato
+                  <select id="substrate" data-path="substrate" required>
+                    <option value="aerated-universal">Universale aerato</option>
+                    <option value="draining">Drenante</option>
+                    <option value="organic-retentive">Organico ritentivo</option>
+                  </select>
+                </label>
+              </div>
+            </article>
+
+            <div class="section-heading spaced">
+              <div><p class="eyebrow">Programma colturale</p><h2>Fasi e target</h2></div>
+              <button id="add-phase" class="secondary compact" type="button">+ Aggiungi fase</button>
+            </div>
+            <div id="phase-editor"></div>
+
+            <div class="section-heading spaced">
+              <div><p class="eyebrow">Configurazione tecnica</p><h2>Strategy e limiti</h2></div>
+              <span class="muted">Apri una variabile per i dettagli</span>
+            </div>
+            <div id="controller-editor" class="controller-stack"></div>
+          </form>
+        </section>
+
+        <section id="view-simulation" class="view" aria-labelledby="page-title">
+          <div class="simulation-layout">
+            <aside class="panel simulation-controls">
+              <p class="eyebrow">Configurazione run</p>
+              <h2>Simulazione Edge</h2>
+              <p class="muted">L’eseguibile C++ applica la ricetta salvata e restituisce ogni ciclo.</p>
+              <label>Ricetta
+                <select id="simulation-recipe"><option value="">Seleziona una ricetta</option></select>
+              </label>
+              <div class="form-grid two">
+                <label>Cicli
+                  <input id="simulation-steps" type="number" min="1" max="672" value="96">
+                </label>
+                <label>Passo
+                  <select id="simulation-step-seconds">
+                    <option value="300">5 minuti</option>
+                    <option value="900" selected>15 minuti</option>
+                    <option value="1800">30 minuti</option>
+                    <option value="3600">1 ora</option>
+                  </select>
+                </label>
+              </div>
+              <button id="run-simulation" class="primary full" type="button">Esegui simulazione</button>
+              <div class="playback-controls" aria-label="Controlli riproduzione">
+                <button id="play-simulation" class="icon-button" type="button" aria-label="Riproduci">▶</button>
+                <button id="pause-simulation" class="icon-button" type="button" aria-label="Pausa">Ⅱ</button>
+                <button id="step-simulation" class="icon-button" type="button" aria-label="Passo successivo">▶|</button>
+                <button id="reset-simulation" class="icon-button" type="button" aria-label="Reset">↺</button>
+              </div>
+              <div class="progress-block">
+                <div><span>Avanzamento</span><strong id="simulation-counter">0 / 0</strong></div>
+                <progress id="simulation-progress" max="1" value="0"></progress>
+              </div>
+              <div id="simulation-status" class="inline-status">In attesa di una simulazione.</div>
+            </aside>
+
+            <div class="simulation-content">
+              <article class="panel cycle-header">
+                <div>
+                  <p class="eyebrow">Ciclo corrente</p>
+                  <h2 id="simulation-phase">Nessun dato</h2>
+                </div>
+                <div class="time-chip"><span>Tempo simulato</span><strong id="simulation-time">—</strong></div>
+              </article>
+
+              <div id="simulation-sensors" class="metric-grid compact-grid"></div>
+
+              <div class="split-grid">
+                <article class="panel">
+                  <div class="section-heading"><div><p class="eyebrow">Comandi sicuri</p><h2>Decisioni Edge</h2></div></div>
+                  <div class="table-scroll">
+                    <table>
+                      <thead><tr><th>Variabile</th><th>Stato</th><th>Comando</th><th>Nota</th></tr></thead>
+                      <tbody id="decision-table"><tr><td colspan="4" class="table-empty">Nessun ciclo disponibile</td></tr></tbody>
+                    </table>
+                  </div>
+                </article>
+                <article class="panel">
+                  <div class="section-heading"><div><p class="eyebrow">Stato fisico</p><h2>Attuatori</h2></div></div>
+                  <div id="simulation-actuators" class="actuator-list"></div>
+                </article>
+              </div>
+
+              <article class="panel">
+                <div class="section-heading"><div><p class="eyebrow">Ultimi passi</p><h2>Storico</h2></div></div>
+                <div class="table-scroll">
+                  <table>
+                    <thead><tr><th>Ciclo</th><th>Fase</th><th>Terreno</th><th>pH</th><th>Luce</th><th>Acqua</th></tr></thead>
+                    <tbody id="history-table"><tr><td colspan="6" class="table-empty">Lo storico apparirà durante la riproduzione.</td></tr></tbody>
+                  </table>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
     <script src="script.js"></script>
   </body>
 </html>

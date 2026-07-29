@@ -14,8 +14,8 @@
  *
  * L'Edge Controller mantiene il modello fisico, produce misure simulate e
  * applica ricette versionate tramite controllori Strategy. Il Backend espone
- * invece l'interfaccia HTTP; nella fase attuale le due componenti non
- * comunicano ancora fra loro.
+ * l'interfaccia HTTP, salva ed esporta le ricette e avvia l'eseguibile Edge
+ * quando la dashboard richiede una simulazione finita.
  *
  * Il ciclo previsto nell'Edge Controller e:
  *
@@ -130,8 +130,12 @@
  * | ------ | -------- | -------- | ----------- |
  * | GET | `/` | backend.app.main.read_root() | Nome e versione del servizio |
  * | GET | `/health` | backend.app.main.read_health() | Disponibilita del processo |
+ * | GET | `/system/status` | backend.app.main.read_system_status() | Stato di database ed Edge |
+ * | GET | `/recipes` | backend.app.main.read_recipes() | Elenco ricette del pomodoro |
+ * | GET | `/recipes/template` | backend.app.main.read_recipe_template() | Modello iniziale |
  * | POST | `/recipes` | backend.app.main.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.main.read_recipe() | Lettura di una ricetta salvata |
+ * | POST | `/simulations` | backend.app.main.create_simulation() | Esecuzione Edge e telemetria completa |
  *
  * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
  * sensori, database o comunicazione con l'Edge Controller.

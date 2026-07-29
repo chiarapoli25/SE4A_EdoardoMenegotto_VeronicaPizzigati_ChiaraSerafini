@@ -1,14 +1,14 @@
 # SmartHydro
 
 SmartHydro e un progetto per il monitoraggio e il controllo di una coltivazione
-in terriccio. Questa Fase 0 prepara una base di lavoro avviabile composta da un
-Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
-una ricetta di coltivazione di esempio.
+in terriccio. La demo locale collega un Edge Controller C++17, un backend HTTP
+Python, una dashboard web e ricette versionate per il pomodoro.
 
 L'area Edge include un simulatore dinamico della serra, sensori con errori
 strumentali, attuatori e un sistema di controllo configurabile basato su
-ricette versionate e pattern Strategy. Non sono ancora presenti dispositivi
-reali, database, autenticazione, comunicazione tra Edge e backend o Docker.
+ricette versionate e pattern Strategy. Il backend salva le ricette in SQLite,
+le esporta nel formato condiviso e avvia l'Edge per le simulazioni richieste
+dalla dashboard. Non sono presenti dispositivi reali, autenticazione o Docker.
 
 ## Struttura del progetto
 
@@ -57,6 +57,20 @@ Per usare una ricetta diversa o simulare piu cicli:
 ./edge/build/bin/edge --recipe backend/data/recipes/tomato_demo_v1.json
 ./edge/build/bin/edge --steps 96 --step-seconds 900
 ```
+
+Per ottenere il contratto machine-readable usato dal backend:
+
+```bash
+./edge/build/bin/edge \
+  --recipe config/example_recipe.json \
+  --steps 4 \
+  --step-seconds 900 \
+  --output json
+```
+
+Il formato `human` resta quello predefinito. Il formato `json` contiene
+metadati della ricetta e, per ogni ciclo, sensori, modelli N/P/K, decisioni,
+comandi e uscite degli attuatori, dosi erogate e stato ambientale.
 
 `--steps` indica il numero di cicli e `--step-seconds` la durata simulata di
 ciascun ciclo. L'Edge usa esclusivamente il JSON locale durante l'esecuzione e
@@ -387,7 +401,34 @@ I dropout dei sensori vengono salvati come celle CSV vuote e visualizzati come
 interruzioni delle curve. Il CSV dei sensori viene salvato in
 `experiment_results` relativa alla directory di avvio.
 
-## Preparazione del backend Python
+## Avvio della demo completa
+
+Da macOS o Linux, il comando seguente prepara l'ambiente Python quando manca,
+compila l'Edge e avvia backend e dashboard:
+
+```bash
+./scripts/run_demo.sh
+```
+
+Aprire quindi:
+
+```text
+http://127.0.0.1:8000/dashboard/
+```
+
+Il flusso dimostrativo e:
+
+1. aprire **Ricetta** e partire dal modello del pomodoro;
+2. modificare fasi, target, Strategy o limiti e premere **Salva ricetta**;
+3. aprire **Simulazione Edge**, scegliere numero di cicli e durata del passo;
+4. premere **Esegui simulazione** e usare Avvia, Pausa, Passo e Reset;
+5. osservare sensori, modelli, decisioni e attuatori anche in **Panoramica**.
+
+Le ricette sono persistite in `backend/data/smarthydro.db`; bozze non salvate e
+riproduzione della simulazione restano invece nello stato temporaneo della
+pagina.
+
+## Preparazione manuale del backend Python
 
 Creare e attivare un virtual environment:
 
@@ -431,9 +472,32 @@ python -m pytest backend/tests
 
 ## Dashboard
 
-Aprire direttamente il file `dashboard/index.html` con un browser. Non e
-necessario avviare un server web. Il pulsante **Check local status** aggiorna
-lo stato visualizzato a `Dashboard ready`.
+La dashboard e servita dal backend allo stesso indirizzo delle API. Non va
+aperto direttamente `dashboard/index.html`, perche creazione delle ricette,
+stato del sistema e simulazione dipendono dagli endpoint FastAPI.
+
+Le API aggiunte per la dashboard sono:
+
+| Metodo | Percorso | Descrizione |
+| --- | --- | --- |
+| GET | `/system/status` | Stato di dashboard, backend, database ed Edge |
+| GET | `/recipes` | Elenco sintetico delle ricette del pomodoro |
+| GET | `/recipes/template` | Modello iniziale non ancora salvato |
+| POST | `/simulations` | Esecuzione Edge con ricetta, cicli e durata del passo |
+
+## Test della demo
+
+Con l'ambiente virtuale preparato:
+
+```bash
+.venv/bin/python -m pytest backend/tests -q
+cmake --build edge/build
+ctest --test-dir edge/build --output-on-failure
+```
+
+I test backend includono un percorso integrato che salva la ricetta, esporta
+il JSON, avvia il vero eseguibile Edge e verifica sensori, sei decisioni e
+attuatori nella risposta.
 
 ## Ricetta JSON
 

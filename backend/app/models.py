@@ -554,3 +554,21 @@ class Recipe(BaseModel):
             raise ValueError(
                 "controllers must contain exactly one entry per ControlledVariable")
         return self
+
+
+class RecipeSummary(BaseModel):
+    """Dati essenziali usati dal selettore ricette della dashboard."""
+
+    id: str
+    plant_type: str
+    substrate: SoilType
+    version: int
+    phase_count: int = Field(ge=1)
+
+
+class SimulationRequest(BaseModel):
+    """Parametri di una simulazione Edge finita e riproducibile."""
+
+    recipe_id: str = Field(min_length=1)
+    steps: int = Field(default=96, ge=1, le=672)
+    step_seconds: float = Field(default=900.0, ge=60.0, le=3600.0)

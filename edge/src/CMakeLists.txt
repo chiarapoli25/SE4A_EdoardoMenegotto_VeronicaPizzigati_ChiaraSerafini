@@ -87,6 +87,7 @@ target_link_libraries(edge
     PRIVATE
         edge_runtime
         recipe_json
+        nlohmann_json::nlohmann_json
 )
 target_compile_definitions(edge
     PRIVATE
