@@ -125,51 +125,56 @@
  *
  * | Metodo | Percorso | Funzione | Significato |
  * | ------ | -------- | -------- | ----------- |
- * | GET | `/` | backend.app.routes.system.read_root() | Nome e versione del servizio |
- * | GET | `/health` | backend.app.routes.system.read_health() | Disponibilita del processo |
- * | POST | `/zones` | backend.app.routes.zones.register_zone() | Registrazione di un settore della serra |
- * | GET | `/zones` | backend.app.routes.zones.read_zones() | Elenco dei settori ordinati per reparto |
- * | GET | `/zones/{zone_id}` | backend.app.routes.zones.read_zone() | Lettura di un settore tramite identificativo |
- * | POST | `/zones/{zone_id}/telemetry` | backend.app.routes.telemetry.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
- * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.routes.telemetry.read_latest_telemetry() | Ultimo campione sensori disponibile |
- * | GET | `/zones/{zone_id}/telemetry` | backend.app.routes.telemetry.read_telemetry_history() | Storico filtrato dei sensori |
- * | POST | `/zones/{zone_id}/actuators` | backend.app.routes.actuators.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
- * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.routes.actuators.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
- * | GET | `/zones/{zone_id}/actuators` | backend.app.routes.actuators.read_actuator_history() | Storico filtrato degli attuatori |
- * | POST | `/recipes` | backend.app.routes.recipes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
- * | GET | `/recipes/{recipe_id}` | backend.app.routes.recipes.read_recipe() | Lettura di una ricetta salvata |
+ * | GET | `/` | backend.app.features.system.routes.read_root() | Nome e versione del servizio |
+ * | GET | `/health` | backend.app.features.system.routes.read_health() | Disponibilita del processo |
+ * | POST | `/zones` | backend.app.features.zones.routes.register_zone() | Registrazione di un settore della serra |
+ * | GET | `/zones` | backend.app.features.zones.routes.read_zones() | Elenco dei settori ordinati per reparto |
+ * | GET | `/zones/{zone_id}` | backend.app.features.zones.routes.read_zone() | Lettura di un settore tramite identificativo |
+ * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
+ * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo campione sensori disponibile |
+ * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato dei sensori |
+ * | POST | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
+ * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.features.actuators.routes.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
+ * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
+ * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
+ * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
  *
  * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
  * sensori, database o comunicazione con l'Edge Controller.
  *
- * @section backend_architecture Organizzazione per responsabilita
+ * @section backend_architecture Organizzazione per funzionalita
  *
- * Il backend e diviso in livelli con dipendenze orientate dall'interfaccia
- * HTTP verso la persistenza:
+ * Il backend usa vertical slice: ogni cartella in `features/` raccoglie
+ * contratto, persistenza ed endpoint della stessa funzionalita.
  *
  * @code{.txt}
  * main.py
  *   |
- *   +-- routes/          endpoint FastAPI e conversione degli errori HTTP
- *         |
- *         +-- models/   validazione e contratti Pydantic
- *         |
- *         +-- repositories/  query e transazioni di dominio
- *                    |
- *                    +-- db.py  connessione e schema SQLite
+ *   +-- core/
+ *   |     +-- database.py
+ *   |
+ *   +-- features/
+ *         +-- zones/
+ *         |     +-- models.py
+ *         |     +-- repository.py
+ *         |     +-- routes.py
+ *         +-- telemetry/
+ *         +-- actuators/
+ *         +-- recipes/
+ *         +-- system/
  * @endcode
  *
  * `main.py` e il composition root: crea l'applicazione, inizializza lo schema
- * e registra i router, ma non contiene logica di dominio. I router sono
- * separati in `system`, `zones`, `telemetry`, `actuators` e `recipes`;
- * ricevono e validano le richieste, invocano i repository e traducono le
- * eccezioni applicative in codici HTTP.
+ * e registra un router per feature, ma non contiene logica di dominio. Dentro
+ * una feature, `models.py` definisce i contratti Pydantic, `repository.py`
+ * contiene query e transazioni SQLite e `routes.py` traduce il dominio in API
+ * HTTP. La feature `recipes` possiede anche `export.py`.
  *
- * I modelli sono separati negli stessi domini. `models/__init__.py` espone una
- * facciata comune, quindi resta valido l'import storico
- * `from backend.app.models import Recipe`. Analogamente `database.py` e una
- * facciata di compatibilita: il codice nuovo usa direttamente `db.py` per
- * connessioni e schema e `repositories/` per le query.
+ * Le feature dipendono dall'infrastruttura condivisa in `core/`. Telemetria e
+ * attuatori dipendono inoltre soltanto dal repository `zones` per verificare
+ * che il settore esista. `models/`, `database.py`, `db.py` e
+ * `recipe_export.py` sono facciate compatibili: mantengono validi gli import
+ * precedenti, ma non contengono la logica applicativa.
  *
  * @section backend_data_flow Flusso dei dati dall'Edge
  *
@@ -181,11 +186,13 @@
  * router.
  *
  * @code{.txt}
- * Edge -> routes/telemetry.py -> repositories/telemetry.py -> SQLite
- * Dashboard <- routes/telemetry.py <- repositories/telemetry.py <- SQLite
+ * Edge -> features/telemetry/routes.py
+ *      -> features/telemetry/repository.py -> SQLite
+ * Dashboard <- features/telemetry/routes.py <- repository.py <- SQLite
  *
- * Edge -> routes/actuators.py -> repositories/actuators.py -> SQLite
- * Dashboard <- routes/actuators.py <- repositories/actuators.py <- SQLite
+ * Edge -> features/actuators/routes.py
+ *      -> features/actuators/repository.py -> SQLite
+ * Dashboard <- features/actuators/routes.py <- repository.py <- SQLite
  * @endcode
  *
  * @section backend_actuator_contract Contratto degli attuatori
@@ -206,10 +213,11 @@
  * @section backend_components Componenti
  *
  * - backend/app/main.py: composizione e ciclo di vita dell'applicazione ASGI;
- * - backend/app/db.py: connessioni, dipendenza FastAPI e schema SQLite;
- * - backend/app/routes/: router HTTP distinti per dominio;
- * - backend/app/models/: contratti Pydantic per ricette, zone, telemetria e attuatori;
- * - backend/app/repositories/: persistenza SQLite distinta per dominio;
- * - backend/app/database.py: facciata compatibile per gli import precedenti;
- * - backend/app/recipe_export.py: esportazione JSON sicura per l'Edge.
+ * - backend/app/core/database.py: connessioni, dipendenza FastAPI e schema;
+ * - backend/app/features/system/: identificazione e health check;
+ * - backend/app/features/zones/: reparti, settori e specie vegetali;
+ * - backend/app/features/telemetry/: acquisizione e storico dei sensori;
+ * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
+ * - backend/app/features/recipes/: ricette, persistenza ed esportazione;
+ * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */

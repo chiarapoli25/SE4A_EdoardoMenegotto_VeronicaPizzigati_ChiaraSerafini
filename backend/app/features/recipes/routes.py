@@ -1,4 +1,4 @@
-"""@file recipes.py
+"""@file routes.py
 @brief Endpoint HTTP per validazione e distribuzione delle ricette.
 """
 
@@ -7,15 +7,15 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..db import get_db
-from ..models.recipe import Recipe
-from ..recipe_export import (
+from ...core.database import get_db
+from .export import (
     DEFAULT_EXPORT_DIRECTORY,
     UnsafeRecipeId,
     assert_safe_recipe_id,
     export_recipe_for_edge,
 )
-from ..repositories.recipes import (
+from .models import Recipe
+from .repository import (
     RecipeVersionConflict,
     get_recipe,
     save_recipe,

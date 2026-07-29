@@ -1,4 +1,4 @@
-"""@file zones.py
+"""@file routes.py
 @brief Endpoint HTTP per reparti e settori della serra.
 """
 
@@ -6,9 +6,9 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..db import get_db
-from ..models.zone import Zone, ZoneCreate
-from ..repositories.zones import (
+from ...core.database import get_db
+from .models import Zone, ZoneCreate
+from .repository import (
     ZoneConflict,
     create_zone,
     get_zone,

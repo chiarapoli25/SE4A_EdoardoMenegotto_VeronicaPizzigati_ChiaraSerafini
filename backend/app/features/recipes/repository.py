@@ -1,10 +1,10 @@
-"""@file recipes.py
+"""@file repository.py
 @brief Persistenza SQLite delle ricette versionate.
 """
 
 import sqlite3
 
-from ..models.recipe import Recipe
+from .models import Recipe
 
 
 class RecipeVersionConflict(Exception):

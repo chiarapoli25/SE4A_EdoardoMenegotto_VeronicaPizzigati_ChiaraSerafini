@@ -1,11 +1,11 @@
-"""@file telemetry.py
+"""@file repository.py
 @brief Persistenza SQLite della telemetria dei sensori.
 """
 
 import sqlite3
 from datetime import datetime, timezone
 
-from ..models.telemetry import TelemetryCreate, TelemetrySample
+from .models import TelemetryCreate, TelemetrySample
 
 
 class TelemetryConflict(Exception):

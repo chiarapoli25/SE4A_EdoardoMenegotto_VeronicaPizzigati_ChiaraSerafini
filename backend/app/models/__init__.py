@@ -1,11 +1,11 @@
 """@file __init__.py
 @brief Facciata pubblica dei modelli Pydantic del backend.
 
-@details Mantiene valido l'import `backend.app.models` e raccoglie i modelli
-separati per dominio nei moduli `recipe`, `zone`, `telemetry` e `actuator`.
+@details I modelli reali appartengono alle rispettive feature. Questo package
+mantiene valido l'import storico `backend.app.models`.
 """
 
-from .actuator import (
+from ..features.actuators.models import (
     ActuatorCommandState,
     ActuatorPhysicalOutput,
     ActuatorSnapshot,
@@ -13,7 +13,7 @@ from .actuator import (
     FertilizerQuantities,
     FertilizerValveStates,
 )
-from .recipe import (
+from ..features.recipes.models import (
     ActuatorType,
     ConfirmationState,
     ControlDirection,
@@ -33,8 +33,12 @@ from .recipe import (
     ThresholdConfig,
     ValueRange,
 )
-from .telemetry import GreenhouseTelemetry, TelemetryCreate, TelemetrySample
-from .zone import Zone, ZoneCreate, ZoneStatus
+from ..features.telemetry.models import (
+    GreenhouseTelemetry,
+    TelemetryCreate,
+    TelemetrySample,
+)
+from ..features.zones.models import Zone, ZoneCreate, ZoneStatus
 
 __all__ = [
     "ActuatorCommandState",

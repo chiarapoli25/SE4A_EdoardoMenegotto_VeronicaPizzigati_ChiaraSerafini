@@ -1,11 +1,11 @@
-"""@file actuators.py
+"""@file repository.py
 @brief Persistenza SQLite degli snapshot degli attuatori.
 """
 
 import sqlite3
 from datetime import datetime, timezone
 
-from ..models.actuator import (
+from .models import (
     ActuatorCommandState,
     ActuatorPhysicalOutput,
     ActuatorSnapshot,

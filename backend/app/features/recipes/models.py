@@ -1,4 +1,4 @@
-"""@file recipe.py
+"""@file models.py
 @brief Modelli Pydantic delle ricette SmartHydro.
 
 @details I modelli della ricetta rispecchiano il contratto JSON implementato da

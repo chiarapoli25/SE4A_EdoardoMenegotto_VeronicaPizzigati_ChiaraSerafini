@@ -1,30 +1,29 @@
 """@file database.py
 @brief Facciata compatibile per l'accesso SQLite del backend.
 
-@details Il codice nuovo deve importare connessione e schema da `db.py` e le
-query dai rispettivi moduli `repositories`. Questa facciata mantiene validi gli
-import usati dalle versioni precedenti del progetto e dai test esistenti.
+@details Il codice nuovo usa `core.database` e i `repository.py` contenuti
+nelle singole feature. Questa facciata mantiene validi gli import precedenti.
 """
 
-from .db import DEFAULT_DATABASE_PATH, get_connection, init_db
-from .repositories.actuators import (
+from .core.database import DEFAULT_DATABASE_PATH, get_connection, init_db
+from .features.actuators.repository import (
     ActuatorSnapshotConflict,
     get_latest_actuator_snapshot,
     list_actuator_snapshots,
     save_actuator_snapshot,
 )
-from .repositories.recipes import (
+from .features.recipes.repository import (
     RecipeVersionConflict,
     get_recipe,
     save_recipe,
 )
-from .repositories.telemetry import (
+from .features.telemetry.repository import (
     TelemetryConflict,
     get_latest_telemetry,
     list_telemetry,
     save_telemetry,
 )
-from .repositories.zones import (
+from .features.zones.repository import (
     ZoneConflict,
     create_zone,
     get_zone,

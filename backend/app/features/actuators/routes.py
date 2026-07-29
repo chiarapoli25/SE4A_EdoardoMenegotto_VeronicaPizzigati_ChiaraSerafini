@@ -1,5 +1,5 @@
-"""@file telemetry.py
-@brief Endpoint HTTP per acquisizione e lettura dei sensori.
+"""@file routes.py
+@brief Endpoint HTTP per acquisizione e lettura degli attuatori.
 """
 
 import sqlite3
@@ -7,19 +7,19 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime
 
-from ..db import get_db
-from ..models.telemetry import TelemetryCreate, TelemetrySample
-from ..repositories.telemetry import (
-    TelemetryConflict,
-    get_latest_telemetry,
-    list_telemetry,
-    save_telemetry,
+from ...core.database import get_db
+from ..zones.repository import get_zone
+from .models import ActuatorSnapshot, ActuatorSnapshotCreate
+from .repository import (
+    ActuatorSnapshotConflict,
+    get_latest_actuator_snapshot,
+    list_actuator_snapshots,
+    save_actuator_snapshot,
 )
-from ..repositories.zones import get_zone
 
 
-## @brief Router della telemetria associata alle zone.
-router = APIRouter(prefix="/zones/{zone_id}/telemetry", tags=["telemetry"])
+## @brief Router degli attuatori associati alle zone.
+router = APIRouter(prefix="/zones/{zone_id}/actuators", tags=["actuators"])
 
 
 def _require_zone(connection: sqlite3.Connection, zone_id: str) -> None:
@@ -31,45 +31,45 @@ def _require_zone(connection: sqlite3.Connection, zone_id: str) -> None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
 
 
-@router.post("", response_model=TelemetrySample, status_code=201)
-def create_telemetry(
+@router.post("", response_model=ActuatorSnapshot, status_code=201)
+def create_actuator_snapshot(
     zone_id: str,
-    telemetry: TelemetryCreate,
+    snapshot: ActuatorSnapshotCreate,
     connection: sqlite3.Connection = Depends(get_db),
-) -> TelemetrySample:
-    """@brief Riceve e salva un campione inviato dall'Edge."""
+) -> ActuatorSnapshot:
+    """@brief Riceve e salva comando e uscita fisica inviati dall'Edge."""
     _require_zone(connection, zone_id)
     try:
-        return save_telemetry(connection, zone_id, telemetry)
-    except TelemetryConflict as error:
+        return save_actuator_snapshot(connection, zone_id, snapshot)
+    except ActuatorSnapshotConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
-@router.get("/latest", response_model=TelemetrySample)
-def read_latest_telemetry(
+@router.get("/latest", response_model=ActuatorSnapshot)
+def read_latest_actuator_snapshot(
     zone_id: str,
     connection: sqlite3.Connection = Depends(get_db),
-) -> TelemetrySample:
-    """@brief Restituisce l'ultima misura disponibile per una zona."""
+) -> ActuatorSnapshot:
+    """@brief Restituisce l'ultimo stato disponibile degli attuatori."""
     _require_zone(connection, zone_id)
-    telemetry = get_latest_telemetry(connection, zone_id)
-    if telemetry is None:
+    snapshot = get_latest_actuator_snapshot(connection, zone_id)
+    if snapshot is None:
         raise HTTPException(
             status_code=404,
-            detail=f"telemetry for zone {zone_id!r} not found",
+            detail=f"actuator snapshot for zone {zone_id!r} not found",
         )
-    return telemetry
+    return snapshot
 
 
-@router.get("", response_model=list[TelemetrySample])
-def read_telemetry_history(
+@router.get("", response_model=list[ActuatorSnapshot])
+def read_actuator_history(
     zone_id: str,
     recorded_from: AwareDatetime | None = Query(default=None, alias="from"),
     recorded_to: AwareDatetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=100, ge=1, le=1000),
     connection: sqlite3.Connection = Depends(get_db),
-) -> list[TelemetrySample]:
-    """@brief Restituisce lo storico filtrabile dei sensori."""
+) -> list[ActuatorSnapshot]:
+    """@brief Restituisce lo storico filtrabile degli attuatori."""
     _require_zone(connection, zone_id)
     if (
         recorded_from is not None
@@ -77,7 +77,7 @@ def read_telemetry_history(
         and recorded_from > recorded_to
     ):
         raise HTTPException(status_code=400, detail="'from' must not be after 'to'")
-    return list_telemetry(
+    return list_actuator_snapshots(
         connection,
         zone_id,
         recorded_from=recorded_from,

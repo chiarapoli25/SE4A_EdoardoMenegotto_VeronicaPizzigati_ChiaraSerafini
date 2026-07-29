@@ -1,4 +1,4 @@
-"""@file zone.py
+"""@file models.py
 @brief Modelli Pydantic dei reparti e dei settori della serra.
 """
 

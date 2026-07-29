@@ -1,10 +1,10 @@
-"""@file zones.py
+"""@file repository.py
 @brief Persistenza SQLite dei reparti e dei settori.
 """
 
 import sqlite3
 
-from ..models.zone import Zone, ZoneCreate, ZoneStatus
+from .models import Zone, ZoneCreate, ZoneStatus
 
 
 class ZoneConflict(Exception):

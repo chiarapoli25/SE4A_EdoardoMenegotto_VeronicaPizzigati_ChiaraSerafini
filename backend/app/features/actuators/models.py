@@ -1,4 +1,4 @@
-"""@file actuator.py
+"""@file models.py
 @brief Modelli Pydantic dei comandi e delle uscite fisiche degli attuatori.
 
 @details I modelli rispecchiano `ActuatorCommand` e `ActuatorOutput` del

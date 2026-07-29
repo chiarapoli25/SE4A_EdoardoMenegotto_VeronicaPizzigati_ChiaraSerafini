@@ -1,4 +1,4 @@
-"""@file telemetry.py
+"""@file models.py
 @brief Modelli Pydantic della telemetria dei sensori.
 """
 

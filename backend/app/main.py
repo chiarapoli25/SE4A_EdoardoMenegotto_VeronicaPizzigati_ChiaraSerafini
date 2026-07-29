@@ -9,12 +9,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .db import get_connection, get_db, init_db
-from .routes.actuators import router as actuator_router
-from .routes.recipes import get_export_directory, router as recipe_router
-from .routes.system import router as system_router
-from .routes.telemetry import router as telemetry_router
-from .routes.zones import router as zone_router
+from .core.database import get_connection, get_db, init_db
+from .features.actuators.routes import router as actuator_router
+from .features.recipes.routes import (
+    get_export_directory,
+    router as recipe_router,
+)
+from .features.system.routes import router as system_router
+from .features.telemetry.routes import router as telemetry_router
+from .features.zones.routes import router as zone_router
 
 
 @asynccontextmanager

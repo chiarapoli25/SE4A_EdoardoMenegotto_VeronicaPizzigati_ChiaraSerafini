@@ -1,5 +1,5 @@
-"""@file system.py
-@brief Endpoint generali di identificazione e disponibilita.
+"""@file routes.py
+@brief Feature degli endpoint generali di identificazione e disponibilita.
 """
 
 from fastapi import APIRouter
