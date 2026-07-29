@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .db import get_connection, get_db, init_db
+from .routes.actuators import router as actuator_router
 from .routes.recipes import get_export_directory, router as recipe_router
 from .routes.system import router as system_router
 from .routes.telemetry import router as telemetry_router
@@ -33,6 +34,7 @@ app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 app.include_router(system_router)
 app.include_router(zone_router)
 app.include_router(telemetry_router)
+app.include_router(actuator_router)
 app.include_router(recipe_router)
 
 

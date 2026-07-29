@@ -7,6 +7,12 @@ import usati dalle versioni precedenti del progetto e dai test esistenti.
 """
 
 from .db import DEFAULT_DATABASE_PATH, get_connection, init_db
+from .repositories.actuators import (
+    ActuatorSnapshotConflict,
+    get_latest_actuator_snapshot,
+    list_actuator_snapshots,
+    save_actuator_snapshot,
+)
 from .repositories.recipes import (
     RecipeVersionConflict,
     get_recipe,
@@ -26,18 +32,22 @@ from .repositories.zones import (
 )
 
 __all__ = [
+    "ActuatorSnapshotConflict",
     "DEFAULT_DATABASE_PATH",
     "RecipeVersionConflict",
     "TelemetryConflict",
     "ZoneConflict",
     "create_zone",
     "get_connection",
+    "get_latest_actuator_snapshot",
     "get_latest_telemetry",
     "get_recipe",
     "get_zone",
     "init_db",
     "list_telemetry",
+    "list_actuator_snapshots",
     "list_zones",
     "save_recipe",
+    "save_actuator_snapshot",
     "save_telemetry",
 ]

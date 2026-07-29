@@ -133,6 +133,9 @@
  * | POST | `/zones/{zone_id}/telemetry` | backend.app.routes.telemetry.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
  * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.routes.telemetry.read_latest_telemetry() | Ultimo campione sensori disponibile |
  * | GET | `/zones/{zone_id}/telemetry` | backend.app.routes.telemetry.read_telemetry_history() | Storico filtrato dei sensori |
+ * | POST | `/zones/{zone_id}/actuators` | backend.app.routes.actuators.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
+ * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.routes.actuators.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
+ * | GET | `/zones/{zone_id}/actuators` | backend.app.routes.actuators.read_actuator_history() | Storico filtrato degli attuatori |
  * | POST | `/recipes` | backend.app.routes.recipes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.routes.recipes.read_recipe() | Lettura di una ricetta salvata |
  *
@@ -158,9 +161,9 @@
  *
  * `main.py` e il composition root: crea l'applicazione, inizializza lo schema
  * e registra i router, ma non contiene logica di dominio. I router sono
- * separati in `system`, `zones`, `telemetry` e `recipes`; ricevono e validano
- * le richieste, invocano i repository e traducono le eccezioni applicative in
- * codici HTTP.
+ * separati in `system`, `zones`, `telemetry`, `actuators` e `recipes`;
+ * ricevono e validano le richieste, invocano i repository e traducono le
+ * eccezioni applicative in codici HTTP.
  *
  * I modelli sono separati negli stessi domini. `models/__init__.py` espone una
  * facciata comune, quindi resta valido l'import storico
@@ -168,25 +171,44 @@
  * facciata di compatibilita: il codice nuovo usa direttamente `db.py` per
  * connessioni e schema e `repositories/` per le query.
  *
- * @section backend_data_flow Flusso della telemetria
+ * @section backend_data_flow Flusso dei dati dall'Edge
  *
- * L'Edge non viene interrogato direttamente dal backend. Invia un campione al
- * router `telemetry`, che verifica la zona e delega il salvataggio al relativo
- * repository. La transazione registra le misure, porta il settore nello stato
- * `online` e aggiorna `last_edge_contact`. La dashboard legge poi ultimo
- * campione e storico attraverso lo stesso router.
+ * L'Edge non viene interrogato direttamente dal backend. Invia i sensori al
+ * router `telemetry` e gli attuatori al router `actuators`; entrambi verificano
+ * la zona e delegano il salvataggio al relativo repository. Le transazioni
+ * portano il settore nello stato `online` e aggiornano `last_edge_contact`.
+ * La dashboard legge poi ultimo campione e storico attraverso gli stessi
+ * router.
  *
  * @code{.txt}
  * Edge -> routes/telemetry.py -> repositories/telemetry.py -> SQLite
  * Dashboard <- routes/telemetry.py <- repositories/telemetry.py <- SQLite
+ *
+ * Edge -> routes/actuators.py -> repositories/actuators.py -> SQLite
+ * Dashboard <- routes/actuators.py <- repositories/actuators.py <- SQLite
  * @endcode
+ *
+ * @section backend_actuator_contract Contratto degli attuatori
+ *
+ * Ogni snapshot contiene due oggetti separati:
+ *
+ * - `command`, equivalente ad `ActuatorCommand`, descrive volume d'acqua,
+ *   elettrovalvole e percentuale luce richiesti dal controllore;
+ * - `output`, equivalente ad `ActuatorOutput`, descrive pompa, volumi, portate,
+ *   valvole e potenza luminosa realmente prodotti dal simulatore.
+ *
+ * La separazione impedisce di interpretare un comando come gia eseguito. I
+ * cinque concentrati usano gli identificatori stabili del C++: `nitrogen`,
+ * `phosphorus`, `potassium`, `ph-up` e `ph-down`. Comando e uscita sono
+ * conservati come JSON validato, mentre zona, progressivo e date restano
+ * colonne indicizzate per recuperare ultimo stato e storico.
  *
  * @section backend_components Componenti
  *
  * - backend/app/main.py: composizione e ciclo di vita dell'applicazione ASGI;
  * - backend/app/db.py: connessioni, dipendenza FastAPI e schema SQLite;
  * - backend/app/routes/: router HTTP distinti per dominio;
- * - backend/app/models/: contratti Pydantic per ricette, zone e telemetria;
+ * - backend/app/models/: contratti Pydantic per ricette, zone, telemetria e attuatori;
  * - backend/app/repositories/: persistenza SQLite distinta per dominio;
  * - backend/app/database.py: facciata compatibile per gli import precedenti;
  * - backend/app/recipe_export.py: esportazione JSON sicura per l'Edge.

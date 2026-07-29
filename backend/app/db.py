@@ -42,7 +42,8 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 def init_db(connection: sqlite3.Connection) -> None:
     """@brief Crea lo schema applicativo se non esiste.
 
-    @param connection Connessione sulla quale creare ricette, zone e telemetria.
+    @param connection Connessione sulla quale creare ricette, zone, telemetria
+        e snapshot degli attuatori.
     @return Nessun valore.
     """
     connection.execute(
@@ -96,6 +97,28 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_telemetry_zone_recorded_at
         ON telemetry_samples (zone_id, recorded_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS actuator_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            zone_id TEXT NOT NULL,
+            sequence_number INTEGER NOT NULL CHECK (sequence_number >= 0),
+            timestamp_seconds REAL NOT NULL CHECK (timestamp_seconds >= 0),
+            recorded_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            command_data TEXT NOT NULL,
+            output_data TEXT NOT NULL,
+            FOREIGN KEY (zone_id) REFERENCES zones(id),
+            UNIQUE (zone_id, sequence_number)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_actuators_zone_recorded_at
+        ON actuator_snapshots (zone_id, recorded_at DESC)
         """
     )
     connection.commit()
