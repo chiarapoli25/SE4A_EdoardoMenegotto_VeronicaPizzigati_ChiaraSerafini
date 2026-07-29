@@ -43,9 +43,145 @@ ctest --test-dir edge/build --output-on-failure
 ./edge/build/bin/edge
 ```
 
-L'eseguibile stampa nome, versione e stato dell'Edge Controller, seguiti da un
-campione sincronizzato ottenuto applicando lo stato degli attuatori
-all'avanzamento dell'ambiente e leggendo infine i sensori.
+L'eseguibile principale carica `config/example_recipe.json`, valida e conferma
+localmente le sei configurazioni, quindi esegue un ciclo completo:
+
+1. legge sensori e modelli N/P/K;
+2. calcola i comandi tramite `RecipeControlSystem`;
+3. applica i comandi sicuri a pompa, lampade e valvole;
+4. fa avanzare l'ambiente e aggiorna lo storico delle dosi;
+5. produce un campione progressivo con stato operativo ed eventuali eventi.
+
+Lo stato iniziale e `Nominal`. Un errore transitorio di sensore o modello porta
+il runtime in `Degraded`: tutti gli attuatori vengono fermati, mentre l'ambiente
+continua a evolvere passivamente. Tre cicli sani consecutivi riportano
+automaticamente il sistema in `Nominal`; tre guasti recuperabili consecutivi
+lo portano invece in `EmergencyLockdown`.
+
+Valori fuori dai limiti di sicurezza, errori interni del controllore e comandi
+fisici rifiutati causano immediatamente `EmergencyLockdown`. Per uscirne occorre
+chiamare `request_manual_reset()`: dopo un campione sano il runtime passa a
+`Degraded` e ripete la verifica prima di riabilitare gli attuatori. Le soglie
+sono configurabili tramite `OperationalStatePolicy`.
+
+Ogni cambio produce `OperationalStateChanged` con stato precedente, nuovo
+stato e causa. L'ingresso in emergenza produce anche
+`EmergencyLockdownEntered`. I normali vincoli di dose bloccano invece soltanto
+il comando interessato.
+
+Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
+fase produce `RecipePhaseChanged`.
+
+Per usare una ricetta diversa o simulare piu cicli:
+
+```bash
+./edge/build/bin/edge --recipe backend/data/recipes/tomato_demo_v1.json
+./edge/build/bin/edge --steps 96 --step-seconds 900
+```
+
+`--steps` indica il numero di cicli e `--step-seconds` la durata simulata di
+ciascun ciclo. L'Edge usa esclusivamente il JSON locale durante l'esecuzione e
+non richiede che il backend sia raggiungibile.
+
+### Adapter e hardware
+
+`EdgeRuntime` dipende dalle interfacce `ISensor`, `IActuator` e `IEnvironment`,
+non dai simulatori concreti. Il costruttore normale crea automaticamente gli
+adapter simulati per temperatura, umidita dell'aria, umidita del substrato, pH,
+luce, pompa, lampade, valvole e ambiente.
+
+Un secondo costruttore accetta gli adapter tramite `std::unique_ptr`. Un futuro
+driver GPIO, Modbus o MQTT puo quindi implementare le stesse interfacce ed
+essere inserito senza cambiare `EdgeRuntime`, `RecipeControlSystem` o gli
+algoritmi delle Strategy. I cinque adapter sensore simulati condividono un
+campione sincronizzato per ogni tick.
+
+### Struttura dei sorgenti Edge
+
+Header pubblici e implementazioni sono raggruppati negli stessi domini:
+
+```text
+edge/
+├── include/smarthydro/
+│   ├── adapters/    interfacce e adapter
+│   ├── control/     Strategy e controllo della ricetta
+│   ├── events/      EventBus e observer
+│   ├── recipes/     caricamento delle ricette
+│   ├── runtime/     runtime, FSM, comandi e gestione multi-zona
+│   └── simulation/  simulatori
+└── src/             implementazioni negli stessi domini
+```
+
+`EdgeRuntime` mantiene una sola API pubblica, ma la sua implementazione e
+separata in `core`, `configuration`, `cycle`, `fsm`, `actuation` ed `events`.
+I DTO del ciclo e della FSM sono dichiarati in
+`smarthydro/runtime/edge_runtime_types.hpp`, mentre
+`smarthydro/runtime/edge_runtime.hpp` contiene l'orchestratore. Gli header si
+includono indicando il dominio, per esempio
+`#include <smarthydro/runtime/edge_runtime.hpp>`.
+
+### Multi-zona
+
+`ZoneController` racchiude tutto lo stato di una zona: ambiente, sensori,
+attuatori, ricetta, controllori, FSM, fault, storico e sequenze. Ogni zona ha
+anche il proprio `RuntimeCommandProcessor`, quindi comandi e chiavi di
+idempotenza non interferiscono con le altre.
+
+`GreenhouseManager` registra piu zone e permette di avanzarne una con
+`step_zone()` oppure tutte con `step_all()`. Soltanto l'`EventBus` viene
+condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
+possono descrivere reparti e settori, ad esempio `reparto-a/settore-nord`.
+
+L'eseguibile accetta `--zones N`; per avviare due zone:
+
+```bash
+./edge/build/bin/edge --zones 2 --steps 4 --step-seconds 60
+```
+
+### Observer ed EventBus
+
+`EventBus` distribuisce gli eventi dell'Edge senza rendere `EdgeRuntime`
+dipendente da console, file o rete. Il runtime pubblica automaticamente:
+
+- `TelemetrySample`;
+- `StateChanged` e `EmergencyTriggered`;
+- `RecipePhaseChanged`;
+- `CommandExecuted` e `CommandFailed`.
+
+Il contratto include anche `FaultDetected`, `StrategyChanged` e
+`BackendUnavailable`. `ConsoleLogger` stampa gli eventi, `CsvLogger` li salva
+in un CSV uniforme e `BackendClient` usa una funzione di trasporto iniettabile.
+Se il trasporto fallisce, il client pubblica `BackendUnavailable` senza
+interrompere il controllo locale.
+
+### Comandi runtime
+
+`RuntimeCommandProcessor` e il punto di ingresso idempotente dei comandi
+operativi. Ogni richiesta contiene un `command_id` e un payload tipizzato:
+
+- cambio della Strategy;
+- caricamento di una nuova versione della ricetta;
+- conferma o rifiuto di una configurazione;
+- fault injection e reset del fault sintetico;
+- avanzamento forzato della fase;
+- arresto di emergenza e richiesta di reset da `EmergencyLockdown`.
+
+Il primo esito, positivo o negativo, viene memorizzato. Un retry con lo stesso
+`command_id` non riesegue il comando e restituisce lo stesso risultato con
+`replayed=true`. Il processore converte inoltre gli errori di validazione in un
+`RuntimeCommandResult` rifiutato, evitando di propagare eccezioni al futuro
+trasporto HTTP o MQTT.
+
+Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
+della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla
+prima fase e invalida le conferme. Il fault sintetico rimane attivo fino al
+relativo reset. Dopo un `EmergencyStop`, `ResetEmergency` abilita soltanto il
+recovery controllato: gli attuatori restano fermi finche la FSM non verifica
+campioni sani.
+
+L'eseguibile principale collega un `ConsoleLogger` alla zona `zone-1`. Altri
+observer possono essere registrati con `EventBus::subscribe()` e rimossi con
+`unsubscribe()`; `EdgeRuntime::detach_event_bus()` disattiva la pubblicazione.
 
 I test C++ di ambiente, sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
 scarica automaticamente la versione fissata al primo comando di configurazione
@@ -131,8 +267,9 @@ per il tempo effettivo di pompaggio e tutte le valvole vengono chiuse.
 
 I volumi fisici vengono applicati all'ambiente: l'acqua modifica l'umidita e
 diluisce i nutrienti; N/P/K aggiungono masse separate; drenaggio e assorbimento
-le riducono; pH+ e pH- correggono il pH. L'accodamento delle dosi esatte in mL
-e la chiusura al raggiungimento del volume appartengono al futuro regolatore.
+le riducono; pH+ e pH- correggono il pH. `EdgeRuntime` converte le dosi in mL
+nei tempi di apertura delle valvole e le chiude quando il volume richiesto e
+stato raggiunto.
 
 Il sensore di umidita del terriccio continua a restituire una percentuale:
 l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e il

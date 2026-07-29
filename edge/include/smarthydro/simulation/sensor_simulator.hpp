@@ -5,7 +5,7 @@
  * @brief Modello degli errori strumentali applicati allo stato ambientale.
  */
 
-#include "smarthydro/environment_simulator.hpp"
+#include <smarthydro/simulation/environment_simulator.hpp>
 
 #include <cstdint>
 #include <optional>

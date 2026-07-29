@@ -1,4 +1,4 @@
-#include "smarthydro/control_system.hpp"
+#include <smarthydro/control/control_system.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -375,16 +375,22 @@ ControlDecision RecipeControlSystem::execute(
         return decision;
     }
     if (!request.source_valid) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::RECOVERABLE;
         decision.message = "sensor or model input is invalid";
         return decision;
     }
     if (is_model_sensor(configuration.sensor) &&
         configuration.selected_strategy != StrategyType::PREDICTIVE) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "selected strategy is incompatible with NPK model";
         return decision;
     }
     if (!std::isfinite(request.elapsed_recipe_hours) ||
         request.elapsed_recipe_hours < 0.0) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "recipe time is invalid";
         return decision;
     }
@@ -392,6 +398,8 @@ ControlDecision RecipeControlSystem::execute(
         (!std::isfinite(request.hour_of_day) ||
          request.hour_of_day < 0.0 ||
          request.hour_of_day >= 24.0)) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "hour of day is invalid";
         return decision;
     }
@@ -400,6 +408,8 @@ ControlDecision RecipeControlSystem::execute(
          request.daily_dose_milliliters < 0.0 ||
          !std::isfinite(request.seconds_since_last_dose) ||
          request.seconds_since_last_dose < 0.0)) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "dose history is invalid";
         return decision;
     }
@@ -409,6 +419,8 @@ ControlDecision RecipeControlSystem::execute(
         rebuild_controllers(phase);
     }
     if (!controllers_[index]) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "controller could not be created";
         return decision;
     }
@@ -418,11 +430,15 @@ ControlDecision RecipeControlSystem::execute(
     const auto value = source_value(
         configuration.sensor, request.controller_input);
     if (!value.has_value() || !std::isfinite(*value)) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::RECOVERABLE;
         decision.message = "required sensor or model value is missing";
         return decision;
     }
     if (*value < target.safety_range.minimum ||
         *value > target.safety_range.maximum) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "process value is outside safety limits";
         return decision;
     }
@@ -446,6 +462,8 @@ ControlDecision RecipeControlSystem::execute(
         substrate_factor(*recipe_.substrate);
     const auto raw = controllers_[index]->compute(controller_input);
     if (!raw.valid) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = raw.error;
         return decision;
     }

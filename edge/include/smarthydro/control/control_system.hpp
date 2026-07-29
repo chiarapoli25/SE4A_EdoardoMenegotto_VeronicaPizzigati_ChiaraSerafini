@@ -5,8 +5,8 @@
  * @brief Ricette versionate, configurazione Strategy e limiti di sicurezza.
  */
 
-#include "smarthydro/controllers.hpp"
-#include "smarthydro/environment_simulator.hpp"
+#include <smarthydro/control/controllers.hpp>
+#include <smarthydro/simulation/environment_simulator.hpp>
 
 #include <array>
 #include <cstddef>
@@ -211,10 +211,32 @@ enum class ControlDecisionStatus {
     BLOCKED,
 };
 
+/**
+ * @brief Severita del guasto che ha impedito una decisione.
+ *
+ * RECOVERABLE identifica tipicamente una lettura temporaneamente assente;
+ * CRITICAL identifica condizioni incompatibili con una prosecuzione sicura.
+ */
+enum class ControlFaultSeverity {
+    NONE,
+    RECOVERABLE,
+    CRITICAL,
+};
+
 /** @brief Comando sicuro prodotto dall'orchestratore. */
 struct ControlDecision {
     /** Esito dell'applicazione dei limiti prioritari. */
     ControlDecisionStatus status = ControlDecisionStatus::BLOCKED;
+    /**
+     * Indica che il blocco dipende da una condizione che rende insicuro
+     * proseguire con qualsiasi attuatore della zona.
+     *
+     * Rimane falso per i normali vincoli operativi, come l'intervallo minimo
+     * tra due dosi o il raggiungimento del limite giornaliero.
+     */
+    bool safety_critical = false;
+    /** Severita usata dalla macchina a stati operativa dell'Edge. */
+    ControlFaultSeverity fault_severity = ControlFaultSeverity::NONE;
     /** Comando finale sicuro, nell'unita dell'attuatore. */
     double command = 0.0;
     /** Attuatore associato alla variabile. */

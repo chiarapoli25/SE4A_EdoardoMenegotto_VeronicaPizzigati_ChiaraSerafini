@@ -1,4 +1,4 @@
-#include "smarthydro/sensor_simulator.hpp"
+#include <smarthydro/simulation/sensor_simulator.hpp>
 
 #include <gtest/gtest.h>
 

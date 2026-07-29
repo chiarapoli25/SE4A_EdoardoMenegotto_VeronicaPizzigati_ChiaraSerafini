@@ -1,4 +1,4 @@
-#include "smarthydro/recipe_json.hpp"
+#include <smarthydro/recipes/recipe_json.hpp>
 
 #include <nlohmann/json.hpp>
 
