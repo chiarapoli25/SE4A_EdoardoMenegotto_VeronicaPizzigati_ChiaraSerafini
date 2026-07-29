@@ -56,6 +56,17 @@ target_compile_features(actuator_tests PRIVATE cxx_std_17)
 set_target_properties(actuator_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(actuator_tests)
 
+# Test delle interfacce e degli Adapter sostituibili usati dal runtime.
+add_executable(io_adapter_tests io_adapter_tests.cpp)
+target_link_libraries(io_adapter_tests
+    PRIVATE
+        io_adapters
+        GTest::gtest_main
+)
+target_compile_features(io_adapter_tests PRIVATE cxx_std_17)
+set_target_properties(io_adapter_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(io_adapter_tests)
+
 # Eseguibile dei test dei controllori.
 add_executable(controller_tests controllers_tests.cpp)
 target_link_libraries(controller_tests

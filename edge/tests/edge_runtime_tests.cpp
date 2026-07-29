@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
@@ -31,6 +32,35 @@ smarthydro::SensorConfig deterministic_sensors() {
         channel->calibration_correction = 0.0;
     }
     return config;
+}
+
+class ConstantSensor final : public smarthydro::ISensor {
+public:
+    ConstantSensor(
+        smarthydro::SensorChannel channel,
+        double value)
+        : channel_(channel), value_(value) {}
+
+    smarthydro::SensorChannel channel() const noexcept override {
+        return channel_;
+    }
+
+    std::optional<double> read(
+        const smarthydro::EnvironmentState&) override {
+        return value_;
+    }
+
+private:
+    smarthydro::SensorChannel channel_;
+    double value_;
+};
+
+void set_constant_sensor(
+    smarthydro::SensorAdapterArray& sensors,
+    smarthydro::SensorChannel channel,
+    double value) {
+    sensors[smarthydro::sensor_channel_index(channel)] =
+        std::make_unique<ConstantSensor>(channel, value);
 }
 
 TEST(EdgeRuntimeTest, BlocksRecipeUntilConfigurationsAreConfirmed) {
@@ -284,6 +314,56 @@ TEST(EdgeRuntimeTest, StopsAllActuatorsWhenPhysicalCommandFails) {
         }
     }
     EXPECT_TRUE(actuator_error_reported);
+}
+
+TEST(EdgeRuntimeTest, AcceptsInjectedAdapterImplementations) {
+    smarthydro::SensorAdapterArray sensors;
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::TEMPERATURE, 22.0);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::AIR_HUMIDITY, 60.0);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::SOIL_MOISTURE, 60.0);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::PH, 6.2);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::LIGHT, 450.0);
+
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(),
+        std::move(sensors),
+        std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
+        std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
+            smarthydro::EnvironmentConfig{}, 9U));
+    runtime.confirm_all_configurations();
+
+    const auto result = runtime.step(60.0);
+
+    EXPECT_EQ(
+        result.operational_state,
+        smarthydro::OperationalState::NOMINAL);
+    EXPECT_DOUBLE_EQ(*result.readings.temperature_c, 22.0);
+    EXPECT_DOUBLE_EQ(*result.readings.air_humidity_percent, 60.0);
+    EXPECT_DOUBLE_EQ(*result.readings.soil_moisture_percent, 60.0);
+    EXPECT_DOUBLE_EQ(*result.readings.ph, 6.2);
+    EXPECT_DOUBLE_EQ(*result.readings.light_ppfd_umol_m2_s, 450.0);
+}
+
+TEST(EdgeRuntimeTest, RejectsMissingInjectedAdapters) {
+    auto sensors = smarthydro::make_simulated_sensor_adapters(
+        deterministic_sensors(), 11U);
+    sensors[smarthydro::sensor_channel_index(
+        smarthydro::SensorChannel::PH)]
+        .reset();
+
+    EXPECT_THROW(
+        smarthydro::EdgeRuntime(
+            load_demo_recipe(),
+            std::move(sensors),
+            std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
+            std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
+                smarthydro::EnvironmentConfig{}, 12U)),
+        std::invalid_argument);
 }
 
 }  // namespace

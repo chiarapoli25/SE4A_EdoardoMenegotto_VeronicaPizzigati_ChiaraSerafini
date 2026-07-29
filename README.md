@@ -75,6 +75,19 @@ Per usare una ricetta diversa o simulare piu cicli:
 ciascun ciclo. L'Edge usa esclusivamente il JSON locale durante l'esecuzione e
 non richiede che il backend sia raggiungibile.
 
+### Adapter e hardware
+
+`EdgeRuntime` dipende dalle interfacce `ISensor`, `IActuator` e `IEnvironment`,
+non dai simulatori concreti. Il costruttore normale crea automaticamente gli
+adapter simulati per temperatura, umidita dell'aria, umidita del substrato, pH,
+luce, pompa, lampade, valvole e ambiente.
+
+Un secondo costruttore accetta gli adapter tramite `std::unique_ptr`. Un futuro
+driver GPIO, Modbus o MQTT puo quindi implementare le stesse interfacce ed
+essere inserito senza cambiare `EdgeRuntime`, `RecipeControlSystem` o gli
+algoritmi delle Strategy. I cinque adapter sensore simulati condividono un
+campione sincronizzato per ogni tick.
+
 I test C++ di ambiente, sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
 scarica automaticamente la versione fissata al primo comando di configurazione
 con `BUILD_TESTING=ON`; le esecuzioni successive riutilizzano la copia nella

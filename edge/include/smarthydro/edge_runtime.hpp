@@ -5,13 +5,12 @@
  * @brief Ciclo operativo che collega ricetta, sensori, controllori e attuatori.
  */
 
-#include "smarthydro/actuator_simulator.hpp"
 #include "smarthydro/control_system.hpp"
-#include "smarthydro/environment_simulator.hpp"
-#include "smarthydro/sensor_simulator.hpp"
+#include "smarthydro/io_adapters.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -115,6 +114,25 @@ public:
         std::uint32_t sensor_seed = 0x53484D32U);
 
     /**
+     * @brief Costruisce il runtime con dipendenze conformi agli Adapter.
+     *
+     * Consente di sostituire singolarmente sensori, driver degli attuatori e
+     * ambiente senza modificare il ciclo di controllo.
+     *
+     * @param recipe Ricetta validata da acquisire.
+     * @param sensors Cinque adapter non nulli, ordinati per SensorChannel.
+     * @param actuators Driver aggregato non nullo degli attuatori.
+     * @param environment Ambiente non nullo osservato e aggiornato dal runtime.
+     * @throws std::invalid_argument Se una dipendenza manca o un sensore si
+     * trova in una posizione diversa dal proprio canale.
+     */
+    EdgeRuntime(
+        Recipe recipe,
+        SensorAdapterArray sensors,
+        std::unique_ptr<IActuator> actuators,
+        std::unique_ptr<IEnvironment> environment);
+
+    /**
      * @brief Valida e conferma localmente tutte le configurazioni della ricetta.
      *
      * @throws std::runtime_error Se almeno una configurazione non puo essere
@@ -149,6 +167,7 @@ private:
     ControlRequest base_request(double delta_time_seconds) const;
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
     void reset_histories_if_needed();
+    SensorReadings read_sensors();
     bool enter_lockdown_for_critical_decision(EdgeStepResult& result);
     void enter_emergency_lockdown(
         const std::string& reason,
@@ -167,9 +186,12 @@ private:
         const EdgeStepResult& result);
 
     RecipeControlSystem control_system_;
-    ActuatorSimulator actuators_;
-    EnvironmentSimulator environment_;
-    SensorSimulator sensors_;
+    std::unique_ptr<IActuator> actuators_;
+    std::unique_ptr<IEnvironment> environment_;
+    SensorAdapterArray sensors_;
+    WaterPumpAdapter water_pump_;
+    LightingAdapter lighting_;
+    FertilizerValveAdapter fertilizer_valves_;
     ControlledValues<double> cumulative_phase_dose_milliliters_{};
     ControlledValues<double> daily_dose_milliliters_{};
     ControlledValues<double> seconds_since_last_dose_{};

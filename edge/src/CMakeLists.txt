@@ -26,6 +26,20 @@ target_compile_features(sensor_simulator PUBLIC cxx_std_17)
 target_link_libraries(sensor_simulator PUBLIC environment_simulator)
 set_target_properties(sensor_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
+# Adapter sostituibili che isolano il runtime dai simulatori concreti.
+add_library(io_adapters io_adapters.cpp)
+target_include_directories(io_adapters
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(io_adapters PUBLIC cxx_std_17)
+target_link_libraries(io_adapters
+    PUBLIC
+        sensor_simulator
+        environment_simulator
+        actuator_simulator
+)
+set_target_properties(io_adapters PROPERTIES CXX_EXTENSIONS OFF)
+
 # Crea la libreria dei controllori.
 add_library(controllers controllers.cpp)
 target_include_directories(controllers
@@ -70,9 +84,7 @@ target_compile_features(edge_runtime PUBLIC cxx_std_17)
 target_link_libraries(edge_runtime
     PUBLIC
         control_system
-        sensor_simulator
-        environment_simulator
-        actuator_simulator
+        io_adapters
 )
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 

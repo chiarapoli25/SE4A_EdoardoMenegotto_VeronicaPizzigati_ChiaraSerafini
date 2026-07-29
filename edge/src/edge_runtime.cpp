@@ -36,6 +36,24 @@ EnvironmentConfig environment_for_recipe(
     return config;
 }
 
+std::unique_ptr<IActuator> require_actuators(
+    std::unique_ptr<IActuator> actuators) {
+    if (!actuators) {
+        throw std::invalid_argument(
+            "edge runtime requires an actuator adapter");
+    }
+    return actuators;
+}
+
+std::unique_ptr<IEnvironment> require_environment(
+    std::unique_ptr<IEnvironment> environment) {
+    if (!environment) {
+        throw std::invalid_argument(
+            "edge runtime requires an environment adapter");
+    }
+    return environment;
+}
+
 double hour_of_day(double elapsed_hours) {
     double hour = std::fmod(elapsed_hours, 24.0);
     if (hour < 0.0) {
@@ -94,13 +112,47 @@ EdgeRuntime::EdgeRuntime(
     std::uint32_t environment_seed,
     std::uint32_t sensor_seed)
     : control_system_(std::move(recipe)),
-      actuators_(std::move(actuator_config)),
-      environment_(
+      actuators_(std::make_unique<ActuatorSimulatorAdapter>(
+          std::move(actuator_config))),
+      environment_(std::make_unique<EnvironmentSimulatorAdapter>(
           environment_for_recipe(
               std::move(environment_config),
               control_system_.recipe()),
-          environment_seed),
-      sensors_(std::move(sensor_config), sensor_seed) {
+          environment_seed)),
+      sensors_(make_simulated_sensor_adapters(
+          std::move(sensor_config),
+          sensor_seed)),
+      water_pump_(*actuators_),
+      lighting_(*actuators_),
+      fertilizer_valves_(*actuators_) {
+    seconds_since_last_dose_.fill(
+        std::numeric_limits<double>::max() / 4.0);
+}
+
+EdgeRuntime::EdgeRuntime(
+    Recipe recipe,
+    SensorAdapterArray sensors,
+    std::unique_ptr<IActuator> actuators,
+    std::unique_ptr<IEnvironment> environment)
+    : control_system_(std::move(recipe)),
+      actuators_(require_actuators(std::move(actuators))),
+      environment_(require_environment(std::move(environment))),
+      sensors_(std::move(sensors)),
+      water_pump_(*actuators_),
+      lighting_(*actuators_),
+      fertilizer_valves_(*actuators_) {
+    for (std::size_t index = 0;
+         index < kSensorChannelCount;
+         ++index) {
+        if (!sensors_[index]) {
+            throw std::invalid_argument(
+                "edge runtime requires every sensor adapter");
+        }
+        if (sensor_channel_index(sensors_[index]->channel()) != index) {
+            throw std::invalid_argument(
+                "sensor adapter is stored in the wrong channel");
+        }
+    }
     seconds_since_last_dose_.fill(
         std::numeric_limits<double>::max() / 4.0);
 }
@@ -126,11 +178,11 @@ const RecipeControlSystem& EdgeRuntime::control_system() const noexcept {
 }
 
 const EnvironmentState& EdgeRuntime::environment_state() const noexcept {
-    return environment_.state();
+    return environment_->state();
 }
 
 const ActuatorOutput& EdgeRuntime::actuator_output() const noexcept {
-    return actuators_.output();
+    return actuators_->output();
 }
 
 OperationalState EdgeRuntime::operational_state() const noexcept {
@@ -150,7 +202,7 @@ double EdgeRuntime::daily_dose_milliliters(
 
 ControlRequest EdgeRuntime::base_request(double delta_time_seconds) const {
     const double elapsed_seconds =
-        environment_.state().simulation_time_seconds;
+        environment_->state().simulation_time_seconds;
     const double elapsed_hours = elapsed_seconds / kSecondsPerHour;
 
     ControlRequest request;
@@ -176,7 +228,7 @@ std::size_t EdgeRuntime::active_phase_index(
 
 void EdgeRuntime::reset_histories_if_needed() {
     const double elapsed_seconds =
-        environment_.state().simulation_time_seconds;
+        environment_->state().simulation_time_seconds;
     const auto current_day = static_cast<std::uint64_t>(
         std::floor(elapsed_seconds / kSecondsPerDay));
     if (current_day != history_day_index_) {
@@ -192,6 +244,28 @@ void EdgeRuntime::reset_histories_if_needed() {
     }
 }
 
+SensorReadings EdgeRuntime::read_sensors() {
+    const auto& state = environment_->state();
+    SensorReadings readings;
+    readings.timestamp_seconds = state.simulation_time_seconds;
+    readings.temperature_c =
+        sensors_[sensor_channel_index(SensorChannel::TEMPERATURE)]
+            ->read(state);
+    readings.air_humidity_percent =
+        sensors_[sensor_channel_index(SensorChannel::AIR_HUMIDITY)]
+            ->read(state);
+    readings.soil_moisture_percent =
+        sensors_[sensor_channel_index(SensorChannel::SOIL_MOISTURE)]
+            ->read(state);
+    readings.ph =
+        sensors_[sensor_channel_index(SensorChannel::PH)]
+            ->read(state);
+    readings.light_ppfd_umol_m2_s =
+        sensors_[sensor_channel_index(SensorChannel::LIGHT)]
+            ->read(state);
+    return readings;
+}
+
 EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     if (!std::isfinite(delta_time_seconds) ||
         delta_time_seconds <= 0.0) {
@@ -204,7 +278,7 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     EdgeStepResult result;
     result.sequence_number = next_sequence_number_++;
     result.start_time_seconds =
-        environment_.state().simulation_time_seconds;
+        environment_->state().simulation_time_seconds;
     result.duration_seconds = delta_time_seconds;
     result.operational_state = operational_state_;
     const auto phase_index = active_phase_index(
@@ -227,13 +301,13 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             });
     }
     reported_phase_index_ = phase_index;
-    result.readings = sensors_.read(environment_.state());
+    result.readings = read_sensors();
 
     if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
         hold_emergency_lockdown(delta_time_seconds, result);
-        result.actuator_command = actuators_.command();
-        result.actuator_output = actuators_.output();
-        result.environment_state = environment_.state();
+        result.actuator_command = actuators_->command();
+        result.actuator_output = actuators_->output();
+        result.environment_state = environment_->state();
         return result;
     }
 
@@ -266,9 +340,9 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     request.seconds_since_last_dose =
         seconds_since_last_dose_[ph_index];
     request.ph_up_active =
-        actuators_.fertilizer_valve_open(FertilizerType::PH_UP);
+        fertilizer_valves_.open(FertilizerType::PH_UP);
     request.ph_down_active =
-        actuators_.fertilizer_valve_open(FertilizerType::PH_DOWN);
+        fertilizer_valves_.open(FertilizerType::PH_DOWN);
     result.decisions[ph_index] =
         control_system_.execute(ControlledVariable::PH, request);
 
@@ -283,7 +357,7 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         const auto index = controlled_variable_index(variable);
         request = base_request(delta_time_seconds);
         request.controller_input.model_estimate =
-            nutrient_model_value(variable, environment_.state());
+            nutrient_model_value(variable, environment_->state());
         request.controller_input.water_delivered_liters =
             requested_water;
         request.controller_input.cumulative_dose_milliliters =
@@ -309,9 +383,9 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         }
     }
     update_dose_histories(delta_time_seconds, result);
-    result.actuator_command = actuators_.command();
-    result.actuator_output = actuators_.output();
-    result.environment_state = environment_.state();
+    result.actuator_command = actuators_->command();
+    result.actuator_output = actuators_->output();
+    result.environment_state = environment_->state();
     return result;
 }
 
@@ -338,7 +412,7 @@ bool EdgeRuntime::enter_lockdown_for_critical_decision(
 void EdgeRuntime::enter_emergency_lockdown(
     const std::string& reason,
     EdgeStepResult& result) {
-    actuators_.stop_all();
+    actuators_->stop_all();
     operational_state_ = OperationalState::EMERGENCY_LOCKDOWN;
     result.operational_state = operational_state_;
     result.events.push_back(
@@ -352,7 +426,7 @@ void EdgeRuntime::enter_emergency_lockdown(
 void EdgeRuntime::hold_emergency_lockdown(
     double delta_time_seconds,
     EdgeStepResult& result) {
-    actuators_.stop_all();
+    actuators_->stop_all();
     result.operational_state = operational_state_;
     for (std::size_t index = 0;
          index < kControlledVariableCount;
@@ -377,15 +451,15 @@ void EdgeRuntime::apply_decisions(
         controlled_variable_index(ControlledVariable::LIGHT);
     const double lighting_percent = std::clamp(
         result.decisions[light_index].command, 0.0, 100.0);
-    actuators_.set_lighting_command_percent(lighting_percent);
+    lighting_.set_command_percent(lighting_percent);
 
     const double water_command =
         result.decisions[water_index].command;
-    if (water_command > 0.0 && !actuators_.output().water_pump_on) {
-        actuators_.request_irrigation_volume_liters(water_command);
+    if (water_command > 0.0 && !water_pump_.active()) {
+        water_pump_.request_volume_liters(water_command);
     }
 
-    actuators_.close_all_fertilizer_valves();
+    fertilizer_valves_.close_all();
     FertilizerValues<double> requested_doses{};
     requested_doses[fertilizer_index(FertilizerType::NITROGEN)] =
         std::max(
@@ -420,10 +494,10 @@ void EdgeRuntime::apply_decisions(
 
     FertilizerValues<double> close_after_seconds{};
     std::vector<double> close_events;
-    if (actuators_.output().water_pump_on) {
+    if (water_pump_.active()) {
         const double available_pump_seconds = std::min(
             delta_time_seconds,
-            actuators_.remaining_irrigation_time_seconds());
+            water_pump_.remaining_time_seconds());
         for (std::size_t index = 0;
              index < kFertilizerTypeCount;
              ++index) {
@@ -432,14 +506,14 @@ void EdgeRuntime::apply_decisions(
             }
             const auto type = static_cast<FertilizerType>(index);
             const double flow =
-                actuators_.config()
+                actuators_->config()
                     .fertilizer_flow_milliliters_per_hour[index];
             const double requested_seconds =
                 requested_doses[index] / flow * kSecondsPerHour;
             close_after_seconds[index] = std::min(
                 requested_seconds, available_pump_seconds);
             if (close_after_seconds[index] > kEventToleranceSeconds) {
-                actuators_.set_fertilizer_valve_open(type, true);
+                fertilizer_valves_.set_open(type, true);
                 close_events.push_back(close_after_seconds[index]);
             }
         }
@@ -468,7 +542,7 @@ void EdgeRuntime::apply_decisions(
             if (close_after_seconds[index] > 0.0 &&
                 close_after_seconds[index] <=
                     event_time + kEventToleranceSeconds) {
-                actuators_.set_fertilizer_valve_open(
+                fertilizer_valves_.set_open(
                     static_cast<FertilizerType>(index), false);
                 close_after_seconds[index] = 0.0;
             }
@@ -478,14 +552,14 @@ void EdgeRuntime::apply_decisions(
     if (elapsed < delta_time_seconds - kEventToleranceSeconds) {
         advance_physics(delta_time_seconds - elapsed, result);
     }
-    actuators_.close_all_fertilizer_valves();
+    fertilizer_valves_.close_all();
 }
 
 void EdgeRuntime::advance_physics(
     double delta_time_seconds,
     EdgeStepResult& result) {
-    actuators_.step(delta_time_seconds);
-    const auto& output = actuators_.output();
+    actuators_->step(delta_time_seconds);
+    const auto& output = actuators_->output();
     result.delivered_water_liters +=
         output.irrigation_volume_liters_last_step;
     for (std::size_t index = 0;
@@ -494,7 +568,7 @@ void EdgeRuntime::advance_physics(
         result.delivered_fertilizer_milliliters[index] +=
             output.fertilizer_volume_milliliters_last_step[index];
     }
-    environment_.step(delta_time_seconds, output);
+    environment_->step(delta_time_seconds, output);
 }
 
 void EdgeRuntime::update_dose_histories(

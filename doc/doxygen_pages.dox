@@ -58,6 +58,32 @@
  * - @ref smarthydro::ActuatorSimulator mantiene separati i comandi richiesti
  *   dalle uscite fisiche realmente erogate da pompa, lampade e valvole.
  *
+ * @subsection edge_adapter_components Adapter e porte hardware
+ *
+ * Il runtime non dipende direttamente dai simulatori ma dai tre contratti:
+ *
+ * - @ref smarthydro::ISensor per un singolo canale di misura;
+ * - @ref smarthydro::IActuator per il driver aggregato della zona;
+ * - @ref smarthydro::IEnvironment per lo stato e la dinamica fisica.
+ *
+ * Gli adapter simulati sono:
+ *
+ * - @ref smarthydro::TemperatureSensorAdapter,
+ *   @ref smarthydro::AirHumiditySensorAdapter,
+ *   @ref smarthydro::SoilMoistureSensorAdapter,
+ *   @ref smarthydro::PhSensorAdapter e
+ *   @ref smarthydro::LightSensorAdapter per i cinque canali;
+ * - @ref smarthydro::ActuatorSimulatorAdapter come implementazione del driver;
+ * - @ref smarthydro::WaterPumpAdapter,
+ *   @ref smarthydro::LightingAdapter e
+ *   @ref smarthydro::FertilizerValveAdapter come viste di dominio;
+ * - @ref smarthydro::EnvironmentSimulatorAdapter per l'ambiente.
+ *
+ * Gli adapter dei sensori condividono un
+ * @ref smarthydro::SimulatedSensorSampler; una sola chiamata a
+ * SensorSimulator::read() produce il campione sincronizzato usato da tutti i
+ * canali nello stesso tick.
+ *
  * @subsection edge_control_components Strategie di controllo
  *
  * - @ref smarthydro::ThresholdController applica un controllo a soglie con
@@ -82,6 +108,15 @@
  *   runtime, come avvio e cambio della fase colturale.
  *
  * @section edge_runtime Runtime operativo
+ *
+ * @subsection edge_runtime_injection Dependency injection
+ *
+ * Il costruttore semplificato crea automaticamente tutti gli adapter simulati.
+ * Il secondo costruttore di @ref smarthydro::EdgeRuntime riceve invece cinque
+ * `std::unique_ptr<ISensor>`, un `std::unique_ptr<IActuator>` e un
+ * `std::unique_ptr<IEnvironment>`. Per collegare hardware reale e quindi
+ * sufficiente implementare gli stessi contratti e iniettarli, senza modificare
+ * ricette, controllori o ciclo operativo.
  *
  * @subsection edge_runtime_cycle Ordine di un ciclo
  *
