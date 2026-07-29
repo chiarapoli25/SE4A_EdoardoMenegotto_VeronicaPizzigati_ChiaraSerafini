@@ -2,9 +2,10 @@
 @brief Applicazione FastAPI e relativi endpoint HTTP di SmartHydro.
 
 @details Il modulo costruisce l'oggetto ASGI importato dal server e definisce
-gli endpoint pubblici disponibili nella fase corrente. Mantiene le ricette in
-SQLite e le esporta come file JSON a ogni salvataggio; non esiste ancora un
-canale diretto verso il processo dell'Edge Controller.
+gli endpoint pubblici disponibili nella fase corrente. Mantiene in SQLite le
+zone fisiche della serra e le ricette, che esporta come file JSON a ogni
+salvataggio; non esiste ancora un canale diretto verso il processo dell'Edge
+Controller.
 """
 
 import sqlite3
@@ -16,12 +17,16 @@ from fastapi import Depends, FastAPI, HTTPException
 
 from .database import (
     RecipeVersionConflict,
+    ZoneConflict,
+    create_zone,
     get_connection,
     get_recipe,
+    get_zone,
     init_db,
+    list_zones,
     save_recipe,
 )
-from .models import Recipe
+from .models import Recipe, Zone, ZoneCreate
 from .recipe_export import (
     DEFAULT_EXPORT_DIRECTORY,
     UnsafeRecipeId,
@@ -94,6 +99,58 @@ def read_health() -> dict[str, str]:
     @return Stato statico di disponibilita del processo.
     """
     return {"status": "healthy"}
+
+
+@app.post("/zones", response_model=Zone, status_code=201)
+def register_zone(
+    zone: ZoneCreate,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Zone:
+    """@brief Registra uno dei settori fisici della serra.
+
+    @details Sono ammessi quattro reparti con due settori ciascuno. Il vincolo
+    univoco `(department_number, sector_number)` impedisce di assegnare due
+    zone allo stesso settore. Ogni zona contiene una sola specie vegetale.
+
+    @param zone Identita, posizione e specie del settore.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Zona creata con stato iniziale `offline`.
+    @throws HTTPException Se id o posizione fisica sono gia occupati.
+    """
+    try:
+        return create_zone(connection, zone)
+    except ZoneConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/zones", response_model=list[Zone])
+def read_zones(
+    connection: sqlite3.Connection = Depends(get_db),
+) -> list[Zone]:
+    """@brief Elenca tutti i settori registrati.
+
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Zone ordinate prima per reparto e poi per settore.
+    """
+    return list_zones(connection)
+
+
+@app.get("/zones/{zone_id}", response_model=Zone)
+def read_zone(
+    zone_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Zone:
+    """@brief Recupera un settore tramite il suo identificativo.
+
+    @param zone_id Identificativo della zona richiesta.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Zona trovata.
+    @throws HTTPException Se la zona non esiste.
+    """
+    zone = get_zone(connection, zone_id)
+    if zone is None:
+        raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
+    return zone
 
 
 @app.post("/recipes", response_model=Recipe, status_code=201)

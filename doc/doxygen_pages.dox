@@ -127,6 +127,9 @@
  * | ------ | -------- | -------- | ----------- |
  * | GET | `/` | backend.app.main.read_root() | Nome e versione del servizio |
  * | GET | `/health` | backend.app.main.read_health() | Disponibilita del processo |
+ * | POST | `/zones` | backend.app.main.register_zone() | Registrazione di un settore della serra |
+ * | GET | `/zones` | backend.app.main.read_zones() | Elenco dei settori ordinati per reparto |
+ * | GET | `/zones/{zone_id}` | backend.app.main.read_zone() | Lettura di un settore tramite identificativo |
  * | POST | `/recipes` | backend.app.main.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.main.read_recipe() | Lettura di una ricetta salvata |
  *
