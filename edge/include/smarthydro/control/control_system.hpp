@@ -5,8 +5,8 @@
  * @brief Ricette versionate, configurazione Strategy e limiti di sicurezza.
  */
 
-#include "smarthydro/controllers.hpp"
-#include "smarthydro/environment_simulator.hpp"
+#include <smarthydro/control/controllers.hpp>
+#include <smarthydro/simulation/environment_simulator.hpp>
 
 #include <array>
 #include <cstddef>

@@ -98,25 +98,27 @@ campione sincronizzato per ogni tick.
 
 ### Struttura dei sorgenti Edge
 
-I sorgenti in `edge/src` sono raggruppati per responsabilita:
+Header pubblici e implementazioni sono raggruppati negli stessi domini:
 
 ```text
-src/
-├── adapters/    interfacce concrete verso simulatori o hardware
-├── control/     Strategy e orchestrazione della ricetta
-├── events/      EventBus e observer
-├── recipes/     serializzazione JSON
-├── runtime/     ciclo Edge, FSM, attuazione, eventi e comandi runtime
-├── simulation/  ambiente, sensori e attuatori simulati
-└── main.cpp     composizione dell'eseguibile
+edge/
+├── include/smarthydro/
+│   ├── adapters/    interfacce e adapter
+│   ├── control/     Strategy e controllo della ricetta
+│   ├── events/      EventBus e observer
+│   ├── recipes/     caricamento delle ricette
+│   ├── runtime/     runtime, FSM, comandi e gestione multi-zona
+│   └── simulation/  simulatori
+└── src/             implementazioni negli stessi domini
 ```
 
 `EdgeRuntime` mantiene una sola API pubblica, ma la sua implementazione e
 separata in `core`, `configuration`, `cycle`, `fsm`, `actuation` ed `events`.
-I DTO del ciclo e della FSM sono dichiarati in `edge_runtime_types.hpp`, mentre
-`edge_runtime.hpp` contiene l'orchestratore. Questa divisione evita dipendenze
-circolari: per esempio `EventBus` dipende soltanto dai tipi pubblicati e non
-dall'intera classe runtime.
+I DTO del ciclo e della FSM sono dichiarati in
+`smarthydro/runtime/edge_runtime_types.hpp`, mentre
+`smarthydro/runtime/edge_runtime.hpp` contiene l'orchestratore. Gli header si
+includono indicando il dominio, per esempio
+`#include <smarthydro/runtime/edge_runtime.hpp>`.
 
 ### Multi-zona
 

@@ -1,5 +1,5 @@
-#include "smarthydro/edge_runtime.hpp"
-#include "smarthydro/recipe_json.hpp"
+#include <smarthydro/recipes/recipe_json.hpp>
+#include <smarthydro/runtime/edge_runtime.hpp>
 
 #include <gtest/gtest.h>
 

@@ -1,4 +1,4 @@
-#include "smarthydro/edge_runtime.hpp"
+#include <smarthydro/runtime/edge_runtime.hpp>
 
 #include <algorithm>
 #include <array>

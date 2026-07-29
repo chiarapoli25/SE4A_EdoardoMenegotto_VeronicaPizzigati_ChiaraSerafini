@@ -5,8 +5,8 @@
  * @brief Gestione di piu zone Edge indipendenti nella stessa serra.
  */
 
-#include "smarthydro/event_bus.hpp"
-#include "smarthydro/runtime_commands.hpp"
+#include <smarthydro/events/event_bus.hpp>
+#include <smarthydro/runtime/runtime_commands.hpp>
 
 #include <cstddef>
 #include <cstdint>

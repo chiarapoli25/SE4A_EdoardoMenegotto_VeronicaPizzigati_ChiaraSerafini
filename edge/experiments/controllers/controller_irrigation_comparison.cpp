@@ -1,7 +1,7 @@
-#include "smarthydro/actuator_simulator.hpp"
-#include "smarthydro/controllers.hpp"
-#include "smarthydro/environment_simulator.hpp"
-#include "smarthydro/sensor_simulator.hpp"
+#include <smarthydro/control/controllers.hpp>
+#include <smarthydro/simulation/actuator_simulator.hpp>
+#include <smarthydro/simulation/environment_simulator.hpp>
+#include <smarthydro/simulation/sensor_simulator.hpp>
 
 #include <algorithm>
 #include <cmath>

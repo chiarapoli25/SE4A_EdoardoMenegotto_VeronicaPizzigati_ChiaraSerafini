@@ -5,7 +5,7 @@
  * @brief Serializzazione JSON delle ricette e configurazioni Strategy.
  */
 
-#include "smarthydro/control_system.hpp"
+#include <smarthydro/control/control_system.hpp>
 
 #include <string>
 

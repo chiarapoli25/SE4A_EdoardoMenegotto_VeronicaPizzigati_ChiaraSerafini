@@ -1,6 +1,6 @@
-#include "smarthydro/event_bus.hpp"
-#include "smarthydro/recipe_json.hpp"
-#include "smarthydro/runtime_commands.hpp"
+#include <smarthydro/events/event_bus.hpp>
+#include <smarthydro/recipes/recipe_json.hpp>
+#include <smarthydro/runtime/runtime_commands.hpp>
 
 #include <gtest/gtest.h>
 

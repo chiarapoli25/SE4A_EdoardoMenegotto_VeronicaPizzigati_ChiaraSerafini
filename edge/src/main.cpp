@@ -1,6 +1,6 @@
-#include "smarthydro/event_bus.hpp"
-#include "smarthydro/greenhouse_manager.hpp"
-#include "smarthydro/recipe_json.hpp"
+#include <smarthydro/events/event_bus.hpp>
+#include <smarthydro/recipes/recipe_json.hpp>
+#include <smarthydro/runtime/greenhouse_manager.hpp>
 
 #include <array>
 #include <cmath>

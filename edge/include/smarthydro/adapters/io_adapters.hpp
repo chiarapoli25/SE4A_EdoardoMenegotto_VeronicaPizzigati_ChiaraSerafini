@@ -5,9 +5,9 @@
  * @brief Interfacce Edge e Adapter per simulatori, sensori e attuatori.
  */
 
-#include "smarthydro/actuator_simulator.hpp"
-#include "smarthydro/environment_simulator.hpp"
-#include "smarthydro/sensor_simulator.hpp"
+#include <smarthydro/simulation/actuator_simulator.hpp>
+#include <smarthydro/simulation/environment_simulator.hpp>
+#include <smarthydro/simulation/sensor_simulator.hpp>
 
 #include <array>
 #include <cstddef>

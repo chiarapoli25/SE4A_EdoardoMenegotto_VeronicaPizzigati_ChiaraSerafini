@@ -1,4 +1,4 @@
-#include "smarthydro/control_system.hpp"
+#include <smarthydro/control/control_system.hpp>
 
 #include <algorithm>
 #include <cmath>

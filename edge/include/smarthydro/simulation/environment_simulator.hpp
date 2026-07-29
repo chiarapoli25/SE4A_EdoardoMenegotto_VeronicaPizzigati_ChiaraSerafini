@@ -9,7 +9,7 @@
  * successivamente EnvironmentState senza modificarlo.
  */
 
-#include "smarthydro/actuator_simulator.hpp"
+#include <smarthydro/simulation/actuator_simulator.hpp>
 
 #include <array>
 #include <cstdint>

@@ -5,8 +5,8 @@
  * @brief Tipi di stato, eventi e risultati prodotti dal runtime Edge.
  */
 
-#include "smarthydro/control_system.hpp"
-#include "smarthydro/io_adapters.hpp"
+#include <smarthydro/adapters/io_adapters.hpp>
+#include <smarthydro/control/control_system.hpp>
 
 #include <cstddef>
 #include <cstdint>

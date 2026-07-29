@@ -5,7 +5,7 @@
  * @brief Ciclo operativo che collega ricetta, sensori, controllori e attuatori.
  */
 
-#include "smarthydro/edge_runtime_types.hpp"
+#include <smarthydro/runtime/edge_runtime_types.hpp>
 
 #include <cstddef>
 #include <cstdint>

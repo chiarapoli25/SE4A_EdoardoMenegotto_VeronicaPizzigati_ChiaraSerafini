@@ -1,4 +1,4 @@
-#include "smarthydro/controllers.hpp"
+#include <smarthydro/control/controllers.hpp>
 
 #include <stdexcept>
 

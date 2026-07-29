@@ -1,5 +1,5 @@
-#include "smarthydro/edge_runtime.hpp"
-#include "smarthydro/event_bus.hpp"
+#include <smarthydro/events/event_bus.hpp>
+#include <smarthydro/runtime/edge_runtime.hpp>
 
 #include <algorithm>
 #include <cmath>

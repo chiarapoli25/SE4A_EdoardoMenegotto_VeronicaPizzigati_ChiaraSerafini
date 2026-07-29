@@ -5,7 +5,7 @@
  * @brief Eventi di dominio, EventBus sincrono e observer dell'Edge.
  */
 
-#include "smarthydro/edge_runtime_types.hpp"
+#include <smarthydro/runtime/edge_runtime_types.hpp>
 
 #include <cstdint>
 #include <fstream>

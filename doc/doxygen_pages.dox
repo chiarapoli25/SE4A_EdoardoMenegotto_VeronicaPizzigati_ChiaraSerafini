@@ -41,19 +41,20 @@
  *
  * @section edge_source_layout Struttura dei sorgenti
  *
- * `edge/src` e organizzata per responsabilita:
+ * Gli header in `edge/include/smarthydro` e le implementazioni in `edge/src`
+ * usano gli stessi domini:
  *
  * - `simulation/`: ambiente, sensori e attuatori;
- * - `adapters/`: collegamento alle interfacce Edge;
+ * - `adapters/`: interfacce e adapter;
  * - `control/`: Strategy e orchestrazione della ricetta;
  * - `recipes/`: serializzazione JSON;
  * - `events/`: EventBus e observer;
- * - `runtime/`: ciclo operativo, FSM, attuazione e comandi.
+ * - `runtime/`: ciclo operativo, FSM, comandi e gestione multi-zona.
  *
  * L'implementazione di @ref smarthydro::EdgeRuntime e divisa in file
  * `core`, `configuration`, `cycle`, `fsm`, `actuation` ed `events`.
  * @ref smarthydro::EdgeStepResult e gli altri DTO sono separati in
- * `edge_runtime_types.hpp`.
+ * `runtime/edge_runtime_types.hpp`.
  *
  * @section edge_cycle Ciclo operativo
  *

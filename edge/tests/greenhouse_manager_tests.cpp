@@ -1,5 +1,5 @@
-#include "smarthydro/greenhouse_manager.hpp"
-#include "smarthydro/recipe_json.hpp"
+#include <smarthydro/recipes/recipe_json.hpp>
+#include <smarthydro/runtime/greenhouse_manager.hpp>
 
 #include <gtest/gtest.h>
 

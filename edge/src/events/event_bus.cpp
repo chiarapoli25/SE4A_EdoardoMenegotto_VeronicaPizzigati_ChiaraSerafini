@@ -1,4 +1,4 @@
-#include "smarthydro/event_bus.hpp"
+#include <smarthydro/events/event_bus.hpp>
 
 #include <iomanip>
 #include <sstream>

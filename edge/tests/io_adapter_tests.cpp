@@ -1,4 +1,4 @@
-#include "smarthydro/io_adapters.hpp"
+#include <smarthydro/adapters/io_adapters.hpp>
 
 #include <gtest/gtest.h>
 
