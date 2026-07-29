@@ -1,382 +1,150 @@
 /**
  * @mainpage SmartHydro - Documentazione tecnica
  *
- * La documentazione tecnica di SmartHydro e raccolta in un unico sito e
- * organizzata nelle due componenti software del progetto:
+ * SmartHydro e composto da:
  *
- * - @subpage edge_controller_cpp
- * - @subpage backend_python
+ * - @subpage edge_controller_cpp - simulazione e controllo locale in C++17;
+ * - @subpage backend_python - API HTTP realizzate con FastAPI.
  *
- * La @ref md__r_e_a_d_m_e descrive invece compilazione, test ed esperimenti
- * dell'intero progetto.
+ * Per compilazione, test ed esecuzione consultare la @ref md__r_e_a_d_m_e.
  *
- * @tableofcontents
+ * @section main_overview Panoramica
  *
- * @section main_architecture Architettura generale
+ * | Componente | Responsabilita | Stato |
+ * | ---------- | -------------- | ----- |
+ * | Edge | Sensori, ricette, controllo, attuatori e sicurezza | Operativo in simulazione |
+ * | Backend | API per dashboard e integrazione futura | Endpoint base disponibili |
  *
- * L'Edge Controller mantiene il modello fisico, produce misure simulate e
- * applica ricette versionate tramite controllori Strategy. Il Backend espone
- * invece l'interfaccia HTTP; nella fase attuale le due componenti non
- * comunicano ancora fra loro.
- *
- * @section main_edge_cycle Ciclo Edge
- *
- * Il ciclo previsto nell'Edge Controller e:
- *
- * 1. EdgeRuntime legge sensori e modelli N/P/K;
- * 2. RecipeControlSystem calcola le sei decisioni sicure;
- * 3. EdgeRuntime configura gli attuatori;
- * 4. ActuatorSimulator::step() calcola l'uscita fisica;
- * 5. EnvironmentSimulator::step() applica l'uscita all'ambiente;
- * 6. EdgeRuntime aggiorna lo storico delle dosi realmente erogate;
- * 7. EdgeRuntime restituisce un EdgeStepResult progressivo con telemetria,
- *    stato attuatori, stato operativo ed eventi.
+ * Il controllo rimane nell'Edge anche quando il backend non e disponibile.
  */
 
 /**
  * @page edge_controller_cpp Edge Controller C++
  *
- * Componente C++17 che simula ambiente, sensori e attuatori e mette a
- * disposizione controllori a soglia, PID e predittivi.
+ * L'Edge simula una zona di coltivazione, applica una ricetta e porta gli
+ * attuatori in stato sicuro quando rileva un problema.
  *
  * @tableofcontents
  *
- * @section edge_overview Panoramica
- *
- * L'Edge esegue il controllo locale senza dipendere dalla disponibilita del
- * backend. La ricetta stabilisce fasi, target, Strategy e limiti; il runtime
- * osserva l'ambiente, calcola decisioni sicure e applica gli effetti fisici.
- *
- * @section edge_architecture Componenti
- *
- * @subsection edge_simulation_components Simulazione della serra
- *
- * - @ref smarthydro::EnvironmentSimulator possiede lo stato fisico della zona
- *   e lo fa evolvere in funzione del tempo e delle uscite degli attuatori.
- * - @ref smarthydro::SensorSimulator osserva lo stato ambientale e produce
- *   misure con bias, rumore, quantizzazione e possibili dropout.
- * - @ref smarthydro::ActuatorSimulator mantiene separati i comandi richiesti
- *   dalle uscite fisiche realmente erogate da pompa, lampade e valvole.
- *
- * @subsection edge_adapter_components Adapter e porte hardware
- *
- * Il runtime non dipende direttamente dai simulatori ma dai tre contratti:
- *
- * - @ref smarthydro::ISensor per un singolo canale di misura;
- * - @ref smarthydro::IActuator per il driver aggregato della zona;
- * - @ref smarthydro::IEnvironment per lo stato e la dinamica fisica.
- *
- * Gli adapter simulati sono:
- *
- * - @ref smarthydro::TemperatureSensorAdapter,
- *   @ref smarthydro::AirHumiditySensorAdapter,
- *   @ref smarthydro::SoilMoistureSensorAdapter,
- *   @ref smarthydro::PhSensorAdapter e
- *   @ref smarthydro::LightSensorAdapter per i cinque canali;
- * - @ref smarthydro::ActuatorSimulatorAdapter come implementazione del driver;
- * - @ref smarthydro::WaterPumpAdapter,
- *   @ref smarthydro::LightingAdapter e
- *   @ref smarthydro::FertilizerValveAdapter come viste di dominio;
- * - @ref smarthydro::EnvironmentSimulatorAdapter per l'ambiente.
- *
- * Gli adapter dei sensori condividono un
- * @ref smarthydro::SimulatedSensorSampler; una sola chiamata a
- * SensorSimulator::read() produce il campione sincronizzato usato da tutti i
- * canali nello stesso tick.
- *
- * @subsection edge_control_components Strategie di controllo
- *
- * - @ref smarthydro::ThresholdController applica un controllo a soglie con
- *   isteresi.
- * - @ref smarthydro::PidController calcola il comando proporzionale,
- *   integrale e derivativo applicando saturazione e protezione anti-windup.
- * - @ref smarthydro::PredictiveController usa trend, modello e storico delle
- *   dosi per calcolare un comando predittivo semplificato.
- *
- * @subsection edge_orchestration_components Orchestrazione
- *
- * - @ref smarthydro::RecipeControlSystem seleziona la fase, istanzia le
- *   Strategy, verifica le conferme e applica i limiti di sicurezza.
- * - @ref smarthydro::EdgeRuntime collega ricetta, sensori, controllori,
- *   attuatori e ambiente nel ciclo operativo locale.
- * - @ref smarthydro::RuntimeCommandProcessor riceve i comandi operativi,
- *   applica la chiave di idempotenza e restituisce un esito stabile.
- *
- * @subsection edge_output_components Risultati ed eventi
- *
- * - @ref smarthydro::EdgeStepResult raccoglie il risultato completo di un
- *   ciclo: progressivo, telemetria, decisioni, attuatori e stato ambientale.
- * - @ref smarthydro::EdgeEvent descrive gli eventi osservabili prodotti dal
- *   runtime, come avvio e cambio della fase colturale.
- *
- * @subsection edge_observer_components Observer ed EventBus
- *
- * @ref smarthydro::EventBus implementa il pattern Observer senza accoppiare il
- * runtime ai consumer. Conserva riferimenti deboli, costruisce uno snapshot
- * degli observer sotto lock e invoca i callback senza lock. Le eccezioni di un
- * observer vengono isolate e non interrompono il controllo locale.
- *
- * @ref smarthydro::EdgeDomainEvent comprende:
- *
- * - @ref smarthydro::TelemetrySample;
- * - @ref smarthydro::StateChanged;
- * - @ref smarthydro::FaultDetected;
- * - @ref smarthydro::StrategyChanged;
- * - @ref smarthydro::RecipePhaseChanged;
- * - @ref smarthydro::EmergencyTriggered;
- * - @ref smarthydro::BackendUnavailable;
- * - @ref smarthydro::CommandExecuted;
- * - @ref smarthydro::CommandFailed.
- *
- * Gli observer forniti sono @ref smarthydro::ConsoleLogger,
- * @ref smarthydro::CsvLogger e @ref smarthydro::BackendClient. Quest'ultimo
- * riceve una funzione di trasporto iniettata: HTTP, MQTT o una coda possono
- * essere aggiunti senza cambiare il bus. Un fallimento del trasporto pubblica
- * `BackendUnavailable` senza propagare l'errore al runtime.
- *
- * @section edge_runtime Runtime operativo
- *
- * @subsection edge_runtime_injection Dependency injection
- *
- * Il costruttore semplificato crea automaticamente tutti gli adapter simulati.
- * Il secondo costruttore di @ref smarthydro::EdgeRuntime riceve invece cinque
- * `std::unique_ptr<ISensor>`, un `std::unique_ptr<IActuator>` e un
- * `std::unique_ptr<IEnvironment>`. Per collegare hardware reale e quindi
- * sufficiente implementare gli stessi contratti e iniettarli, senza modificare
- * ricette, controllori o ciclo operativo.
- *
- * @subsection edge_runtime_cycle Ordine di un ciclo
- *
- * @ref smarthydro::EdgeRuntime realizza un ciclo completo:
- *
- * 1. legge i sensori fisici simulati e i modelli N/P/K;
- * 2. individua la fase corrente della ricetta;
- * 3. calcola sei @ref smarthydro::ControlDecision;
- * 4. configura pompa, lampade ed elettrovalvole;
- * 5. avanza attuatori e ambiente;
- * 6. aggiorna storico giornaliero e di fase delle dosi;
- * 7. restituisce telemetria, stato ed eventi.
- *
- * Quando e collegato tramite EdgeRuntime::attach_event_bus(), il runtime
- * pubblica inoltre telemetria, cambio di fase e stato, ingresso in emergenza
- * ed esito dell'applicazione dei comandi. `FaultDetected` viene pubblicato
- * dalla fault injection e `StrategyChanged` dal comando di cambio Strategy.
- *
- * @subsection edge_runtime_commands Comandi runtime idempotenti
- *
- * @ref smarthydro::RuntimeCommandProcessor rappresenta il punto di ingresso
- * locale per i comandi provenienti in futuro da HTTP, MQTT o da una coda.
- * Ogni @ref smarthydro::RuntimeCommandEnvelope contiene un `command_id` non
- * vuoto e uno dei payload tipizzati supportati:
- *
- * - @ref smarthydro::ChangeStrategyCommand modifica Strategy e parametri,
- *   incrementando la versione e invalidando le conferme precedenti;
- * - @ref smarthydro::LoadRecipeCommand valida una versione di ricetta maggiore,
- *   ferma gli attuatori e riavvia la timeline dalla prima fase;
- * - @ref smarthydro::ConfirmConfigurationCommand e
- *   @ref smarthydro::RejectConfigurationCommand registrano la revisione
- *   agronomica di una variabile;
- * - @ref smarthydro::InjectFaultCommand e
- *   @ref smarthydro::ResetFaultCommand attivano e rimuovono un guasto sintetico
- *   persistente, identificato senza confonderlo con un guasto reale;
- * - @ref smarthydro::AdvanceRecipePhaseCommand forza la fase successiva;
- * - @ref smarthydro::EmergencyStopCommand ferma immediatamente gli attuatori
- *   ed entra in `EmergencyLockdown`;
- * - @ref smarthydro::ResetEmergencyCommand richiede il normale recovery
- *   controllato della FSM.
- *
- * Il primo risultato viene conservato per l'intera vita del processore.
- * Ripetendo lo stesso `command_id`, il payload non viene eseguito nuovamente e
- * viene restituito lo stesso @ref smarthydro::RuntimeCommandResult con
- * `replayed=true`. Anche un rifiuto viene memorizzato: un retry non puo quindi
- * trasformare accidentalmente un comando gia elaborato in una nuova azione.
- *
- * Il caricamento di una ricetta mantiene lo stato fisico corrente della zona,
- * ma azzera il tempo colturale e le dosi cumulative della fase. Un cambio di
- * substrato viene rifiutato perche richiederebbe la riconfigurazione fisica
- * dell'ambiente. Le nuove configurazioni restano non confermate finche non
- * arrivano gli appositi comandi.
- *
- * La fault injection e volutamente separata dai sensori: simula un guasto
- * persistente che la FSM valuta a ogni tick. Rimuovere il fault non sblocca
- * automaticamente un'emergenza; serve `ResetEmergency` e almeno un ciclo sano
- * di verifica, seguito dalla normale procedura di recovery.
- *
- * @subsection edge_runtime_output Risultato del ciclo
- *
- * Ogni @ref smarthydro::EdgeStepResult contiene:
- *
- * - un `sequence_number` monotono;
- * - timestamp e durata del ciclo;
- * - fase e stato operativo;
- * - letture dei sensori;
- * - decisioni dei sei controllori;
- * - comando e uscita fisica degli attuatori;
- * - quantita realmente erogate;
- * - stato ambientale finale;
- * - eventi prodotti durante il ciclo.
- *
- * Il primo campione produce `RuntimeStarted`; un passaggio automatico di fase
- * produce `RecipePhaseChanged`.
- *
- * @subsection edge_runtime_fsm Macchina a stati operativa
- *
- * @ref smarthydro::EdgeRuntime implementa una FSM con tre stati:
- *
- * - `Nominal`: sensori e controllori sono affidabili; i comandi vengono
- *   applicati normalmente;
- * - `Degraded`: e stato rilevato un guasto potenzialmente transitorio; tutti
- *   gli attuatori vengono fermati e prosegue soltanto la dinamica passiva;
- * - `EmergencyLockdown`: un guasto critico o persistente mantiene ogni
- *   attuatore nello stato sicuro finche non viene richiesto un reset manuale.
- *
- * Ogni @ref smarthydro::ControlDecision espone
- * @ref smarthydro::ControlFaultSeverity. Una lettura temporaneamente assente
- * e `Recoverable` e provoca `Nominal -> Degraded`. Con la configurazione
- * predefinita, tre cicli consecutivi con guasto recuperabile provocano
- * `Degraded -> EmergencyLockdown`. Valori fuori dai limiti di sicurezza,
- * errori interni del controllore e comandi fisici rifiutati sono `Critical` e
- * causano immediatamente `EmergencyLockdown`.
- *
- * @ref smarthydro::OperationalStatePolicy permette di configurare il numero di
- * guasti consecutivi e di campioni sani richiesti. In `Degraded`, tre cicli
- * sani consecutivi producono automaticamente `Degraded -> Nominal`. Gli
- * attuatori vengono riabilitati soltanto nel ciclo che completa il recovery.
- *
- * Per uscire da `EmergencyLockdown` il chiamante usa
- * EdgeRuntime::request_manual_reset(). La richiesta non riattiva gli
- * attuatori: il runtime attende un ciclo sano, passa a `Degraded` e applica
- * nuovamente il periodo di verifica previsto dalla policy. Se il guasto
- * rimane, lo stato di emergenza non cambia.
- *
- * Ogni transizione produce `OperationalStateChanged`, con stato precedente,
- * nuovo stato e causa in @ref smarthydro::EdgeEvent. L'ingresso in emergenza
- * produce anche `EmergencyLockdownEntered` per compatibilita con i consumer
- * che filtrano direttamente gli allarmi critici.
- *
- * @subsection edge_runtime_example Esempio elementare
- *
- * @code{.cpp}
- * smarthydro::ActuatorSimulator actuators;
- * smarthydro::EnvironmentSimulator environment;
- * smarthydro::SensorSimulator sensors;
- *
- * actuators.request_irrigation_volume_liters(0.5);
- * actuators.set_fertilizer_valve_open(
- *     smarthydro::FertilizerType::NITROGEN, true);
- * actuators.step(900.0);
- * environment.step(900.0, actuators.output());
- * const auto readings = sensors.read(environment.state());
- * @endcode
- *
- * Separare i quattro passaggi evita di confondere:
- *
- * - il comando logico richiesto al dispositivo;
- * - l'uscita fisica realmente erogata;
- * - lo stato fisico dell'ambiente;
- * - la misura strumentale, che puo contenere rumore o dropout.
- *
- * @section edge_control Ricette e controllo
- *
- * @subsection edge_recipe_model Modello della ricetta
- *
- * Ogni @ref smarthydro::Recipe identifica pianta, substrato e versione e
- * contiene una sequenza di @ref smarthydro::RecipePhase. Ogni fase specifica
- * setpoint, intervallo ammesso, limiti di sicurezza, fotoperiodo e dose N/P/K
- * suggerita. Le configurazioni associano esplicitamente variabile, sorgente,
- * attuatore, unita, strategia e parametri. Il substrato deve essere dichiarato
- * nella ricetta: non esiste un terriccio implicito di fallback.
- *
- * @subsection edge_strategies Strategy disponibili
- *
- * @ref smarthydro::IController e l'interfaccia comune implementata da
- * Threshold, PID e Predictive. @ref smarthydro::ControllerFactory istanzia la
- * scelta dell'agronomo. Acqua e luce usano Threshold con isteresi come
- * default; il pH usa un PID bidirezionale limitato a piccoli dosaggi; N/P/K
- * usano Predictive.
- * Per N/P/K la sorgente e un modello, mai un sensore fittizio.
- *
- * @subsection edge_confirmation Conferma e versionamento
- *
- * @ref smarthydro::RecipeControlSystem::execute() blocca ogni configurazione
- * non confermata o non valida. Una modifica tramite select_strategy() o
- * replace_recipe() incrementa o sostituisce la versione e invalida tutte le
- * conferme. Il passaggio temporale tra fasi della stessa ricetta non modifica
- * la versione e conserva l'approvazione.
- *
- * @subsection edge_safety Limiti di sicurezza
- *
- * Dopo il calcolo, l'orchestratore limita volume d'acqua, durata della pompa,
- * dose singola e giornaliera e intervallo tra dosaggi. Per il pH applica anche
- * il tempo di assestamento e la mutua esclusione fra pH+ e pH-. I blocchi che
- * rendono inaffidabile l'intero ciclo sono marcati come critici affinche il
- * runtime applichi la transizione appropriata descritta in
- * @ref edge_runtime_fsm.
- *
- * @subsection edge_recipe_json Formato JSON
- *
- * load_recipe_json() e save_recipe_json() leggono e scrivono l'intero modello,
- * incluse configurazioni e versioni. Il file `config/example_recipe.json`
- * contiene una ricetta dimostrativa per pomodoro, con crescita vegetativa e
- * fioritura. I valori sono didattici e devono essere validati prima dell'uso
- * agronomico reale.
- *
- * @section edge_simulation Simulazione fisica
- *
- * @subsection edge_environment Ambiente
- *
- * Il modello ambientale dipende da condizioni esterne, terriccio, casualita
- * meteorologica e ingressi degli attuatori. Non dipende dalla specie coltivata.
- * Le grandezze possedute dal modello sono temperatura, umidita dell'aria,
- * umidita del terriccio, pH, EC, concentrazioni N/P/K e PPFD. Le
- * concentrazioni nutritive sono stato fisico e non canali del sensore.
- *
- * @subsection edge_sensors Sensori
- *
- * @ref smarthydro::SensorSimulator osserva lo stato senza far avanzare il
- * tempo. Ogni canale applica bias, calibrazione, rumore, quantizzazione,
- * saturazione e possibile dropout.
- *
- * @subsection edge_actuators Attuatori
- *
- * I cinque serbatoi liquidi N, P, K, pH+ e pH- confluiscono nella pompa
- * d'irrigazione tramite elettrovalvole. N/P/K possono fluire insieme, mentre
- * i correttori pH+ e pH- sono interbloccati. Comando logico e uscita fisica
- * restano separati per distinguere cio che viene richiesto da cio che viene
- * realmente erogato.
- *
- * @section edge_reproducibility Riproducibilita
- *
- * Ambiente e sensori possiedono generatori casuali distinti. Per ripetere una
- * simulazione occorre riutilizzare configurazioni, seed, ingressi, durate dei
- * passi e ordine delle letture.
+ * @section edge_components Componenti
+ *
+ * | Area | Componenti principali | Scopo |
+ * | ---- | --------------------- | ----- |
+ * | Simulazione | @ref smarthydro::EnvironmentSimulator, @ref smarthydro::SensorSimulator, @ref smarthydro::ActuatorSimulator | Riproduce ambiente, misure ed effetti fisici |
+ * | Adapter | @ref smarthydro::ISensor, @ref smarthydro::IActuator, @ref smarthydro::IEnvironment | Separa il runtime da simulatori e hardware |
+ * | Controllo | @ref smarthydro::ThresholdController, @ref smarthydro::PidController, @ref smarthydro::PredictiveController | Calcola i comandi |
+ * | Ricette | @ref smarthydro::RecipeControlSystem | Seleziona fase, Strategy e limiti |
+ * | Runtime | @ref smarthydro::EdgeRuntime | Coordina un ciclo completo |
+ * | Eventi | @ref smarthydro::EventBus | Distribuisce telemetria e cambi di stato |
+ * | Comandi | @ref smarthydro::RuntimeCommandProcessor | Esegue richieste idempotenti |
+ *
+ * @section edge_source_layout Struttura dei sorgenti
+ *
+ * `edge/src` e organizzata per responsabilita:
+ *
+ * - `simulation/`: ambiente, sensori e attuatori;
+ * - `adapters/`: collegamento alle interfacce Edge;
+ * - `control/`: Strategy e orchestrazione della ricetta;
+ * - `recipes/`: serializzazione JSON;
+ * - `events/`: EventBus e observer;
+ * - `runtime/`: ciclo operativo, FSM, attuazione e comandi.
+ *
+ * L'implementazione di @ref smarthydro::EdgeRuntime e divisa in file
+ * `core`, `configuration`, `cycle`, `fsm`, `actuation` ed `events`.
+ * @ref smarthydro::EdgeStepResult e gli altri DTO sono separati in
+ * `edge_runtime_types.hpp`.
+ *
+ * @section edge_cycle Ciclo operativo
+ *
+ * Ogni chiamata a EdgeRuntime::step():
+ *
+ * 1. determina la fase della ricetta;
+ * 2. legge i sensori e i modelli N/P/K;
+ * 3. calcola le sei @ref smarthydro::ControlDecision;
+ * 4. verifica fault e stato operativo;
+ * 5. applica i comandi e aggiorna l'ambiente;
+ * 6. restituisce @ref smarthydro::EdgeStepResult e pubblica gli eventi.
+ *
+ * `EdgeStepResult` contiene progressivo, letture, decisioni, quantita
+ * erogate, stato degli attuatori, ambiente ed eventi del ciclo.
+ *
+ * @section edge_safety Sicurezza e FSM
+ *
+ * | Stato | Comportamento |
+ * | ----- | ------------- |
+ * | `Nominal` | Il controllo applica normalmente i comandi |
+ * | `Degraded` | Gli attuatori restano fermi durante la verifica |
+ * | `EmergencyLockdown` | Tutte le uscite restano in stato sicuro |
+ *
+ * Un fault recuperabile porta a `Degraded`; se persiste puo causare
+ * `EmergencyLockdown`. Un fault critico provoca il blocco immediato.
+ * @ref smarthydro::OperationalStatePolicy configura le soglie di escalation e
+ * recovery. L'uscita dall'emergenza richiede un reset manuale e cicli sani.
+ *
+ * @section edge_recipes Ricette e Strategy
+ *
+ * Una @ref smarthydro::Recipe contiene versione, substrato, fasi, target e
+ * configurazioni dei controllori. Modificare Strategy o ricetta invalida le
+ * conferme precedenti; il controllo riparte solo dopo una nuova conferma.
+ *
+ * Le Strategy disponibili sono:
+ *
+ * - Threshold: soglie con isteresi;
+ * - PID: controllo proporzionale, integrale e derivativo;
+ * - Predictive: previsione basata su modello e storico.
+ *
+ * `load_recipe_json()` e `save_recipe_json()` gestiscono il formato JSON.
+ *
+ * @section edge_commands Comandi runtime
+ *
+ * Ogni @ref smarthydro::RuntimeCommandEnvelope contiene un `command_id`.
+ * Ripetere lo stesso identificatore non riesegue l'operazione: il processore
+ * restituisce il risultato precedente con `replayed=true`.
+ *
+ * | Gruppo | Comandi |
+ * | ------ | ------- |
+ * | Configurazione | @ref smarthydro::ChangeStrategyCommand, @ref smarthydro::LoadRecipeCommand |
+ * | Conferma | @ref smarthydro::ConfirmConfigurationCommand, @ref smarthydro::RejectConfigurationCommand |
+ * | Simulazione | @ref smarthydro::InjectFaultCommand, @ref smarthydro::ResetFaultCommand, @ref smarthydro::AdvanceRecipePhaseCommand |
+ * | Sicurezza | @ref smarthydro::EmergencyStopCommand, @ref smarthydro::ResetEmergencyCommand |
+ *
+ * @section edge_events Eventi e observer
+ *
+ * @ref smarthydro::EventBus notifica gli observer senza accoppiare il runtime
+ * a console, file o rete. Gli observer disponibili sono:
+ *
+ * - @ref smarthydro::ConsoleLogger;
+ * - @ref smarthydro::CsvLogger;
+ * - @ref smarthydro::BackendClient.
+ *
+ * Gli eventi principali segnalano telemetria, fault, cambi di Strategy o fase,
+ * transizioni della FSM ed esito dei comandi fisici. Un observer che fallisce
+ * non interrompe il ciclo locale.
+ *
+ * @section edge_adapters Adapter e sostituzione hardware
+ *
+ * Il costruttore predefinito usa adapter simulati. Il costruttore a dipendenze
+ * accetta implementazioni di @ref smarthydro::ISensor,
+ * @ref smarthydro::IActuator e @ref smarthydro::IEnvironment. Un futuro driver
+ * GPIO, Modbus o MQTT puo quindi essere inserito senza cambiare il runtime.
  */
 
 /**
  * @page backend_python Backend Python
  *
- * Componente FastAPI che espone gli endpoint HTTP di SmartHydro.
+ * Il backend FastAPI espone i servizi destinati alla dashboard. Il controllo
+ * fisico rimane responsabilita dell'Edge.
  *
  * @tableofcontents
  *
- * @section backend_overview Panoramica
+ * @section backend_endpoints Endpoint
  *
- * Il backend e il punto centrale per la dashboard e per la futura
- * comunicazione con l'Edge. Non esegue il controllo fisico, che rimane una
- * responsabilita locale dell'Edge Controller.
+ * | Metodo | Percorso | Funzione |
+ * | ------ | -------- | -------- |
+ * | GET | `/` | Identita e versione del servizio |
+ * | GET | `/health` | Stato del processo HTTP |
  *
- * @section backend_endpoints Endpoint disponibili
- *
- * | Metodo | Percorso | Funzione | Significato |
- * | ------ | -------- | -------- | ----------- |
- * | GET | `/` | backend.app.main.read_root() | Nome e versione del servizio |
- * | GET | `/health` | backend.app.main.read_health() | Disponibilita del processo |
- *
- * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
- * sensori, database o comunicazione con l'Edge Controller.
- *
- * @section backend_structure Struttura attuale
- *
- * - @ref backend.app.main - applicazione ASGI e punto di accesso HTTP;
- * - `/docs`: documentazione OpenAPI generata automaticamente da FastAPI.
+ * L'endpoint `/health` e attualmente statico: non verifica sensori, database o
+ * collegamento con l'Edge. La specifica OpenAPI interattiva e disponibile in
+ * `/docs` quando il server e in esecuzione.
  */

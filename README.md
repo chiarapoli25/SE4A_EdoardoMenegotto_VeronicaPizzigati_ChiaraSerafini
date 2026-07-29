@@ -96,6 +96,28 @@ essere inserito senza cambiare `EdgeRuntime`, `RecipeControlSystem` o gli
 algoritmi delle Strategy. I cinque adapter sensore simulati condividono un
 campione sincronizzato per ogni tick.
 
+### Struttura dei sorgenti Edge
+
+I sorgenti in `edge/src` sono raggruppati per responsabilita:
+
+```text
+src/
+├── adapters/    interfacce concrete verso simulatori o hardware
+├── control/     Strategy e orchestrazione della ricetta
+├── events/      EventBus e observer
+├── recipes/     serializzazione JSON
+├── runtime/     ciclo Edge, FSM, attuazione, eventi e comandi runtime
+├── simulation/  ambiente, sensori e attuatori simulati
+└── main.cpp     composizione dell'eseguibile
+```
+
+`EdgeRuntime` mantiene una sola API pubblica, ma la sua implementazione e
+separata in `core`, `configuration`, `cycle`, `fsm`, `actuation` ed `events`.
+I DTO del ciclo e della FSM sono dichiarati in `edge_runtime_types.hpp`, mentre
+`edge_runtime.hpp` contiene l'orchestratore. Questa divisione evita dipendenze
+circolari: per esempio `EventBus` dipende soltanto dai tipi pubblicati e non
+dall'intera classe runtime.
+
 ### Observer ed EventBus
 
 `EventBus` distribuisce gli eventi dell'Edge senza rendere `EdgeRuntime`

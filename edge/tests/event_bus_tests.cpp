@@ -1,3 +1,4 @@
+#include "smarthydro/edge_runtime.hpp"
 #include "smarthydro/event_bus.hpp"
 #include "smarthydro/recipe_json.hpp"
 

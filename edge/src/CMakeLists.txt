@@ -1,5 +1,8 @@
 # Crea la libreria del simulatore degli attuatori.
-add_library(actuator_simulator actuator_simulator.cpp)
+add_library(
+    actuator_simulator
+    simulation/actuator_simulator.cpp
+)
 target_include_directories(actuator_simulator
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -7,7 +10,10 @@ target_compile_features(actuator_simulator PUBLIC cxx_std_17)
 set_target_properties(actuator_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
 # Crea la libreria che possiede lo stato fisico e le dinamiche della serra.
-add_library(environment_simulator environment_simulator.cpp)
+add_library(
+    environment_simulator
+    simulation/environment_simulator.cpp
+)
 target_include_directories(environment_simulator
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -16,7 +22,10 @@ target_link_libraries(environment_simulator PUBLIC actuator_simulator)
 set_target_properties(environment_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
 # Crea la libreria dei sensori, che misura lo stato dell'ambiente senza avanzarlo.
-add_library(sensor_simulator sensor_simulator.cpp)
+add_library(
+    sensor_simulator
+    simulation/sensor_simulator.cpp
+)
 # Rende edge/include disponibile sia a questa libreria sia ai target che la usano.
 target_include_directories(sensor_simulator
     PUBLIC ${PROJECT_SOURCE_DIR}/include
@@ -27,7 +36,10 @@ target_link_libraries(sensor_simulator PUBLIC environment_simulator)
 set_target_properties(sensor_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
 # Adapter sostituibili che isolano il runtime dai simulatori concreti.
-add_library(io_adapters io_adapters.cpp)
+add_library(
+    io_adapters
+    adapters/io_adapters.cpp
+)
 target_include_directories(io_adapters
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -41,7 +53,10 @@ target_link_libraries(io_adapters
 set_target_properties(io_adapters PROPERTIES CXX_EXTENSIONS OFF)
 
 # Crea la libreria dei controllori.
-add_library(controllers controllers.cpp)
+add_library(
+    controllers
+    control/controllers.cpp
+)
 target_include_directories(controllers
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -49,7 +64,10 @@ target_compile_features(controllers PUBLIC cxx_std_17)
 set_target_properties(controllers PROPERTIES CXX_EXTENSIONS OFF)
 
 # Orchestratore delle ricette versionate e delle Strategy confermate.
-add_library(control_system control_system.cpp)
+add_library(
+    control_system
+    control/control_system.cpp
+)
 target_include_directories(control_system
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -62,7 +80,10 @@ target_link_libraries(control_system
 set_target_properties(control_system PROPERTIES CXX_EXTENSIONS OFF)
 
 # EventBus Observer e consumer standard per console, CSV e backend.
-add_library(event_bus event_bus.cpp)
+add_library(
+    event_bus
+    events/event_bus.cpp
+)
 target_include_directories(event_bus
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -75,7 +96,10 @@ target_link_libraries(event_bus
 set_target_properties(event_bus PROPERTIES CXX_EXTENSIONS OFF)
 
 # Serializzazione JSON separata dal dominio per non esporre la dipendenza.
-add_library(recipe_json recipe_json.cpp)
+add_library(
+    recipe_json
+    recipes/recipe_json.cpp
+)
 target_include_directories(recipe_json
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -89,7 +113,15 @@ target_link_libraries(recipe_json
 set_target_properties(recipe_json PROPERTIES CXX_EXTENSIONS OFF)
 
 # Ciclo operativo che collega ricetta, sensori, attuatori e ambiente.
-add_library(edge_runtime edge_runtime.cpp)
+add_library(
+    edge_runtime
+    runtime/edge_runtime_core.cpp
+    runtime/edge_runtime_configuration.cpp
+    runtime/edge_runtime_cycle.cpp
+    runtime/edge_runtime_fsm.cpp
+    runtime/edge_runtime_actuation.cpp
+    runtime/edge_runtime_events.cpp
+)
 target_include_directories(edge_runtime
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
@@ -103,7 +135,10 @@ target_link_libraries(edge_runtime
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 
 # Ricevitore idempotente dei comandi operativi diretti al runtime.
-add_library(runtime_commands runtime_commands.cpp)
+add_library(
+    runtime_commands
+    runtime/runtime_commands.cpp
+)
 target_include_directories(runtime_commands
     PUBLIC ${PROJECT_SOURCE_DIR}/include
 )
