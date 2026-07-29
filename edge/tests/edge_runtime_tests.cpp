@@ -136,4 +136,54 @@ TEST(EdgeRuntimeTest, RejectsInvalidStepDuration) {
         std::invalid_argument);
 }
 
+TEST(EdgeRuntimeTest, ProducesMonotonicSequencesAndStartupEvent) {
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(),
+        {},
+        {},
+        deterministic_sensors());
+    runtime.confirm_all_configurations();
+
+    const auto first = runtime.step(60.0);
+    const auto second = runtime.step(60.0);
+
+    EXPECT_EQ(first.sequence_number, 0U);
+    EXPECT_EQ(second.sequence_number, 1U);
+    EXPECT_EQ(
+        first.operational_state,
+        smarthydro::OperationalState::NOMINAL);
+    EXPECT_EQ(
+        runtime.operational_state(),
+        smarthydro::OperationalState::NOMINAL);
+    ASSERT_EQ(first.events.size(), 1U);
+    EXPECT_EQ(
+        first.events.front().type,
+        smarthydro::EdgeEventType::RUNTIME_STARTED);
+    EXPECT_TRUE(second.events.empty());
+}
+
+TEST(EdgeRuntimeTest, ReportsRecipePhaseTransition) {
+    auto recipe = load_demo_recipe();
+    recipe.phases.front().duration_hours = 0.01;
+    smarthydro::EdgeRuntime runtime(
+        std::move(recipe),
+        {},
+        {},
+        deterministic_sensors());
+    runtime.confirm_all_configurations();
+
+    const auto first = runtime.step(60.0);
+    const auto second = runtime.step(60.0);
+
+    EXPECT_EQ(first.phase_name, "VegetativeGrowth");
+    EXPECT_EQ(second.phase_name, "Flowering");
+    ASSERT_EQ(second.events.size(), 1U);
+    EXPECT_EQ(
+        second.events.front().type,
+        smarthydro::EdgeEventType::RECIPE_PHASE_CHANGED);
+    EXPECT_NE(
+        second.events.front().message.find("Flowering"),
+        std::string::npos);
+}
+
 }  // namespace

@@ -49,7 +49,13 @@ localmente le sei configurazioni, quindi esegue un ciclo completo:
 1. legge sensori e modelli N/P/K;
 2. calcola i comandi tramite `RecipeControlSystem`;
 3. applica i comandi sicuri a pompa, lampade e valvole;
-4. fa avanzare l'ambiente e aggiorna lo storico delle dosi.
+4. fa avanzare l'ambiente e aggiorna lo storico delle dosi;
+5. produce un campione progressivo con stato operativo ed eventuali eventi.
+
+Lo stato iniziale e `Nominal`; `Degraded` ed `EmergencyLockdown` fanno gia
+parte del contratto del runtime e verranno attivati dalla futura logica di
+rilevamento guasti. Il primo ciclo produce `RuntimeStarted`, mentre ogni
+passaggio automatico di fase produce `RecipePhaseChanged`.
 
 Per usare una ricetta diversa o simulare piu cicli:
 

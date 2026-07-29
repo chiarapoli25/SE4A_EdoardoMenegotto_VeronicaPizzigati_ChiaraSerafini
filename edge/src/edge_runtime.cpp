@@ -62,6 +62,28 @@ double nutrient_model_value(
 
 }  // namespace
 
+const char* to_string(OperationalState state) noexcept {
+    switch (state) {
+        case OperationalState::NOMINAL:
+            return "Nominal";
+        case OperationalState::DEGRADED:
+            return "Degraded";
+        case OperationalState::EMERGENCY_LOCKDOWN:
+            return "EmergencyLockdown";
+    }
+    return "Unknown";
+}
+
+const char* to_string(EdgeEventType type) noexcept {
+    switch (type) {
+        case EdgeEventType::RUNTIME_STARTED:
+            return "RuntimeStarted";
+        case EdgeEventType::RECIPE_PHASE_CHANGED:
+            return "RecipePhaseChanged";
+    }
+    return "Unknown";
+}
+
 EdgeRuntime::EdgeRuntime(
     Recipe recipe,
     ActuatorConfig actuator_config,
@@ -107,6 +129,10 @@ const EnvironmentState& EdgeRuntime::environment_state() const noexcept {
 
 const ActuatorOutput& EdgeRuntime::actuator_output() const noexcept {
     return actuators_.output();
+}
+
+OperationalState EdgeRuntime::operational_state() const noexcept {
+    return operational_state_;
 }
 
 double EdgeRuntime::cumulative_phase_dose_milliliters(
@@ -174,14 +200,31 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     reset_histories_if_needed();
 
     EdgeStepResult result;
+    result.sequence_number = next_sequence_number_++;
     result.start_time_seconds =
         environment_.state().simulation_time_seconds;
     result.duration_seconds = delta_time_seconds;
-    result.phase_name = control_system_
-                            .active_phase(
-                                result.start_time_seconds /
-                                kSecondsPerHour)
-                            .name;
+    result.operational_state = operational_state_;
+    const auto phase_index = active_phase_index(
+        result.start_time_seconds / kSecondsPerHour);
+    result.phase_name =
+        control_system_.recipe().phases[phase_index].name;
+    if (!reported_phase_index_.has_value()) {
+        result.events.push_back(
+            {
+                EdgeEventType::RUNTIME_STARTED,
+                result.start_time_seconds,
+                "runtime started in phase " + result.phase_name,
+            });
+    } else if (phase_index != *reported_phase_index_) {
+        result.events.push_back(
+            {
+                EdgeEventType::RECIPE_PHASE_CHANGED,
+                result.start_time_seconds,
+                "recipe phase changed to " + result.phase_name,
+            });
+    }
+    reported_phase_index_ = phase_index;
     result.readings = sensors_.read(environment_.state());
 
     auto request = base_request(delta_time_seconds);

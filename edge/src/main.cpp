@@ -130,8 +130,12 @@ void print_step(
     const smarthydro::EdgeStepResult& result) {
     std::cout
         << "\nCycle " << step << '/' << step_count
+        << " | sequence=" << result.sequence_number
         << " | t=" << result.start_time_seconds / 3600.0 << " h"
-        << " | phase=" << result.phase_name << '\n'
+        << " | phase=" << result.phase_name
+        << " | state="
+        << smarthydro::to_string(result.operational_state)
+        << '\n'
         << "Sensors: soil=";
     print_optional(result.readings.soil_moisture_percent, "%");
     std::cout << ", light=";
@@ -141,6 +145,13 @@ void print_step(
     std::cout << ", pH=";
     print_optional(result.readings.ph);
     std::cout << '\n';
+
+    for (const auto& event : result.events) {
+        std::cout
+            << "Event: " << smarthydro::to_string(event.type)
+            << " | t=" << event.timestamp_seconds / 3600.0
+            << " h | " << event.message << '\n';
+    }
 
     constexpr smarthydro::ControlledValues<
         smarthydro::ControlledVariable>

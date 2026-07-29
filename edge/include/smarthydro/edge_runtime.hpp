@@ -12,9 +12,34 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace smarthydro {
+
+/** @brief Stato operativo sintetico della zona controllata dall'Edge. */
+enum class OperationalState {
+    NOMINAL,
+    DEGRADED,
+    EMERGENCY_LOCKDOWN,
+};
+
+/** @brief Tipi di evento prodotti dal runtime locale in questa fase. */
+enum class EdgeEventType {
+    RUNTIME_STARTED,
+    RECIPE_PHASE_CHANGED,
+};
+
+/** @brief Evento osservabile prodotto durante un ciclo operativo. */
+struct EdgeEvent {
+    /** Categoria stabile dell'evento. */
+    EdgeEventType type = EdgeEventType::RUNTIME_STARTED;
+    /** Timestamp simulato al quale l'evento e stato rilevato. */
+    double timestamp_seconds = 0.0;
+    /** Descrizione leggibile destinata a log e diagnostica. */
+    std::string message;
+};
 
 /**
  * @brief Risultato osservabile di un singolo ciclo operativo dell'Edge.
@@ -23,12 +48,18 @@ namespace smarthydro {
  * e volumi erogati descrivono invece il risultato fisico alla fine del passo.
  */
 struct EdgeStepResult {
+    /** Progressivo monotono del campione prodotto dal runtime. */
+    std::uint64_t sequence_number = 0;
     /** Tempo simulato all'inizio del ciclo, in secondi. */
     double start_time_seconds = 0.0;
     /** Durata del ciclo, in secondi. */
     double duration_seconds = 0.0;
     /** Nome della fase usata per calcolare i comandi. */
     std::string phase_name;
+    /** Stato operativo della zona durante il ciclo. */
+    OperationalState operational_state = OperationalState::NOMINAL;
+    /** Eventi prodotti all'inizio del ciclo. */
+    std::vector<EdgeEvent> events;
     /** Campione sincronizzato letto prima del controllo. */
     SensorReadings readings;
     /** Decisione sicura per ciascuna delle sei variabili controllate. */
@@ -105,6 +136,8 @@ public:
     const EnvironmentState& environment_state() const noexcept;
     /** @brief Espone lo stato fisico corrente degli attuatori. */
     const ActuatorOutput& actuator_output() const noexcept;
+    /** @brief Restituisce lo stato operativo corrente della zona. */
+    OperationalState operational_state() const noexcept;
     /** @brief Dose cumulativa realmente erogata nella fase corrente. */
     double cumulative_phase_dose_milliliters(
         ControlledVariable variable) const;
@@ -133,7 +166,15 @@ private:
     ControlledValues<double> daily_dose_milliliters_{};
     ControlledValues<double> seconds_since_last_dose_{};
     std::size_t history_phase_index_ = kControlledVariableCount;
+    std::optional<std::size_t> reported_phase_index_;
     std::uint64_t history_day_index_ = 0;
+    std::uint64_t next_sequence_number_ = 0;
+    OperationalState operational_state_ = OperationalState::NOMINAL;
 };
+
+/** @brief Nome stabile dello stato operativo per log e serializzazione. */
+const char* to_string(OperationalState state) noexcept;
+/** @brief Nome stabile del tipo di evento per log e serializzazione. */
+const char* to_string(EdgeEventType type) noexcept;
 
 }  // namespace smarthydro

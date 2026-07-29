@@ -1,5 +1,5 @@
 /**
- * @mainpage Doxygen
+ * @mainpage SmartHydro - Documentazione tecnica
  *
  * La documentazione tecnica di SmartHydro e raccolta in un unico sito e
  * organizzata nelle due componenti software del progetto:
@@ -10,12 +10,16 @@
  * La @ref md__r_e_a_d_m_e descrive invece compilazione, test ed esperimenti
  * dell'intero progetto.
  *
- * @section architecture Architettura generale
+ * @tableofcontents
+ *
+ * @section main_architecture Architettura generale
  *
  * L'Edge Controller mantiene il modello fisico, produce misure simulate e
  * applica ricette versionate tramite controllori Strategy. Il Backend espone
  * invece l'interfaccia HTTP; nella fase attuale le due componenti non
  * comunicano ancora fra loro.
+ *
+ * @section main_edge_cycle Ciclo Edge
  *
  * Il ciclo previsto nell'Edge Controller e:
  *
@@ -24,7 +28,9 @@
  * 3. EdgeRuntime configura gli attuatori;
  * 4. ActuatorSimulator::step() calcola l'uscita fisica;
  * 5. EnvironmentSimulator::step() applica l'uscita all'ambiente;
- * 6. EdgeRuntime aggiorna lo storico delle dosi realmente erogate.
+ * 6. EdgeRuntime aggiorna lo storico delle dosi realmente erogate;
+ * 7. EdgeRuntime restituisce un EdgeStepResult progressivo con telemetria,
+ *    stato attuatori, stato operativo ed eventi.
  */
 
 /**
@@ -33,7 +39,82 @@
  * Componente C++17 che simula ambiente, sensori e attuatori e mette a
  * disposizione controllori a soglia, PID e predittivi.
  *
- * @section edge_execution Flusso di esecuzione
+ * @tableofcontents
+ *
+ * @section edge_overview Panoramica
+ *
+ * L'Edge esegue il controllo locale senza dipendere dalla disponibilita del
+ * backend. La ricetta stabilisce fasi, target, Strategy e limiti; il runtime
+ * osserva l'ambiente, calcola decisioni sicure e applica gli effetti fisici.
+ *
+ * @section edge_architecture Componenti
+ *
+ * @subsection edge_simulation_components Simulazione della serra
+ *
+ * - @ref smarthydro::EnvironmentSimulator possiede lo stato fisico della zona
+ *   e lo fa evolvere in funzione del tempo e delle uscite degli attuatori.
+ * - @ref smarthydro::SensorSimulator osserva lo stato ambientale e produce
+ *   misure con bias, rumore, quantizzazione e possibili dropout.
+ * - @ref smarthydro::ActuatorSimulator mantiene separati i comandi richiesti
+ *   dalle uscite fisiche realmente erogate da pompa, lampade e valvole.
+ *
+ * @subsection edge_control_components Strategie di controllo
+ *
+ * - @ref smarthydro::ThresholdController applica un controllo a soglie con
+ *   isteresi.
+ * - @ref smarthydro::PidController calcola il comando proporzionale,
+ *   integrale e derivativo applicando saturazione e protezione anti-windup.
+ * - @ref smarthydro::PredictiveController usa trend, modello e storico delle
+ *   dosi per calcolare un comando predittivo semplificato.
+ *
+ * @subsection edge_orchestration_components Orchestrazione
+ *
+ * - @ref smarthydro::RecipeControlSystem seleziona la fase, istanzia le
+ *   Strategy, verifica le conferme e applica i limiti di sicurezza.
+ * - @ref smarthydro::EdgeRuntime collega ricetta, sensori, controllori,
+ *   attuatori e ambiente nel ciclo operativo locale.
+ *
+ * @subsection edge_output_components Risultati ed eventi
+ *
+ * - @ref smarthydro::EdgeStepResult raccoglie il risultato completo di un
+ *   ciclo: progressivo, telemetria, decisioni, attuatori e stato ambientale.
+ * - @ref smarthydro::EdgeEvent descrive gli eventi osservabili prodotti dal
+ *   runtime, come avvio e cambio della fase colturale.
+ *
+ * @section edge_runtime Runtime operativo
+ *
+ * @subsection edge_runtime_cycle Ordine di un ciclo
+ *
+ * @ref smarthydro::EdgeRuntime realizza un ciclo completo:
+ *
+ * 1. legge i sensori fisici simulati e i modelli N/P/K;
+ * 2. individua la fase corrente della ricetta;
+ * 3. calcola sei @ref smarthydro::ControlDecision;
+ * 4. configura pompa, lampade ed elettrovalvole;
+ * 5. avanza attuatori e ambiente;
+ * 6. aggiorna storico giornaliero e di fase delle dosi;
+ * 7. restituisce telemetria, stato ed eventi.
+ *
+ * @subsection edge_runtime_output Risultato del ciclo
+ *
+ * Ogni @ref smarthydro::EdgeStepResult contiene:
+ *
+ * - un `sequence_number` monotono;
+ * - timestamp e durata del ciclo;
+ * - fase e stato operativo;
+ * - letture dei sensori;
+ * - decisioni dei sei controllori;
+ * - comando e uscita fisica degli attuatori;
+ * - quantita realmente erogate;
+ * - stato ambientale finale;
+ * - eventi prodotti durante il ciclo.
+ *
+ * Il primo campione produce `RuntimeStarted`; un passaggio automatico di fase
+ * produce `RecipePhaseChanged`. Lo stato corrente e `Nominal`; `Degraded` ed
+ * `EmergencyLockdown` appartengono gia al contratto, mentre le relative
+ * transizioni saranno gestite dal futuro rilevamento guasti.
+ *
+ * @subsection edge_runtime_example Esempio elementare
  *
  * @code{.cpp}
  * smarthydro::ActuatorSimulator actuators;
@@ -55,18 +136,9 @@
  * - lo stato fisico dell'ambiente;
  * - la misura strumentale, che puo contenere rumore o dropout.
  *
- * @section edge_components Componenti
+ * @section edge_control Ricette e controllo
  *
- * - @ref smarthydro::EnvironmentSimulator
- * - @ref smarthydro::SensorSimulator
- * - @ref smarthydro::ActuatorSimulator
- * - @ref smarthydro::ThresholdController
- * - @ref smarthydro::PidController
- * - @ref smarthydro::PredictiveController
- * - @ref smarthydro::RecipeControlSystem
- * - @ref smarthydro::EdgeRuntime
- *
- * @section edge_recipe_control Ricette e controllo Strategy
+ * @subsection edge_recipe_model Modello della ricetta
  *
  * Ogni @ref smarthydro::Recipe identifica pianta, substrato e versione e
  * contiene una sequenza di @ref smarthydro::RecipePhase. Ogni fase specifica
@@ -75,6 +147,8 @@
  * attuatore, unita, strategia e parametri. Il substrato deve essere dichiarato
  * nella ricetta: non esiste un terriccio implicito di fallback.
  *
+ * @subsection edge_strategies Strategy disponibili
+ *
  * @ref smarthydro::IController e l'interfaccia comune implementata da
  * Threshold, PID e Predictive. @ref smarthydro::ControllerFactory istanzia la
  * scelta dell'agronomo. Acqua e luce usano Threshold con isteresi come
@@ -82,17 +156,21 @@
  * usano Predictive.
  * Per N/P/K la sorgente e un modello, mai un sensore fittizio.
  *
+ * @subsection edge_confirmation Conferma e versionamento
+ *
  * @ref smarthydro::RecipeControlSystem::execute() blocca ogni configurazione
  * non confermata o non valida. Una modifica tramite select_strategy() o
  * replace_recipe() incrementa o sostituisce la versione e invalida tutte le
  * conferme. Il passaggio temporale tra fasi della stessa ricetta non modifica
  * la versione e conserva l'approvazione.
  *
+ * @subsection edge_safety Limiti di sicurezza
+ *
  * Dopo il calcolo, l'orchestratore limita volume d'acqua, durata della pompa,
  * dose singola e giornaliera e intervallo tra dosaggi. Per il pH applica anche
  * il tempo di assestamento e la mutua esclusione fra pH+ e pH-.
  *
- * @section edge_recipe_json Formato JSON
+ * @subsection edge_recipe_json Formato JSON
  *
  * load_recipe_json() e save_recipe_json() leggono e scrivono l'intero modello,
  * incluse configurazioni e versioni. Il file `config/example_recipe.json`
@@ -100,7 +178,9 @@
  * fioritura. I valori sono didattici e devono essere validati prima dell'uso
  * agronomico reale.
  *
- * @section edge_environment Ambiente
+ * @section edge_simulation Simulazione fisica
+ *
+ * @subsection edge_environment Ambiente
  *
  * Il modello ambientale dipende da condizioni esterne, terriccio, casualita
  * meteorologica e ingressi degli attuatori. Non dipende dalla specie coltivata.
@@ -108,9 +188,19 @@
  * umidita del terriccio, pH, EC, concentrazioni N/P/K e PPFD. Le
  * concentrazioni nutritive sono stato fisico e non canali del sensore.
  *
+ * @subsection edge_sensors Sensori
+ *
+ * @ref smarthydro::SensorSimulator osserva lo stato senza far avanzare il
+ * tempo. Ogni canale applica bias, calibrazione, rumore, quantizzazione,
+ * saturazione e possibile dropout.
+ *
+ * @subsection edge_actuators Attuatori
+ *
  * I cinque serbatoi liquidi N, P, K, pH+ e pH- confluiscono nella pompa
  * d'irrigazione tramite elettrovalvole. N/P/K possono fluire insieme, mentre
- * i correttori pH+ e pH- sono interbloccati.
+ * i correttori pH+ e pH- sono interbloccati. Comando logico e uscita fisica
+ * restano separati per distinguere cio che viene richiesto da cio che viene
+ * realmente erogato.
  *
  * @section edge_reproducibility Riproducibilita
  *
@@ -124,6 +214,14 @@
  *
  * Componente FastAPI che espone gli endpoint HTTP di SmartHydro.
  *
+ * @tableofcontents
+ *
+ * @section backend_overview Panoramica
+ *
+ * Il backend e il punto centrale per la dashboard e per la futura
+ * comunicazione con l'Edge. Non esegue il controllo fisico, che rimane una
+ * responsabilita locale dell'Edge Controller.
+ *
  * @section backend_endpoints Endpoint disponibili
  *
  * | Metodo | Percorso | Funzione | Significato |
@@ -134,7 +232,8 @@
  * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
  * sensori, database o comunicazione con l'Edge Controller.
  *
- * @section backend_api Punto di accesso
+ * @section backend_structure Struttura attuale
  *
- * - @ref backend.app.main
+ * - @ref backend.app.main - applicazione ASGI e punto di accesso HTTP;
+ * - `/docs`: documentazione OpenAPI generata automaticamente da FastAPI.
  */
