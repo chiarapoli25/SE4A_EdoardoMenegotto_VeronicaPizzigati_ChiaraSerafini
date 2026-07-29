@@ -211,6 +211,18 @@ enum class ControlDecisionStatus {
     BLOCKED,
 };
 
+/**
+ * @brief Severita del guasto che ha impedito una decisione.
+ *
+ * RECOVERABLE identifica tipicamente una lettura temporaneamente assente;
+ * CRITICAL identifica condizioni incompatibili con una prosecuzione sicura.
+ */
+enum class ControlFaultSeverity {
+    NONE,
+    RECOVERABLE,
+    CRITICAL,
+};
+
 /** @brief Comando sicuro prodotto dall'orchestratore. */
 struct ControlDecision {
     /** Esito dell'applicazione dei limiti prioritari. */
@@ -223,6 +235,8 @@ struct ControlDecision {
      * tra due dosi o il raggiungimento del limite giornaliero.
      */
     bool safety_critical = false;
+    /** Severita usata dalla macchina a stati operativa dell'Edge. */
+    ControlFaultSeverity fault_severity = ControlFaultSeverity::NONE;
     /** Comando finale sicuro, nell'unita dell'attuatore. */
     double command = 0.0;
     /** Attuatore associato alla variabile. */

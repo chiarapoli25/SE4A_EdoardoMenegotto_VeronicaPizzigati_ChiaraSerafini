@@ -3,12 +3,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -55,12 +57,70 @@ private:
     double value_;
 };
 
+class SequenceSensor final : public smarthydro::ISensor {
+public:
+    SequenceSensor(
+        smarthydro::SensorChannel channel,
+        std::vector<std::optional<double>> values)
+        : channel_(channel), values_(std::move(values)) {
+        if (values_.empty()) {
+            throw std::invalid_argument(
+                "sequence sensor requires at least one value");
+        }
+    }
+
+    smarthydro::SensorChannel channel() const noexcept override {
+        return channel_;
+    }
+
+    std::optional<double> read(
+        const smarthydro::EnvironmentState&) override {
+        const auto value = values_[
+            std::min(next_value_, values_.size() - 1)];
+        ++next_value_;
+        return value;
+    }
+
+private:
+    smarthydro::SensorChannel channel_;
+    std::vector<std::optional<double>> values_;
+    std::size_t next_value_ = 0;
+};
+
 void set_constant_sensor(
     smarthydro::SensorAdapterArray& sensors,
     smarthydro::SensorChannel channel,
     double value) {
     sensors[smarthydro::sensor_channel_index(channel)] =
         std::make_unique<ConstantSensor>(channel, value);
+}
+
+smarthydro::SensorAdapterArray constant_sensor_array() {
+    smarthydro::SensorAdapterArray sensors;
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::TEMPERATURE, 22.0);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::AIR_HUMIDITY, 60.0);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::SOIL_MOISTURE, 60.0);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::PH, 6.2);
+    set_constant_sensor(
+        sensors, smarthydro::SensorChannel::LIGHT, 450.0);
+    return sensors;
+}
+
+const smarthydro::EdgeEvent* transition_event(
+    const smarthydro::EdgeStepResult& result,
+    smarthydro::OperationalState destination) {
+    for (const auto& event : result.events) {
+        if (event.type ==
+                smarthydro::EdgeEventType::OPERATIONAL_STATE_CHANGED &&
+            event.current_operational_state == destination) {
+            return &event;
+        }
+    }
+    return nullptr;
 }
 
 TEST(EdgeRuntimeTest, BlocksRecipeUntilConfigurationsAreConfirmed) {
@@ -216,7 +276,7 @@ TEST(EdgeRuntimeTest, ReportsRecipePhaseTransition) {
         std::string::npos);
 }
 
-TEST(EdgeRuntimeTest, EntersLatchedLockdownOnCriticalSensorFailure) {
+TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
     auto sensor_config = deterministic_sensors();
     sensor_config.soil_moisture.dropout_probability = 1.0;
     smarthydro::EdgeRuntime runtime(
@@ -226,20 +286,37 @@ TEST(EdgeRuntimeTest, EntersLatchedLockdownOnCriticalSensorFailure) {
         sensor_config);
     runtime.confirm_all_configurations();
 
-    const auto failed_step = runtime.step(60.0);
+    const auto first_failure = runtime.step(60.0);
 
     EXPECT_EQ(
-        failed_step.operational_state,
+        first_failure.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_EQ(
+        runtime.operational_state(),
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_DOUBLE_EQ(first_failure.delivered_water_liters, 0.0);
+    EXPECT_FALSE(first_failure.actuator_output.water_pump_on);
+    const auto* degraded_event = transition_event(
+        first_failure, smarthydro::OperationalState::DEGRADED);
+    ASSERT_NE(degraded_event, nullptr);
+    EXPECT_EQ(
+        degraded_event->previous_operational_state,
+        smarthydro::OperationalState::NOMINAL);
+
+    const auto second_failure = runtime.step(60.0);
+    EXPECT_EQ(
+        second_failure.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+
+    const auto third_failure = runtime.step(60.0);
+    EXPECT_EQ(
+        third_failure.operational_state,
         smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
     EXPECT_EQ(
         runtime.operational_state(),
         smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
-    EXPECT_DOUBLE_EQ(failed_step.delivered_water_liters, 0.0);
-    EXPECT_FALSE(failed_step.actuator_output.water_pump_on);
-    EXPECT_DOUBLE_EQ(failed_step.actuator_output.lighting_power_watts, 0.0);
-
     bool lockdown_event_found = false;
-    for (const auto& event : failed_step.events) {
+    for (const auto& event : third_failure.events) {
         if (event.type ==
             smarthydro::EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED) {
             lockdown_event_found = true;
@@ -264,13 +341,106 @@ TEST(EdgeRuntimeTest, EntersLatchedLockdownOnCriticalSensorFailure) {
         EXPECT_TRUE(decision.safety_critical);
         EXPECT_EQ(
             decision.message,
-            "runtime is in emergency lockdown");
+            "runtime is in EmergencyLockdown");
     }
     for (const auto& event : held_step.events) {
         EXPECT_NE(
             event.type,
             smarthydro::EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED);
     }
+}
+
+TEST(EdgeRuntimeTest, AutomaticallyRecoversFromDegradedAfterHealthyCycles) {
+    auto sensors = constant_sensor_array();
+    sensors[smarthydro::sensor_channel_index(
+        smarthydro::SensorChannel::SOIL_MOISTURE)] =
+        std::make_unique<SequenceSensor>(
+            smarthydro::SensorChannel::SOIL_MOISTURE,
+            std::vector<std::optional<double>>{
+                std::nullopt, 60.0, 60.0});
+    smarthydro::OperationalStatePolicy policy;
+    policy.healthy_steps_before_nominal = 2;
+
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(),
+        std::move(sensors),
+        std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
+        std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
+            smarthydro::EnvironmentConfig{}, 20U),
+        policy);
+    runtime.confirm_all_configurations();
+
+    const auto failure = runtime.step(60.0);
+    const auto first_healthy = runtime.step(60.0);
+    const auto recovered = runtime.step(60.0);
+
+    EXPECT_EQ(
+        failure.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_EQ(
+        first_healthy.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_EQ(
+        recovered.operational_state,
+        smarthydro::OperationalState::NOMINAL);
+    const auto* recovery_event = transition_event(
+        recovered, smarthydro::OperationalState::NOMINAL);
+    ASSERT_NE(recovery_event, nullptr);
+    EXPECT_EQ(
+        recovery_event->previous_operational_state,
+        smarthydro::OperationalState::DEGRADED);
+}
+
+TEST(EdgeRuntimeTest, RequiresManualResetAfterEmergencyLockdown) {
+    auto sensors = constant_sensor_array();
+    sensors[smarthydro::sensor_channel_index(
+        smarthydro::SensorChannel::SOIL_MOISTURE)] =
+        std::make_unique<SequenceSensor>(
+            smarthydro::SensorChannel::SOIL_MOISTURE,
+            std::vector<std::optional<double>>{
+                10.0, 60.0, 60.0, 60.0});
+    smarthydro::OperationalStatePolicy policy;
+    policy.healthy_steps_before_nominal = 2;
+
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(),
+        std::move(sensors),
+        std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
+        std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
+            smarthydro::EnvironmentConfig{}, 21U),
+        policy);
+    runtime.confirm_all_configurations();
+
+    EXPECT_FALSE(runtime.request_manual_reset());
+    const auto emergency = runtime.step(60.0);
+    const auto still_locked = runtime.step(60.0);
+
+    EXPECT_EQ(
+        emergency.operational_state,
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
+    EXPECT_EQ(
+        still_locked.operational_state,
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
+    EXPECT_TRUE(runtime.request_manual_reset());
+
+    const auto reset_verified = runtime.step(60.0);
+    const auto first_healthy = runtime.step(60.0);
+    const auto recovered = runtime.step(60.0);
+
+    EXPECT_EQ(
+        reset_verified.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_NE(
+        transition_event(
+            reset_verified, smarthydro::OperationalState::DEGRADED),
+        nullptr);
+    EXPECT_EQ(
+        first_healthy.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_EQ(
+        recovered.operational_state,
+        smarthydro::OperationalState::NOMINAL);
+    EXPECT_FALSE(runtime.request_manual_reset());
 }
 
 TEST(EdgeRuntimeTest, StopsAllActuatorsWhenPhysicalCommandFails) {
@@ -317,17 +487,7 @@ TEST(EdgeRuntimeTest, StopsAllActuatorsWhenPhysicalCommandFails) {
 }
 
 TEST(EdgeRuntimeTest, AcceptsInjectedAdapterImplementations) {
-    smarthydro::SensorAdapterArray sensors;
-    set_constant_sensor(
-        sensors, smarthydro::SensorChannel::TEMPERATURE, 22.0);
-    set_constant_sensor(
-        sensors, smarthydro::SensorChannel::AIR_HUMIDITY, 60.0);
-    set_constant_sensor(
-        sensors, smarthydro::SensorChannel::SOIL_MOISTURE, 60.0);
-    set_constant_sensor(
-        sensors, smarthydro::SensorChannel::PH, 6.2);
-    set_constant_sensor(
-        sensors, smarthydro::SensorChannel::LIGHT, 450.0);
+    auto sensors = constant_sensor_array();
 
     smarthydro::EdgeRuntime runtime(
         load_demo_recipe(),
@@ -363,6 +523,22 @@ TEST(EdgeRuntimeTest, RejectsMissingInjectedAdapters) {
             std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
             std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
                 smarthydro::EnvironmentConfig{}, 12U)),
+        std::invalid_argument);
+}
+
+TEST(EdgeRuntimeTest, RejectsInvalidOperationalStatePolicy) {
+    auto sensors = constant_sensor_array();
+    smarthydro::OperationalStatePolicy invalid_policy;
+    invalid_policy.healthy_steps_before_nominal = 0;
+
+    EXPECT_THROW(
+        smarthydro::EdgeRuntime(
+            load_demo_recipe(),
+            std::move(sensors),
+            std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
+            std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
+                smarthydro::EnvironmentConfig{}, 22U),
+            invalid_policy),
         std::invalid_argument);
 }
 

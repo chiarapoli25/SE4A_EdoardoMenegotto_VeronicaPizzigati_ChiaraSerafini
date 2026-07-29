@@ -52,14 +52,22 @@ localmente le sei configurazioni, quindi esegue un ciclo completo:
 4. fa avanzare l'ambiente e aggiorna lo storico delle dosi;
 5. produce un campione progressivo con stato operativo ed eventuali eventi.
 
-Lo stato iniziale e `Nominal`. Un sensore o modello non valido, un valore fuori
-dai limiti di sicurezza, un errore del controllore o il rifiuto di un comando
-fisico attivano `EmergencyLockdown`: tutti gli attuatori vengono fermati e il
-runtime produce `EmergencyLockdownEntered` con la causa. Il blocco resta attivo
-nei cicli successivi; l'ambiente continua a evolvere passivamente, ma nessun
-controllore puo comandare gli attuatori. Dopo aver corretto il guasto e
-necessario ricreare il runtime. I normali vincoli di dose bloccano invece
-soltanto il comando interessato.
+Lo stato iniziale e `Nominal`. Un errore transitorio di sensore o modello porta
+il runtime in `Degraded`: tutti gli attuatori vengono fermati, mentre l'ambiente
+continua a evolvere passivamente. Tre cicli sani consecutivi riportano
+automaticamente il sistema in `Nominal`; tre guasti recuperabili consecutivi
+lo portano invece in `EmergencyLockdown`.
+
+Valori fuori dai limiti di sicurezza, errori interni del controllore e comandi
+fisici rifiutati causano immediatamente `EmergencyLockdown`. Per uscirne occorre
+chiamare `request_manual_reset()`: dopo un campione sano il runtime passa a
+`Degraded` e ripete la verifica prima di riabilitare gli attuatori. Le soglie
+sono configurabili tramite `OperationalStatePolicy`.
+
+Ogni cambio produce `OperationalStateChanged` con stato precedente, nuovo
+stato e causa. L'ingresso in emergenza produce anche
+`EmergencyLockdownEntered`. I normali vincoli di dose bloccano invece soltanto
+il comando interessato.
 
 Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
 fase produce `RecipePhaseChanged`.

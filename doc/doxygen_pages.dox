@@ -147,25 +147,40 @@
  * Il primo campione produce `RuntimeStarted`; un passaggio automatico di fase
  * produce `RecipePhaseChanged`.
  *
- * @subsection edge_runtime_lockdown Arresto di emergenza
+ * @subsection edge_runtime_fsm Macchina a stati operativa
  *
- * Ogni @ref smarthydro::ControlDecision distingue un blocco operativo da un
- * blocco critico mediante `safety_critical`. Intervallo minimo fra dosi,
- * limite giornaliero e configurazione non confermata bloccano soltanto il
- * comando interessato. Sensori o modelli non validi, valori fuori dai limiti
- * di sicurezza, errori interni del controllore e comandi fisici rifiutati
- * causano invece un arresto globale.
+ * @ref smarthydro::EdgeRuntime implementa una FSM con tre stati:
  *
- * In caso di guasto critico @ref smarthydro::EdgeRuntime esegue queste azioni:
+ * - `Nominal`: sensori e controllori sono affidabili; i comandi vengono
+ *   applicati normalmente;
+ * - `Degraded`: e stato rilevato un guasto potenzialmente transitorio; tutti
+ *   gli attuatori vengono fermati e prosegue soltanto la dinamica passiva;
+ * - `EmergencyLockdown`: un guasto critico o persistente mantiene ogni
+ *   attuatore nello stato sicuro finche non viene richiesto un reset manuale.
  *
- * 1. chiama ActuatorSimulator::stop_all();
- * 2. passa allo stato `EmergencyLockdown`;
- * 3. produce l'evento `EmergencyLockdownEntered` con la causa;
- * 4. mantiene il blocco nei cicli successivi senza rieseguire i controllori;
- * 5. lascia evolvere soltanto la dinamica passiva dell'ambiente.
+ * Ogni @ref smarthydro::ControlDecision espone
+ * @ref smarthydro::ControlFaultSeverity. Una lettura temporaneamente assente
+ * e `Recoverable` e provoca `Nominal -> Degraded`. Con la configurazione
+ * predefinita, tre cicli consecutivi con guasto recuperabile provocano
+ * `Degraded -> EmergencyLockdown`. Valori fuori dai limiti di sicurezza,
+ * errori interni del controllore e comandi fisici rifiutati sono `Critical` e
+ * causano immediatamente `EmergencyLockdown`.
  *
- * Il lockdown e latched: per riprendere l'esecuzione e necessario ricreare il
- * runtime dopo aver corretto e verificato la causa del guasto.
+ * @ref smarthydro::OperationalStatePolicy permette di configurare il numero di
+ * guasti consecutivi e di campioni sani richiesti. In `Degraded`, tre cicli
+ * sani consecutivi producono automaticamente `Degraded -> Nominal`. Gli
+ * attuatori vengono riabilitati soltanto nel ciclo che completa il recovery.
+ *
+ * Per uscire da `EmergencyLockdown` il chiamante usa
+ * EdgeRuntime::request_manual_reset(). La richiesta non riattiva gli
+ * attuatori: il runtime attende un ciclo sano, passa a `Degraded` e applica
+ * nuovamente il periodo di verifica previsto dalla policy. Se il guasto
+ * rimane, lo stato di emergenza non cambia.
+ *
+ * Ogni transizione produce `OperationalStateChanged`, con stato precedente,
+ * nuovo stato e causa in @ref smarthydro::EdgeEvent. L'ingresso in emergenza
+ * produce anche `EmergencyLockdownEntered` per compatibilita con i consumer
+ * che filtrano direttamente gli allarmi critici.
  *
  * @subsection edge_runtime_example Esempio elementare
  *
@@ -223,8 +238,8 @@
  * dose singola e giornaliera e intervallo tra dosaggi. Per il pH applica anche
  * il tempo di assestamento e la mutua esclusione fra pH+ e pH-. I blocchi che
  * rendono inaffidabile l'intero ciclo sono marcati come critici affinche il
- * runtime applichi l'arresto globale descritto in
- * @ref edge_runtime_lockdown.
+ * runtime applichi la transizione appropriata descritta in
+ * @ref edge_runtime_fsm.
  *
  * @subsection edge_recipe_json Formato JSON
  *

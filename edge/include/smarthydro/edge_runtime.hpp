@@ -28,6 +28,7 @@ enum class OperationalState {
 enum class EdgeEventType {
     RUNTIME_STARTED,
     RECIPE_PHASE_CHANGED,
+    OPERATIONAL_STATE_CHANGED,
     EMERGENCY_LOCKDOWN_ENTERED,
 };
 
@@ -39,6 +40,26 @@ struct EdgeEvent {
     double timestamp_seconds = 0.0;
     /** Descrizione leggibile destinata a log e diagnostica. */
     std::string message;
+    /** Stato precedente, presente per una transizione operativa. */
+    std::optional<OperationalState> previous_operational_state;
+    /** Nuovo stato, presente per una transizione operativa. */
+    std::optional<OperationalState> current_operational_state;
+};
+
+/**
+ * @brief Soglie temporali, espresse in numero di cicli, della FSM operativa.
+ */
+struct OperationalStatePolicy {
+    /**
+     * Numero di cicli consecutivi con guasto recuperabile che causa il
+     * passaggio da Degraded a EmergencyLockdown.
+     */
+    std::size_t recoverable_faults_before_lockdown = 3;
+    /**
+     * Numero di cicli sani consecutivi necessari per il recovery automatico
+     * da Degraded a Nominal.
+     */
+    std::size_t healthy_steps_before_nominal = 3;
 };
 
 /**
@@ -104,6 +125,7 @@ public:
      * @param sensor_config Configurazione degli errori strumentali.
      * @param environment_seed Seed riproducibile dell'ambiente.
      * @param sensor_seed Seed riproducibile dei sensori.
+     * @param state_policy Soglie della macchina a stati operativa.
      */
     explicit EdgeRuntime(
         Recipe recipe,
@@ -111,7 +133,8 @@ public:
         EnvironmentConfig environment_config = {},
         SensorConfig sensor_config = {},
         std::uint32_t environment_seed = 0x53484D31U,
-        std::uint32_t sensor_seed = 0x53484D32U);
+        std::uint32_t sensor_seed = 0x53484D32U,
+        OperationalStatePolicy state_policy = {});
 
     /**
      * @brief Costruisce il runtime con dipendenze conformi agli Adapter.
@@ -123,6 +146,7 @@ public:
      * @param sensors Cinque adapter non nulli, ordinati per SensorChannel.
      * @param actuators Driver aggregato non nullo degli attuatori.
      * @param environment Ambiente non nullo osservato e aggiornato dal runtime.
+     * @param state_policy Soglie della macchina a stati operativa.
      * @throws std::invalid_argument Se una dipendenza manca o un sensore si
      * trova in una posizione diversa dal proprio canale.
      */
@@ -130,7 +154,8 @@ public:
         Recipe recipe,
         SensorAdapterArray sensors,
         std::unique_ptr<IActuator> actuators,
-        std::unique_ptr<IEnvironment> environment);
+        std::unique_ptr<IEnvironment> environment,
+        OperationalStatePolicy state_policy = {});
 
     /**
      * @brief Valida e conferma localmente tutte le configurazioni della ricetta.
@@ -157,6 +182,17 @@ public:
     const ActuatorOutput& actuator_output() const noexcept;
     /** @brief Restituisce lo stato operativo corrente della zona. */
     OperationalState operational_state() const noexcept;
+    /**
+     * @brief Richiede l'uscita manuale da EmergencyLockdown.
+     *
+     * La richiesta non riattiva direttamente gli attuatori. Il runtime attende
+     * un ciclo privo di guasti, passa a Degraded e applica poi il normale
+     * periodo di verifica prima di tornare Nominal.
+     *
+     * @return true se la richiesta e stata acquisita; false se il runtime non
+     * si trova in EmergencyLockdown.
+     */
+    bool request_manual_reset() noexcept;
     /** @brief Dose cumulativa realmente erogata nella fase corrente. */
     double cumulative_phase_dose_milliliters(
         ControlledVariable variable) const;
@@ -168,13 +204,15 @@ private:
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
     void reset_histories_if_needed();
     SensorReadings read_sensors();
-    bool enter_lockdown_for_critical_decision(EdgeStepResult& result);
-    void enter_emergency_lockdown(
+    bool update_operational_state(EdgeStepResult& result);
+    void transition_operational_state(
+        OperationalState next_state,
         const std::string& reason,
         EdgeStepResult& result);
-    void hold_emergency_lockdown(
+    void apply_safe_fallback(
         double delta_time_seconds,
-        EdgeStepResult& result);
+        EdgeStepResult& result,
+        bool replace_decisions);
     void apply_decisions(
         double delta_time_seconds,
         EdgeStepResult& result);
@@ -192,6 +230,7 @@ private:
     WaterPumpAdapter water_pump_;
     LightingAdapter lighting_;
     FertilizerValveAdapter fertilizer_valves_;
+    OperationalStatePolicy state_policy_;
     ControlledValues<double> cumulative_phase_dose_milliliters_{};
     ControlledValues<double> daily_dose_milliliters_{};
     ControlledValues<double> seconds_since_last_dose_{};
@@ -200,6 +239,9 @@ private:
     std::uint64_t history_day_index_ = 0;
     std::uint64_t next_sequence_number_ = 0;
     OperationalState operational_state_ = OperationalState::NOMINAL;
+    std::size_t consecutive_recoverable_faults_ = 0;
+    std::size_t consecutive_healthy_steps_ = 0;
+    bool manual_reset_requested_ = false;
 };
 
 /** @brief Nome stabile dello stato operativo per log e serializzazione. */

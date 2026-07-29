@@ -54,6 +54,16 @@ std::unique_ptr<IEnvironment> require_environment(
     return environment;
 }
 
+OperationalStatePolicy require_valid_state_policy(
+    OperationalStatePolicy policy) {
+    if (policy.recoverable_faults_before_lockdown == 0 ||
+        policy.healthy_steps_before_nominal == 0) {
+        throw std::invalid_argument(
+            "operational state policy thresholds must be positive");
+    }
+    return policy;
+}
+
 double hour_of_day(double elapsed_hours) {
     double hour = std::fmod(elapsed_hours, 24.0);
     if (hour < 0.0) {
@@ -98,6 +108,8 @@ const char* to_string(EdgeEventType type) noexcept {
             return "RuntimeStarted";
         case EdgeEventType::RECIPE_PHASE_CHANGED:
             return "RecipePhaseChanged";
+        case EdgeEventType::OPERATIONAL_STATE_CHANGED:
+            return "OperationalStateChanged";
         case EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED:
             return "EmergencyLockdownEntered";
     }
@@ -110,7 +122,8 @@ EdgeRuntime::EdgeRuntime(
     EnvironmentConfig environment_config,
     SensorConfig sensor_config,
     std::uint32_t environment_seed,
-    std::uint32_t sensor_seed)
+    std::uint32_t sensor_seed,
+    OperationalStatePolicy state_policy)
     : control_system_(std::move(recipe)),
       actuators_(std::make_unique<ActuatorSimulatorAdapter>(
           std::move(actuator_config))),
@@ -124,7 +137,8 @@ EdgeRuntime::EdgeRuntime(
           sensor_seed)),
       water_pump_(*actuators_),
       lighting_(*actuators_),
-      fertilizer_valves_(*actuators_) {
+      fertilizer_valves_(*actuators_),
+      state_policy_(require_valid_state_policy(state_policy)) {
     seconds_since_last_dose_.fill(
         std::numeric_limits<double>::max() / 4.0);
 }
@@ -133,14 +147,16 @@ EdgeRuntime::EdgeRuntime(
     Recipe recipe,
     SensorAdapterArray sensors,
     std::unique_ptr<IActuator> actuators,
-    std::unique_ptr<IEnvironment> environment)
+    std::unique_ptr<IEnvironment> environment,
+    OperationalStatePolicy state_policy)
     : control_system_(std::move(recipe)),
       actuators_(require_actuators(std::move(actuators))),
       environment_(require_environment(std::move(environment))),
       sensors_(std::move(sensors)),
       water_pump_(*actuators_),
       lighting_(*actuators_),
-      fertilizer_valves_(*actuators_) {
+      fertilizer_valves_(*actuators_),
+      state_policy_(require_valid_state_policy(state_policy)) {
     for (std::size_t index = 0;
          index < kSensorChannelCount;
          ++index) {
@@ -187,6 +203,14 @@ const ActuatorOutput& EdgeRuntime::actuator_output() const noexcept {
 
 OperationalState EdgeRuntime::operational_state() const noexcept {
     return operational_state_;
+}
+
+bool EdgeRuntime::request_manual_reset() noexcept {
+    if (operational_state_ != OperationalState::EMERGENCY_LOCKDOWN) {
+        return false;
+    }
+    manual_reset_requested_ = true;
+    return true;
 }
 
 double EdgeRuntime::cumulative_phase_dose_milliliters(
@@ -303,8 +327,9 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     reported_phase_index_ = phase_index;
     result.readings = read_sensors();
 
-    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
-        hold_emergency_lockdown(delta_time_seconds, result);
+    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN &&
+        !manual_reset_requested_) {
+        apply_safe_fallback(delta_time_seconds, result, true);
         result.actuator_command = actuators_->command();
         result.actuator_output = actuators_->output();
         result.environment_state = environment_->state();
@@ -370,73 +395,182 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             control_system_.execute(variable, request);
     }
 
-    if (enter_lockdown_for_critical_decision(result)) {
-        advance_physics(delta_time_seconds, result);
+    if (!update_operational_state(result)) {
+        apply_safe_fallback(delta_time_seconds, result, false);
     } else {
         try {
             apply_decisions(delta_time_seconds, result);
         } catch (const std::exception& error) {
-            enter_emergency_lockdown(
+            transition_operational_state(
+                OperationalState::EMERGENCY_LOCKDOWN,
                 "actuator command failed: " + std::string(error.what()),
                 result);
-            advance_physics(delta_time_seconds, result);
+            apply_safe_fallback(delta_time_seconds, result, false);
         }
     }
-    update_dose_histories(delta_time_seconds, result);
+    if (operational_state_ == OperationalState::NOMINAL) {
+        update_dose_histories(delta_time_seconds, result);
+    }
     result.actuator_command = actuators_->command();
     result.actuator_output = actuators_->output();
     result.environment_state = environment_->state();
     return result;
 }
 
-bool EdgeRuntime::enter_lockdown_for_critical_decision(
+bool EdgeRuntime::update_operational_state(
     EdgeStepResult& result) {
+    ControlFaultSeverity severity = ControlFaultSeverity::NONE;
+    std::string reason;
+    if (!result.readings.temperature_c.has_value() ||
+        !std::isfinite(*result.readings.temperature_c)) {
+        severity = ControlFaultSeverity::RECOVERABLE;
+        reason = "temperature sensor input is invalid";
+    } else if (!result.readings.air_humidity_percent.has_value() ||
+               !std::isfinite(
+                   *result.readings.air_humidity_percent)) {
+        severity = ControlFaultSeverity::RECOVERABLE;
+        reason = "air humidity sensor input is invalid";
+    }
     for (std::size_t index = 0;
          index < kControlledVariableCount;
          ++index) {
         const auto& decision = result.decisions[index];
         if (decision.status != ControlDecisionStatus::BLOCKED ||
-            !decision.safety_critical) {
+            !decision.safety_critical ||
+            decision.fault_severity == ControlFaultSeverity::NONE) {
             continue;
         }
-
-        enter_emergency_lockdown(
-            std::string(to_string(kControlledVariables[index])) +
-                " control blocked: " + decision.message,
-            result);
-        return true;
+        if (decision.fault_severity == ControlFaultSeverity::CRITICAL ||
+            severity == ControlFaultSeverity::NONE) {
+            severity = decision.fault_severity;
+            reason =
+                std::string(to_string(kControlledVariables[index])) +
+                " control blocked: " + decision.message;
+        }
+        if (severity == ControlFaultSeverity::CRITICAL) {
+            break;
+        }
     }
-    return false;
+
+    if (severity == ControlFaultSeverity::CRITICAL) {
+        consecutive_recoverable_faults_ = 0;
+        consecutive_healthy_steps_ = 0;
+        transition_operational_state(
+            OperationalState::EMERGENCY_LOCKDOWN,
+            reason,
+            result);
+        return false;
+    }
+
+    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
+        if (severity == ControlFaultSeverity::RECOVERABLE) {
+            return false;
+        }
+        manual_reset_requested_ = false;
+        consecutive_recoverable_faults_ = 0;
+        consecutive_healthy_steps_ = 0;
+        transition_operational_state(
+            OperationalState::DEGRADED,
+            "manual reset accepted; health verification started",
+            result);
+        return false;
+    }
+
+    if (severity == ControlFaultSeverity::RECOVERABLE) {
+        consecutive_healthy_steps_ = 0;
+        ++consecutive_recoverable_faults_;
+        if (operational_state_ == OperationalState::NOMINAL) {
+            transition_operational_state(
+                OperationalState::DEGRADED,
+                reason,
+                result);
+        } else if (
+            consecutive_recoverable_faults_ >=
+            state_policy_.recoverable_faults_before_lockdown) {
+            transition_operational_state(
+                OperationalState::EMERGENCY_LOCKDOWN,
+                "recoverable fault persisted: " + reason,
+                result);
+        }
+        return false;
+    }
+
+    consecutive_recoverable_faults_ = 0;
+    if (operational_state_ == OperationalState::DEGRADED) {
+        ++consecutive_healthy_steps_;
+        if (consecutive_healthy_steps_ >=
+            state_policy_.healthy_steps_before_nominal) {
+            consecutive_healthy_steps_ = 0;
+            transition_operational_state(
+                OperationalState::NOMINAL,
+                "automatic recovery after consecutive healthy cycles",
+                result);
+            return true;
+        }
+        return false;
+    }
+
+    consecutive_healthy_steps_ = 0;
+    return true;
 }
 
-void EdgeRuntime::enter_emergency_lockdown(
+void EdgeRuntime::transition_operational_state(
+    OperationalState next_state,
     const std::string& reason,
     EdgeStepResult& result) {
-    actuators_->stop_all();
-    operational_state_ = OperationalState::EMERGENCY_LOCKDOWN;
+    if (next_state == operational_state_) {
+        result.operational_state = operational_state_;
+        return;
+    }
+
+    const auto previous_state = operational_state_;
+    if (next_state != OperationalState::NOMINAL) {
+        actuators_->stop_all();
+    }
+    operational_state_ = next_state;
     result.operational_state = operational_state_;
     result.events.push_back(
         {
-            EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED,
+            EdgeEventType::OPERATIONAL_STATE_CHANGED,
             result.start_time_seconds,
-            reason,
+            std::string(to_string(previous_state)) + " -> " +
+                to_string(next_state) + ": " + reason,
+            previous_state,
+            next_state,
         });
+    if (next_state == OperationalState::EMERGENCY_LOCKDOWN) {
+        manual_reset_requested_ = false;
+        result.events.push_back(
+            {
+                EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED,
+                result.start_time_seconds,
+                reason,
+                previous_state,
+                next_state,
+            });
+    }
 }
 
-void EdgeRuntime::hold_emergency_lockdown(
+void EdgeRuntime::apply_safe_fallback(
     double delta_time_seconds,
-    EdgeStepResult& result) {
+    EdgeStepResult& result,
+    bool replace_decisions) {
     actuators_->stop_all();
     result.operational_state = operational_state_;
-    for (std::size_t index = 0;
-         index < kControlledVariableCount;
-         ++index) {
-        auto& decision = result.decisions[index];
-        decision.status = ControlDecisionStatus::BLOCKED;
-        decision.safety_critical = true;
-        decision.actuator =
-            control_system_.recipe().controllers[index].actuator;
-        decision.message = "runtime is in emergency lockdown";
+    if (replace_decisions) {
+        for (std::size_t index = 0;
+             index < kControlledVariableCount;
+             ++index) {
+            auto& decision = result.decisions[index];
+            decision.status = ControlDecisionStatus::BLOCKED;
+            decision.safety_critical = true;
+            decision.fault_severity = ControlFaultSeverity::CRITICAL;
+            decision.actuator =
+                control_system_.recipe().controllers[index].actuator;
+            decision.message =
+                "runtime is in " +
+                std::string(to_string(operational_state_));
+        }
     }
     advance_physics(delta_time_seconds, result);
     update_dose_histories(delta_time_seconds, result);

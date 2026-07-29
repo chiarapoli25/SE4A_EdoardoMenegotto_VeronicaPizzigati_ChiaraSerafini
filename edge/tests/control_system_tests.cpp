@@ -348,9 +348,14 @@ TEST(RecipeControlSystemTest, BlocksInvalidSourcesAndHonorsPhotoperiod) {
     request.controller_input.measured_value = 300.0;
     request.source_valid = false;
 
+    const auto unavailable =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(
-        system.execute(smarthydro::ControlledVariable::LIGHT, request).status,
+        unavailable.status,
         smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_EQ(
+        unavailable.fault_severity,
+        smarthydro::ControlFaultSeverity::RECOVERABLE);
 
     request.source_valid = true;
     request.controller_input.measured_value = 1300.0;
@@ -358,6 +363,9 @@ TEST(RecipeControlSystemTest, BlocksInvalidSourcesAndHonorsPhotoperiod) {
     const auto unsafe =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(unsafe.status, smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_EQ(
+        unsafe.fault_severity,
+        smarthydro::ControlFaultSeverity::CRITICAL);
     EXPECT_NE(unsafe.message.find("safety"), std::string::npos);
 
     request.controller_input.measured_value = 300.0;
