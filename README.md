@@ -52,10 +52,17 @@ localmente le sei configurazioni, quindi esegue un ciclo completo:
 4. fa avanzare l'ambiente e aggiorna lo storico delle dosi;
 5. produce un campione progressivo con stato operativo ed eventuali eventi.
 
-Lo stato iniziale e `Nominal`; `Degraded` ed `EmergencyLockdown` fanno gia
-parte del contratto del runtime e verranno attivati dalla futura logica di
-rilevamento guasti. Il primo ciclo produce `RuntimeStarted`, mentre ogni
-passaggio automatico di fase produce `RecipePhaseChanged`.
+Lo stato iniziale e `Nominal`. Un sensore o modello non valido, un valore fuori
+dai limiti di sicurezza, un errore del controllore o il rifiuto di un comando
+fisico attivano `EmergencyLockdown`: tutti gli attuatori vengono fermati e il
+runtime produce `EmergencyLockdownEntered` con la causa. Il blocco resta attivo
+nei cicli successivi; l'ambiente continua a evolvere passivamente, ma nessun
+controllore puo comandare gli attuatori. Dopo aver corretto il guasto e
+necessario ricreare il runtime. I normali vincoli di dose bloccano invece
+soltanto il comando interessato.
+
+Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
+fase produce `RecipePhaseChanged`.
 
 Per usare una ricetta diversa o simulare piu cicli:
 
@@ -152,8 +159,9 @@ per il tempo effettivo di pompaggio e tutte le valvole vengono chiuse.
 
 I volumi fisici vengono applicati all'ambiente: l'acqua modifica l'umidita e
 diluisce i nutrienti; N/P/K aggiungono masse separate; drenaggio e assorbimento
-le riducono; pH+ e pH- correggono il pH. L'accodamento delle dosi esatte in mL
-e la chiusura al raggiungimento del volume appartengono al futuro regolatore.
+le riducono; pH+ e pH- correggono il pH. `EdgeRuntime` converte le dosi in mL
+nei tempi di apertura delle valvole e le chiude quando il volume richiesto e
+stato raggiunto.
 
 Il sensore di umidita del terriccio continua a restituire una percentuale:
 l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e il

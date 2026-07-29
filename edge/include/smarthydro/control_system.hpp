@@ -215,6 +215,14 @@ enum class ControlDecisionStatus {
 struct ControlDecision {
     /** Esito dell'applicazione dei limiti prioritari. */
     ControlDecisionStatus status = ControlDecisionStatus::BLOCKED;
+    /**
+     * Indica che il blocco dipende da una condizione che rende insicuro
+     * proseguire con qualsiasi attuatore della zona.
+     *
+     * Rimane falso per i normali vincoli operativi, come l'intervallo minimo
+     * tra due dosi o il raggiungimento del limite giornaliero.
+     */
+    bool safety_critical = false;
     /** Comando finale sicuro, nell'unita dell'attuatore. */
     double command = 0.0;
     /** Attuatore associato alla variabile. */

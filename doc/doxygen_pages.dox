@@ -110,9 +110,27 @@
  * - eventi prodotti durante il ciclo.
  *
  * Il primo campione produce `RuntimeStarted`; un passaggio automatico di fase
- * produce `RecipePhaseChanged`. Lo stato corrente e `Nominal`; `Degraded` ed
- * `EmergencyLockdown` appartengono gia al contratto, mentre le relative
- * transizioni saranno gestite dal futuro rilevamento guasti.
+ * produce `RecipePhaseChanged`.
+ *
+ * @subsection edge_runtime_lockdown Arresto di emergenza
+ *
+ * Ogni @ref smarthydro::ControlDecision distingue un blocco operativo da un
+ * blocco critico mediante `safety_critical`. Intervallo minimo fra dosi,
+ * limite giornaliero e configurazione non confermata bloccano soltanto il
+ * comando interessato. Sensori o modelli non validi, valori fuori dai limiti
+ * di sicurezza, errori interni del controllore e comandi fisici rifiutati
+ * causano invece un arresto globale.
+ *
+ * In caso di guasto critico @ref smarthydro::EdgeRuntime esegue queste azioni:
+ *
+ * 1. chiama ActuatorSimulator::stop_all();
+ * 2. passa allo stato `EmergencyLockdown`;
+ * 3. produce l'evento `EmergencyLockdownEntered` con la causa;
+ * 4. mantiene il blocco nei cicli successivi senza rieseguire i controllori;
+ * 5. lascia evolvere soltanto la dinamica passiva dell'ambiente.
+ *
+ * Il lockdown e latched: per riprendere l'esecuzione e necessario ricreare il
+ * runtime dopo aver corretto e verificato la causa del guasto.
  *
  * @subsection edge_runtime_example Esempio elementare
  *
@@ -168,7 +186,10 @@
  *
  * Dopo il calcolo, l'orchestratore limita volume d'acqua, durata della pompa,
  * dose singola e giornaliera e intervallo tra dosaggi. Per il pH applica anche
- * il tempo di assestamento e la mutua esclusione fra pH+ e pH-.
+ * il tempo di assestamento e la mutua esclusione fra pH+ e pH-. I blocchi che
+ * rendono inaffidabile l'intero ciclo sono marcati come critici affinche il
+ * runtime applichi l'arresto globale descritto in
+ * @ref edge_runtime_lockdown.
  *
  * @subsection edge_recipe_json Formato JSON
  *

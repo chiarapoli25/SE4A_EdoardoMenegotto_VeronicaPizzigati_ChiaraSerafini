@@ -186,4 +186,104 @@ TEST(EdgeRuntimeTest, ReportsRecipePhaseTransition) {
         std::string::npos);
 }
 
+TEST(EdgeRuntimeTest, EntersLatchedLockdownOnCriticalSensorFailure) {
+    auto sensor_config = deterministic_sensors();
+    sensor_config.soil_moisture.dropout_probability = 1.0;
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(),
+        {},
+        {},
+        sensor_config);
+    runtime.confirm_all_configurations();
+
+    const auto failed_step = runtime.step(60.0);
+
+    EXPECT_EQ(
+        failed_step.operational_state,
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
+    EXPECT_EQ(
+        runtime.operational_state(),
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
+    EXPECT_DOUBLE_EQ(failed_step.delivered_water_liters, 0.0);
+    EXPECT_FALSE(failed_step.actuator_output.water_pump_on);
+    EXPECT_DOUBLE_EQ(failed_step.actuator_output.lighting_power_watts, 0.0);
+
+    bool lockdown_event_found = false;
+    for (const auto& event : failed_step.events) {
+        if (event.type ==
+            smarthydro::EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED) {
+            lockdown_event_found = true;
+            EXPECT_NE(
+                event.message.find("soil_moisture"),
+                std::string::npos);
+        }
+    }
+    EXPECT_TRUE(lockdown_event_found);
+
+    const auto held_step = runtime.step(60.0);
+
+    EXPECT_EQ(
+        held_step.operational_state,
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
+    EXPECT_DOUBLE_EQ(held_step.delivered_water_liters, 0.0);
+    EXPECT_FALSE(held_step.actuator_output.water_pump_on);
+    for (const auto& decision : held_step.decisions) {
+        EXPECT_EQ(
+            decision.status,
+            smarthydro::ControlDecisionStatus::BLOCKED);
+        EXPECT_TRUE(decision.safety_critical);
+        EXPECT_EQ(
+            decision.message,
+            "runtime is in emergency lockdown");
+    }
+    for (const auto& event : held_step.events) {
+        EXPECT_NE(
+            event.type,
+            smarthydro::EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED);
+    }
+}
+
+TEST(EdgeRuntimeTest, StopsAllActuatorsWhenPhysicalCommandFails) {
+    auto recipe = load_demo_recipe();
+    auto& soil_target =
+        recipe.phases.front().targets[
+            smarthydro::controlled_variable_index(
+                smarthydro::ControlledVariable::SOIL_MOISTURE)];
+    soil_target.setpoint = 85.0;
+    soil_target.allowed_range = {80.0, 90.0};
+    soil_target.safety_range = {0.0, 100.0};
+
+    smarthydro::ActuatorConfig actuator_config;
+    actuator_config.maximum_irrigation_volume_liters = 0.1;
+    smarthydro::EdgeRuntime runtime(
+        std::move(recipe),
+        actuator_config,
+        {},
+        deterministic_sensors());
+    runtime.confirm_all_configurations();
+
+    const auto result = runtime.step(60.0);
+
+    EXPECT_EQ(
+        result.operational_state,
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
+    EXPECT_DOUBLE_EQ(result.delivered_water_liters, 0.0);
+    EXPECT_FALSE(result.actuator_output.water_pump_on);
+    EXPECT_DOUBLE_EQ(result.actuator_output.lighting_power_watts, 0.0);
+    for (const bool open : result.actuator_output.fertilizer_valves_open) {
+        EXPECT_FALSE(open);
+    }
+
+    bool actuator_error_reported = false;
+    for (const auto& event : result.events) {
+        if (event.type ==
+            smarthydro::EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED) {
+            actuator_error_reported =
+                event.message.find("actuator command failed") !=
+                std::string::npos;
+        }
+    }
+    EXPECT_TRUE(actuator_error_reported);
+}
+
 }  // namespace

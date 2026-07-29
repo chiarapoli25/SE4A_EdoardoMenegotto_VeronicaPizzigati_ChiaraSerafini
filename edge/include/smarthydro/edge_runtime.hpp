@@ -29,6 +29,7 @@ enum class OperationalState {
 enum class EdgeEventType {
     RUNTIME_STARTED,
     RECIPE_PHASE_CHANGED,
+    EMERGENCY_LOCKDOWN_ENTERED,
 };
 
 /** @brief Evento osservabile prodotto durante un ciclo operativo. */
@@ -148,6 +149,13 @@ private:
     ControlRequest base_request(double delta_time_seconds) const;
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
     void reset_histories_if_needed();
+    bool enter_lockdown_for_critical_decision(EdgeStepResult& result);
+    void enter_emergency_lockdown(
+        const std::string& reason,
+        EdgeStepResult& result);
+    void hold_emergency_lockdown(
+        double delta_time_seconds,
+        EdgeStepResult& result);
     void apply_decisions(
         double delta_time_seconds,
         EdgeStepResult& result);

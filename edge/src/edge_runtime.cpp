@@ -80,6 +80,8 @@ const char* to_string(EdgeEventType type) noexcept {
             return "RuntimeStarted";
         case EdgeEventType::RECIPE_PHASE_CHANGED:
             return "RecipePhaseChanged";
+        case EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED:
+            return "EmergencyLockdownEntered";
     }
     return "Unknown";
 }
@@ -227,6 +229,14 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     reported_phase_index_ = phase_index;
     result.readings = sensors_.read(environment_.state());
 
+    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
+        hold_emergency_lockdown(delta_time_seconds, result);
+        result.actuator_command = actuators_.command();
+        result.actuator_output = actuators_.output();
+        result.environment_state = environment_.state();
+        return result;
+    }
+
     auto request = base_request(delta_time_seconds);
     request.controller_input.measured_value =
         result.readings.soil_moisture_percent;
@@ -286,12 +296,76 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             control_system_.execute(variable, request);
     }
 
-    apply_decisions(delta_time_seconds, result);
+    if (enter_lockdown_for_critical_decision(result)) {
+        advance_physics(delta_time_seconds, result);
+    } else {
+        try {
+            apply_decisions(delta_time_seconds, result);
+        } catch (const std::exception& error) {
+            enter_emergency_lockdown(
+                "actuator command failed: " + std::string(error.what()),
+                result);
+            advance_physics(delta_time_seconds, result);
+        }
+    }
     update_dose_histories(delta_time_seconds, result);
     result.actuator_command = actuators_.command();
     result.actuator_output = actuators_.output();
     result.environment_state = environment_.state();
     return result;
+}
+
+bool EdgeRuntime::enter_lockdown_for_critical_decision(
+    EdgeStepResult& result) {
+    for (std::size_t index = 0;
+         index < kControlledVariableCount;
+         ++index) {
+        const auto& decision = result.decisions[index];
+        if (decision.status != ControlDecisionStatus::BLOCKED ||
+            !decision.safety_critical) {
+            continue;
+        }
+
+        enter_emergency_lockdown(
+            std::string(to_string(kControlledVariables[index])) +
+                " control blocked: " + decision.message,
+            result);
+        return true;
+    }
+    return false;
+}
+
+void EdgeRuntime::enter_emergency_lockdown(
+    const std::string& reason,
+    EdgeStepResult& result) {
+    actuators_.stop_all();
+    operational_state_ = OperationalState::EMERGENCY_LOCKDOWN;
+    result.operational_state = operational_state_;
+    result.events.push_back(
+        {
+            EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED,
+            result.start_time_seconds,
+            reason,
+        });
+}
+
+void EdgeRuntime::hold_emergency_lockdown(
+    double delta_time_seconds,
+    EdgeStepResult& result) {
+    actuators_.stop_all();
+    result.operational_state = operational_state_;
+    for (std::size_t index = 0;
+         index < kControlledVariableCount;
+         ++index) {
+        auto& decision = result.decisions[index];
+        decision.status = ControlDecisionStatus::BLOCKED;
+        decision.safety_critical = true;
+        decision.actuator =
+            control_system_.recipe().controllers[index].actuator;
+        decision.message = "runtime is in emergency lockdown";
+    }
+    advance_physics(delta_time_seconds, result);
+    update_dose_histories(delta_time_seconds, result);
 }
 
 void EdgeRuntime::apply_decisions(
