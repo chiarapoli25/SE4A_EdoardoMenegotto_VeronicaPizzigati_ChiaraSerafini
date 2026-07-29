@@ -67,6 +67,22 @@ target_compile_features(io_adapter_tests PRIVATE cxx_std_17)
 set_target_properties(io_adapter_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(io_adapter_tests)
 
+# Test del pattern Observer, dei logger e dell'integrazione col runtime.
+add_executable(event_bus_tests event_bus_tests.cpp)
+target_link_libraries(event_bus_tests
+    PRIVATE
+        edge_runtime
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(event_bus_tests PRIVATE cxx_std_17)
+target_compile_definitions(event_bus_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(event_bus_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(event_bus_tests)
+
 # Eseguibile dei test dei controllori.
 add_executable(controller_tests controllers_tests.cpp)
 target_link_libraries(controller_tests

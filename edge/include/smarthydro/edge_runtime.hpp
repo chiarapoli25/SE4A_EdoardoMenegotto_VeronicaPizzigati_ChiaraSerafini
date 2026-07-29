@@ -17,6 +17,8 @@
 
 namespace smarthydro {
 
+class EventBus;
+
 /** @brief Stato operativo sintetico della zona controllata dall'Edge. */
 enum class OperationalState {
     NOMINAL,
@@ -193,6 +195,19 @@ public:
      * si trova in EmergencyLockdown.
      */
     bool request_manual_reset() noexcept;
+    /**
+     * @brief Collega un EventBus alla pubblicazione automatica del runtime.
+     * @param event_bus Bus non nullo, condiviso con gli observer.
+     * @param zone_id Identificatore non vuoto della zona.
+     * @throws std::invalid_argument Se bus o identificatore non sono validi.
+     */
+    void attach_event_bus(
+        std::shared_ptr<EventBus> event_bus,
+        std::string zone_id = "zone-1");
+    /** @brief Disattiva la pubblicazione senza modificare gli observer. */
+    void detach_event_bus() noexcept;
+    /** @brief Restituisce l'identificatore usato negli eventi di dominio. */
+    const std::string& zone_id() const noexcept;
     /** @brief Dose cumulativa realmente erogata nella fase corrente. */
     double cumulative_phase_dose_milliliters(
         ControlledVariable variable) const;
@@ -222,6 +237,12 @@ private:
     void update_dose_histories(
         double delta_time_seconds,
         const EdgeStepResult& result);
+    void publish_telemetry(const EdgeStepResult& result) noexcept;
+    void publish_command_executed(
+        const EdgeStepResult& result) noexcept;
+    void publish_command_failed(
+        double timestamp_seconds,
+        const std::string& diagnostic) noexcept;
 
     RecipeControlSystem control_system_;
     std::unique_ptr<IActuator> actuators_;
@@ -242,6 +263,8 @@ private:
     std::size_t consecutive_recoverable_faults_ = 0;
     std::size_t consecutive_healthy_steps_ = 0;
     bool manual_reset_requested_ = false;
+    std::shared_ptr<EventBus> event_bus_;
+    std::string zone_id_ = "zone-1";
 };
 
 /** @brief Nome stabile dello stato operativo per log e serializzazione. */

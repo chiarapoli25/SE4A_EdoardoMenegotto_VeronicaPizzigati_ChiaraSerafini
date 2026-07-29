@@ -1,4 +1,5 @@
 #include "smarthydro/edge_runtime.hpp"
+#include "smarthydro/event_bus.hpp"
 
 #include <algorithm>
 #include <array>
@@ -213,6 +214,29 @@ bool EdgeRuntime::request_manual_reset() noexcept {
     return true;
 }
 
+void EdgeRuntime::attach_event_bus(
+    std::shared_ptr<EventBus> event_bus,
+    std::string zone_id) {
+    if (!event_bus) {
+        throw std::invalid_argument(
+            "edge runtime requires a non-null event bus");
+    }
+    if (zone_id.empty()) {
+        throw std::invalid_argument(
+            "edge runtime zone identifier must not be empty");
+    }
+    event_bus_ = std::move(event_bus);
+    zone_id_ = std::move(zone_id);
+}
+
+void EdgeRuntime::detach_event_bus() noexcept {
+    event_bus_.reset();
+}
+
+const std::string& EdgeRuntime::zone_id() const noexcept {
+    return zone_id_;
+}
+
 double EdgeRuntime::cumulative_phase_dose_milliliters(
     ControlledVariable variable) const {
     return cumulative_phase_dose_milliliters_[
@@ -317,12 +341,25 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
                 "runtime started in phase " + result.phase_name,
             });
     } else if (phase_index != *reported_phase_index_) {
+        const auto previous_phase_name =
+            control_system_.recipe()
+                .phases[*reported_phase_index_]
+                .name;
         result.events.push_back(
             {
                 EdgeEventType::RECIPE_PHASE_CHANGED,
                 result.start_time_seconds,
                 "recipe phase changed to " + result.phase_name,
             });
+        if (event_bus_) {
+            event_bus_->publish(
+                RecipePhaseChanged{
+                    zone_id_,
+                    result.start_time_seconds,
+                    previous_phase_name,
+                    result.phase_name,
+                });
+        }
     }
     reported_phase_index_ = phase_index;
     result.readings = read_sensors();
@@ -333,6 +370,7 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         result.actuator_command = actuators_->command();
         result.actuator_output = actuators_->output();
         result.environment_state = environment_->state();
+        publish_telemetry(result);
         return result;
     }
 
@@ -395,15 +433,23 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             control_system_.execute(variable, request);
     }
 
+    bool command_executed = false;
     if (!update_operational_state(result)) {
         apply_safe_fallback(delta_time_seconds, result, false);
     } else {
         try {
             apply_decisions(delta_time_seconds, result);
+            command_executed = true;
         } catch (const std::exception& error) {
+            const std::string diagnostic =
+                "actuator command failed: " +
+                std::string(error.what());
+            publish_command_failed(
+                result.start_time_seconds,
+                diagnostic);
             transition_operational_state(
                 OperationalState::EMERGENCY_LOCKDOWN,
-                "actuator command failed: " + std::string(error.what()),
+                diagnostic,
                 result);
             apply_safe_fallback(delta_time_seconds, result, false);
         }
@@ -414,6 +460,10 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     result.actuator_command = actuators_->command();
     result.actuator_output = actuators_->output();
     result.environment_state = environment_->state();
+    if (command_executed) {
+        publish_command_executed(result);
+    }
+    publish_telemetry(result);
     return result;
 }
 
@@ -538,6 +588,16 @@ void EdgeRuntime::transition_operational_state(
             previous_state,
             next_state,
         });
+    if (event_bus_) {
+        event_bus_->publish(
+            StateChanged{
+                zone_id_,
+                result.start_time_seconds,
+                previous_state,
+                next_state,
+                reason,
+            });
+    }
     if (next_state == OperationalState::EMERGENCY_LOCKDOWN) {
         manual_reset_requested_ = false;
         result.events.push_back(
@@ -548,6 +608,14 @@ void EdgeRuntime::transition_operational_state(
                 previous_state,
                 next_state,
             });
+        if (event_bus_) {
+            event_bus_->publish(
+                EmergencyTriggered{
+                    zone_id_,
+                    result.start_time_seconds,
+                    reason,
+                });
+        }
     }
 }
 
@@ -755,6 +823,55 @@ void EdgeRuntime::update_dose_histories(
         daily_dose_milliliters_[index] += dose;
         seconds_since_last_dose_[index] = 0.0;
     }
+}
+
+void EdgeRuntime::publish_telemetry(
+    const EdgeStepResult& result) noexcept {
+    if (!event_bus_) {
+        return;
+    }
+    event_bus_->publish(
+        TelemetrySample{
+            zone_id_,
+            result.sequence_number,
+            result.environment_state.simulation_time_seconds,
+            result.operational_state,
+            result.readings,
+            result.actuator_command,
+            result.actuator_output,
+            result.environment_state,
+        });
+}
+
+void EdgeRuntime::publish_command_executed(
+    const EdgeStepResult& result) noexcept {
+    if (!event_bus_) {
+        return;
+    }
+    event_bus_->publish(
+        CommandExecuted{
+            zone_id_,
+            result.start_time_seconds,
+            result.actuator_command,
+            result.actuator_output,
+            result.delivered_water_liters,
+            result.delivered_fertilizer_milliliters,
+        });
+}
+
+void EdgeRuntime::publish_command_failed(
+    double timestamp_seconds,
+    const std::string& diagnostic) noexcept {
+    if (!event_bus_) {
+        return;
+    }
+    event_bus_->publish(
+        CommandFailed{
+            zone_id_,
+            timestamp_seconds,
+            "actuator-bank",
+            diagnostic,
+        });
 }
 
 }  // namespace smarthydro

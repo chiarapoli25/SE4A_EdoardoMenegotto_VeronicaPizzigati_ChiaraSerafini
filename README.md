@@ -96,6 +96,26 @@ essere inserito senza cambiare `EdgeRuntime`, `RecipeControlSystem` o gli
 algoritmi delle Strategy. I cinque adapter sensore simulati condividono un
 campione sincronizzato per ogni tick.
 
+### Observer ed EventBus
+
+`EventBus` distribuisce gli eventi dell'Edge senza rendere `EdgeRuntime`
+dipendente da console, file o rete. Il runtime pubblica automaticamente:
+
+- `TelemetrySample`;
+- `StateChanged` e `EmergencyTriggered`;
+- `RecipePhaseChanged`;
+- `CommandExecuted` e `CommandFailed`.
+
+Il contratto include anche `FaultDetected`, `StrategyChanged` e
+`BackendUnavailable`. `ConsoleLogger` stampa gli eventi, `CsvLogger` li salva
+in un CSV uniforme e `BackendClient` usa una funzione di trasporto iniettabile.
+Se il trasporto fallisce, il client pubblica `BackendUnavailable` senza
+interrompere il controllo locale.
+
+L'eseguibile principale collega un `ConsoleLogger` alla zona `zone-1`. Altri
+observer possono essere registrati con `EventBus::subscribe()` e rimossi con
+`unsubscribe()`; `EdgeRuntime::detach_event_bus()` disattiva la pubblicazione.
+
 I test C++ di ambiente, sensori, attuatori e controllori usano GoogleTest 1.15.2. CMake
 scarica automaticamente la versione fissata al primo comando di configurazione
 con `BUILD_TESTING=ON`; le esecuzioni successive riutilizzano la copia nella

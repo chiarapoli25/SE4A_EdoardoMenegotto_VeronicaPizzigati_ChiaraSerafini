@@ -1,4 +1,5 @@
 #include "smarthydro/edge_runtime.hpp"
+#include "smarthydro/event_bus.hpp"
 #include "smarthydro/recipe_json.hpp"
 
 #include <array>
@@ -7,6 +8,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -224,6 +226,11 @@ int main(int argc, char* argv[]) {
         auto recipe =
             smarthydro::load_recipe_json(options.recipe_path.string());
         smarthydro::EdgeRuntime runtime(std::move(recipe));
+        auto event_bus = std::make_shared<smarthydro::EventBus>();
+        auto console_logger =
+            std::make_shared<smarthydro::ConsoleLogger>(std::cout);
+        event_bus->subscribe(console_logger);
+        runtime.attach_event_bus(event_bus, "zone-1");
         runtime.confirm_all_configurations();
 
         const auto& active_recipe =

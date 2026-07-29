@@ -61,6 +61,19 @@ target_link_libraries(control_system
 )
 set_target_properties(control_system PROPERTIES CXX_EXTENSIONS OFF)
 
+# EventBus Observer e consumer standard per console, CSV e backend.
+add_library(event_bus event_bus.cpp)
+target_include_directories(event_bus
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(event_bus PUBLIC cxx_std_17)
+target_link_libraries(event_bus
+    PUBLIC
+        control_system
+        io_adapters
+)
+set_target_properties(event_bus PROPERTIES CXX_EXTENSIONS OFF)
+
 # Serializzazione JSON separata dal dominio per non esporre la dipendenza.
 add_library(recipe_json recipe_json.cpp)
 target_include_directories(recipe_json
@@ -85,6 +98,7 @@ target_link_libraries(edge_runtime
     PUBLIC
         control_system
         io_adapters
+        event_bus
 )
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 

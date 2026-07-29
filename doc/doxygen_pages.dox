@@ -107,6 +107,31 @@
  * - @ref smarthydro::EdgeEvent descrive gli eventi osservabili prodotti dal
  *   runtime, come avvio e cambio della fase colturale.
  *
+ * @subsection edge_observer_components Observer ed EventBus
+ *
+ * @ref smarthydro::EventBus implementa il pattern Observer senza accoppiare il
+ * runtime ai consumer. Conserva riferimenti deboli, costruisce uno snapshot
+ * degli observer sotto lock e invoca i callback senza lock. Le eccezioni di un
+ * observer vengono isolate e non interrompono il controllo locale.
+ *
+ * @ref smarthydro::EdgeDomainEvent comprende:
+ *
+ * - @ref smarthydro::TelemetrySample;
+ * - @ref smarthydro::StateChanged;
+ * - @ref smarthydro::FaultDetected;
+ * - @ref smarthydro::StrategyChanged;
+ * - @ref smarthydro::RecipePhaseChanged;
+ * - @ref smarthydro::EmergencyTriggered;
+ * - @ref smarthydro::BackendUnavailable;
+ * - @ref smarthydro::CommandExecuted;
+ * - @ref smarthydro::CommandFailed.
+ *
+ * Gli observer forniti sono @ref smarthydro::ConsoleLogger,
+ * @ref smarthydro::CsvLogger e @ref smarthydro::BackendClient. Quest'ultimo
+ * riceve una funzione di trasporto iniettata: HTTP, MQTT o una coda possono
+ * essere aggiunti senza cambiare il bus. Un fallimento del trasporto pubblica
+ * `BackendUnavailable` senza propagare l'errore al runtime.
+ *
  * @section edge_runtime Runtime operativo
  *
  * @subsection edge_runtime_injection Dependency injection
@@ -129,6 +154,12 @@
  * 5. avanza attuatori e ambiente;
  * 6. aggiorna storico giornaliero e di fase delle dosi;
  * 7. restituisce telemetria, stato ed eventi.
+ *
+ * Quando e collegato tramite EdgeRuntime::attach_event_bus(), il runtime
+ * pubblica inoltre telemetria, cambio di fase e stato, ingresso in emergenza
+ * ed esito dell'applicazione dei comandi. `FaultDetected` e `StrategyChanged`
+ * sono gia parte del contratto del bus e saranno prodotti dai rispettivi
+ * componenti quando collegati.
  *
  * @subsection edge_runtime_output Risultato del ciclo
  *
