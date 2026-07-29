@@ -35,6 +35,7 @@
  * | Controllo | @ref smarthydro::ThresholdController, @ref smarthydro::PidController, @ref smarthydro::PredictiveController | Calcola i comandi |
  * | Ricette | @ref smarthydro::RecipeControlSystem | Seleziona fase, Strategy e limiti |
  * | Runtime | @ref smarthydro::EdgeRuntime | Coordina un ciclo completo |
+ * | Multi-zona | @ref smarthydro::ZoneController, @ref smarthydro::GreenhouseManager | Isola e coordina piu zone |
  * | Eventi | @ref smarthydro::EventBus | Distribuisce telemetria e cambi di stato |
  * | Comandi | @ref smarthydro::RuntimeCommandProcessor | Esegue richieste idempotenti |
  *
@@ -67,6 +68,17 @@
  *
  * `EdgeStepResult` contiene progressivo, letture, decisioni, quantita
  * erogate, stato degli attuatori, ambiente ed eventi del ciclo.
+ *
+ * @section edge_multizone Multi-zona
+ *
+ * Ogni @ref smarthydro::ZoneController possiede un @ref smarthydro::EdgeRuntime
+ * e una cache dei comandi indipendenti. @ref smarthydro::GreenhouseManager
+ * registra le zone e offre `step_zone()`, `step_all()` ed `execute_command()`.
+ *
+ * Le zone condividono soltanto l'EventBus; ricetta, fase, sensori, ambiente,
+ * attuatori, FSM, fault e sequenze restano locali. Gli identificatori sono
+ * stringhe e possono rappresentare gerarchie, per esempio
+ * `reparto-a/settore-2`.
  *
  * @section edge_safety Sicurezza e FSM
  *

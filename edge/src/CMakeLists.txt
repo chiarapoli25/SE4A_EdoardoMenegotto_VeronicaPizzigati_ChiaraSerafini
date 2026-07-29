@@ -149,6 +149,22 @@ target_link_libraries(runtime_commands
 )
 set_target_properties(runtime_commands PROPERTIES CXX_EXTENSIONS OFF)
 
+# Coordinamento multi-zona senza condivisione dello stato operativo.
+add_library(
+    greenhouse_manager
+    runtime/greenhouse_manager.cpp
+)
+target_include_directories(greenhouse_manager
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(greenhouse_manager PUBLIC cxx_std_17)
+target_link_libraries(greenhouse_manager
+    PUBLIC
+        runtime_commands
+        event_bus
+)
+set_target_properties(greenhouse_manager PROPERTIES CXX_EXTENSIONS OFF)
+
 # NOME DELL'ESEGUIBILE PRINCIPALE:
 # "edge" e sia il nome del target CMake sia, per impostazione
 # predefinita, il nome del file generato in build/bin. Per cambiarlo occorre
@@ -158,7 +174,7 @@ target_compile_features(edge PRIVATE cxx_std_17)
 # Collega all'eseguibile le librerie necessarie.
 target_link_libraries(edge
     PRIVATE
-        runtime_commands
+        greenhouse_manager
         recipe_json
 )
 target_compile_definitions(edge

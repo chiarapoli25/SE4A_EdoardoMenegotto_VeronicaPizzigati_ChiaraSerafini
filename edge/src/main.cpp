@@ -1,5 +1,5 @@
-#include "smarthydro/edge_runtime.hpp"
 #include "smarthydro/event_bus.hpp"
+#include "smarthydro/greenhouse_manager.hpp"
 #include "smarthydro/recipe_json.hpp"
 
 #include <array>
@@ -20,6 +20,7 @@ constexpr double kDefaultStepSeconds = 900.0;
 
 struct CommandLineOptions {
     std::filesystem::path recipe_path = SMARTHYDRO_DEFAULT_RECIPE_PATH;
+    std::size_t zones = 1;
     std::size_t steps = 1;
     double step_seconds = kDefaultStepSeconds;
     bool show_help = false;
@@ -90,6 +91,15 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
                 parse_positive_size(argv[index], "--steps");
             continue;
         }
+        if (argument == "--zones") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--zones requires a value");
+            }
+            options.zones =
+                parse_positive_size(argv[index], "--zones");
+            continue;
+        }
         if (argument == "--step-seconds") {
             if (++index >= argc) {
                 throw std::invalid_argument(
@@ -111,6 +121,7 @@ void print_help(const char* executable) {
         << "Options:\n"
         << "  --recipe PATH       Recipe JSON to load (default: "
         << SMARTHYDRO_DEFAULT_RECIPE_PATH << ")\n"
+        << "  --zones N           Number of independent zones (default: 1)\n"
         << "  --steps N           Number of control cycles (default: 1)\n"
         << "  --step-seconds SEC  Simulated seconds per cycle (default: 900)\n"
         << "  -h, --help          Show this help\n";
@@ -127,11 +138,13 @@ void print_optional(
 }
 
 void print_step(
+    const std::string& zone_id,
     std::size_t step,
     std::size_t step_count,
     const smarthydro::EdgeStepResult& result) {
     std::cout
-        << "\nCycle " << step << '/' << step_count
+        << "\nZone " << zone_id
+        << " | cycle " << step << '/' << step_count
         << " | sequence=" << result.sequence_number
         << " | t=" << result.start_time_seconds / 3600.0 << " h"
         << " | phase=" << result.phase_name
@@ -223,25 +236,33 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        auto recipe =
+        const auto recipe =
             smarthydro::load_recipe_json(options.recipe_path.string());
-        smarthydro::EdgeRuntime runtime(std::move(recipe));
         auto event_bus = std::make_shared<smarthydro::EventBus>();
         auto console_logger =
             std::make_shared<smarthydro::ConsoleLogger>(std::cout);
         event_bus->subscribe(console_logger);
-        runtime.attach_event_bus(event_bus, "zone-1");
-        runtime.confirm_all_configurations();
+        smarthydro::GreenhouseManager greenhouse(event_bus);
+        for (std::size_t index = 0; index < options.zones; ++index) {
+            auto& zone = greenhouse.add_simulated_zone(
+                "zone-" + std::to_string(index + 1),
+                recipe,
+                {},
+                {},
+                {},
+                static_cast<std::uint32_t>(0x53484D31U + index),
+                static_cast<std::uint32_t>(0x53484D32U + index));
+            zone.confirm_all_configurations();
+        }
 
-        const auto& active_recipe =
-            runtime.control_system().recipe();
         std::cout
             << "SmartHydro Edge Controller\n"
             << "Version: 0.1.0\n"
             << "Status: recipe runtime ready\n"
-            << "Recipe: " << active_recipe.id
-            << " v" << active_recipe.version
-            << " (" << active_recipe.plant_type << ")\n"
+            << "Zones: " << greenhouse.size() << "\n"
+            << "Recipe: " << recipe.id
+            << " v" << recipe.version
+            << " (" << recipe.plant_type << ")\n"
             << "Recipe file: "
             << std::filesystem::absolute(options.recipe_path)
             << "\nConfigurations: locally validated and confirmed\n"
@@ -250,10 +271,15 @@ int main(int argc, char* argv[]) {
         for (std::size_t step = 1;
              step <= options.steps;
              ++step) {
-            print_step(
-                step,
-                options.steps,
-                runtime.step(options.step_seconds));
+            const auto results =
+                greenhouse.step_all(options.step_seconds);
+            for (const auto& [zone_id, result] : results) {
+                print_step(
+                    zone_id,
+                    step,
+                    options.steps,
+                    result);
+            }
         }
         return 0;
     } catch (const std::exception& error) {

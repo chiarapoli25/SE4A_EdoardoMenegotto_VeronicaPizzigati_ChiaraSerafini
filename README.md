@@ -118,6 +118,24 @@ I DTO del ciclo e della FSM sono dichiarati in `edge_runtime_types.hpp`, mentre
 circolari: per esempio `EventBus` dipende soltanto dai tipi pubblicati e non
 dall'intera classe runtime.
 
+### Multi-zona
+
+`ZoneController` racchiude tutto lo stato di una zona: ambiente, sensori,
+attuatori, ricetta, controllori, FSM, fault, storico e sequenze. Ogni zona ha
+anche il proprio `RuntimeCommandProcessor`, quindi comandi e chiavi di
+idempotenza non interferiscono con le altre.
+
+`GreenhouseManager` registra piu zone e permette di avanzarne una con
+`step_zone()` oppure tutte con `step_all()`. Soltanto l'`EventBus` viene
+condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
+possono descrivere reparti e settori, ad esempio `reparto-a/settore-nord`.
+
+L'eseguibile accetta `--zones N`; per avviare due zone:
+
+```bash
+./edge/build/bin/edge --zones 2 --steps 4 --step-seconds 60
+```
+
 ### Observer ed EventBus
 
 `EventBus` distribuisce gli eventi dell'Edge senza rendere `EdgeRuntime`
