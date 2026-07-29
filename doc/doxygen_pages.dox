@@ -99,6 +99,8 @@
  *   Strategy, verifica le conferme e applica i limiti di sicurezza.
  * - @ref smarthydro::EdgeRuntime collega ricetta, sensori, controllori,
  *   attuatori e ambiente nel ciclo operativo locale.
+ * - @ref smarthydro::RuntimeCommandProcessor riceve i comandi operativi,
+ *   applica la chiave di idempotenza e restituisce un esito stabile.
  *
  * @subsection edge_output_components Risultati ed eventi
  *
@@ -157,9 +159,48 @@
  *
  * Quando e collegato tramite EdgeRuntime::attach_event_bus(), il runtime
  * pubblica inoltre telemetria, cambio di fase e stato, ingresso in emergenza
- * ed esito dell'applicazione dei comandi. `FaultDetected` e `StrategyChanged`
- * sono gia parte del contratto del bus e saranno prodotti dai rispettivi
- * componenti quando collegati.
+ * ed esito dell'applicazione dei comandi. `FaultDetected` viene pubblicato
+ * dalla fault injection e `StrategyChanged` dal comando di cambio Strategy.
+ *
+ * @subsection edge_runtime_commands Comandi runtime idempotenti
+ *
+ * @ref smarthydro::RuntimeCommandProcessor rappresenta il punto di ingresso
+ * locale per i comandi provenienti in futuro da HTTP, MQTT o da una coda.
+ * Ogni @ref smarthydro::RuntimeCommandEnvelope contiene un `command_id` non
+ * vuoto e uno dei payload tipizzati supportati:
+ *
+ * - @ref smarthydro::ChangeStrategyCommand modifica Strategy e parametri,
+ *   incrementando la versione e invalidando le conferme precedenti;
+ * - @ref smarthydro::LoadRecipeCommand valida una versione di ricetta maggiore,
+ *   ferma gli attuatori e riavvia la timeline dalla prima fase;
+ * - @ref smarthydro::ConfirmConfigurationCommand e
+ *   @ref smarthydro::RejectConfigurationCommand registrano la revisione
+ *   agronomica di una variabile;
+ * - @ref smarthydro::InjectFaultCommand e
+ *   @ref smarthydro::ResetFaultCommand attivano e rimuovono un guasto sintetico
+ *   persistente, identificato senza confonderlo con un guasto reale;
+ * - @ref smarthydro::AdvanceRecipePhaseCommand forza la fase successiva;
+ * - @ref smarthydro::EmergencyStopCommand ferma immediatamente gli attuatori
+ *   ed entra in `EmergencyLockdown`;
+ * - @ref smarthydro::ResetEmergencyCommand richiede il normale recovery
+ *   controllato della FSM.
+ *
+ * Il primo risultato viene conservato per l'intera vita del processore.
+ * Ripetendo lo stesso `command_id`, il payload non viene eseguito nuovamente e
+ * viene restituito lo stesso @ref smarthydro::RuntimeCommandResult con
+ * `replayed=true`. Anche un rifiuto viene memorizzato: un retry non puo quindi
+ * trasformare accidentalmente un comando gia elaborato in una nuova azione.
+ *
+ * Il caricamento di una ricetta mantiene lo stato fisico corrente della zona,
+ * ma azzera il tempo colturale e le dosi cumulative della fase. Un cambio di
+ * substrato viene rifiutato perche richiederebbe la riconfigurazione fisica
+ * dell'ambiente. Le nuove configurazioni restano non confermate finche non
+ * arrivano gli appositi comandi.
+ *
+ * La fault injection e volutamente separata dai sensori: simula un guasto
+ * persistente che la FSM valuta a ogni tick. Rimuovere il fault non sblocca
+ * automaticamente un'emergenza; serve `ResetEmergency` e almeno un ciclo sano
+ * di verifica, seguito dalla normale procedura di recovery.
  *
  * @subsection edge_runtime_output Risultato del ciclo
  *

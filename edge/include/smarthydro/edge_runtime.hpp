@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace smarthydro {
@@ -184,6 +185,60 @@ public:
     const ActuatorOutput& actuator_output() const noexcept;
     /** @brief Restituisce lo stato operativo corrente della zona. */
     OperationalState operational_state() const noexcept;
+    /** @brief Restituisce il tempo trascorso nella ricetta corrente. */
+    double elapsed_recipe_hours() const noexcept;
+    /** @brief Restituisce il nome della fase attualmente selezionata. */
+    const std::string& active_phase_name() const;
+    /**
+     * @brief Cambia la Strategy di una variabile e invalida le conferme.
+     *
+     * Pubblica StrategyChanged quando e collegato un EventBus.
+     */
+    void change_strategy(
+        ControlledVariable variable,
+        StrategyType strategy,
+        ControllerParameters parameters);
+    /**
+     * @brief Sostituisce la ricetta e ne riavvia il tempo dalla prima fase.
+     *
+     * Il substrato non puo cambiare a runtime perche appartiene alla
+     * configurazione fisica dell'ambiente.
+     */
+    void replace_recipe(Recipe recipe);
+    /** @brief Conferma la configurazione della variabile indicata. */
+    ConfirmationResult confirm_configuration(ControlledVariable variable);
+    /** @brief Rifiuta la configurazione della variabile indicata. */
+    void reject_configuration(ControlledVariable variable);
+    /**
+     * @brief Avanza immediatamente alla fase successiva della ricetta.
+     * @return false quando la ricetta si trova gia nell'ultima fase.
+     */
+    bool advance_recipe_phase();
+    /**
+     * @brief Registra un guasto sintetico persistente per la simulazione.
+     *
+     * @param fault_id Identificatore non vuoto usato dal successivo reset.
+     * @param severity Severita Recoverable o Critical.
+     * @param diagnostic Descrizione non vuota del guasto simulato.
+     * @throws std::invalid_argument Se i parametri non sono validi o il fault
+     * e gia attivo.
+     */
+    void inject_fault(
+        std::string fault_id,
+        ControlFaultSeverity severity,
+        std::string diagnostic);
+    /**
+     * @brief Rimuove un guasto sintetico precedentemente iniettato.
+     * @return true se il fault era attivo.
+     */
+    bool reset_injected_fault(const std::string& fault_id) noexcept;
+    /** @brief Indica se il fault sintetico specificato e attivo. */
+    bool has_injected_fault(const std::string& fault_id) const noexcept;
+    /**
+     * @brief Arresta subito gli attuatori ed entra in EmergencyLockdown.
+     * @return true se il comando ha prodotto una nuova transizione.
+     */
+    bool trigger_emergency_stop(const std::string& reason);
     /**
      * @brief Richiede l'uscita manuale da EmergencyLockdown.
      *
@@ -215,7 +270,13 @@ public:
     double daily_dose_milliliters(ControlledVariable variable) const;
 
 private:
+    struct InjectedFault {
+        ControlFaultSeverity severity = ControlFaultSeverity::NONE;
+        std::string diagnostic;
+    };
+
     ControlRequest base_request(double delta_time_seconds) const;
+    double elapsed_recipe_seconds() const noexcept;
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
     void reset_histories_if_needed();
     SensorReadings read_sensors();
@@ -263,6 +324,10 @@ private:
     std::size_t consecutive_recoverable_faults_ = 0;
     std::size_t consecutive_healthy_steps_ = 0;
     bool manual_reset_requested_ = false;
+    double recipe_start_time_seconds_ = 0.0;
+    double recipe_time_offset_seconds_ = 0.0;
+    SoilType active_substrate_ = SoilType::AERATED_UNIVERSAL;
+    std::unordered_map<std::string, InjectedFault> injected_faults_;
     std::shared_ptr<EventBus> event_bus_;
     std::string zone_id_ = "zone-1";
 };

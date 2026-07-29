@@ -102,6 +102,18 @@ target_link_libraries(edge_runtime
 )
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 
+# Ricevitore idempotente dei comandi operativi diretti al runtime.
+add_library(runtime_commands runtime_commands.cpp)
+target_include_directories(runtime_commands
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(runtime_commands PUBLIC cxx_std_17)
+target_link_libraries(runtime_commands
+    PUBLIC
+        edge_runtime
+)
+set_target_properties(runtime_commands PROPERTIES CXX_EXTENSIONS OFF)
+
 # NOME DELL'ESEGUIBILE PRINCIPALE:
 # "edge" e sia il nome del target CMake sia, per impostazione
 # predefinita, il nome del file generato in build/bin. Per cambiarlo occorre
@@ -111,7 +123,7 @@ target_compile_features(edge PRIVATE cxx_std_17)
 # Collega all'eseguibile le librerie necessarie.
 target_link_libraries(edge
     PRIVATE
-        edge_runtime
+        runtime_commands
         recipe_json
 )
 target_compile_definitions(edge

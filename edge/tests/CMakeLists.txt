@@ -125,6 +125,22 @@ target_compile_definitions(edge_runtime_tests
 set_target_properties(edge_runtime_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(edge_runtime_tests)
 
+# Test dei comandi runtime, degli esiti e della cache di idempotenza.
+add_executable(runtime_command_tests runtime_command_tests.cpp)
+target_link_libraries(runtime_command_tests
+    PRIVATE
+        runtime_commands
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(runtime_command_tests PRIVATE cxx_std_17)
+target_compile_definitions(runtime_command_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(runtime_command_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(runtime_command_tests)
+
 # Il main deve caricare la ricetta e completare almeno un ciclo senza servizi
 # esterni o interazione utente.
 add_test(

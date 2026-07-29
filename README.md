@@ -112,6 +112,31 @@ in un CSV uniforme e `BackendClient` usa una funzione di trasporto iniettabile.
 Se il trasporto fallisce, il client pubblica `BackendUnavailable` senza
 interrompere il controllo locale.
 
+### Comandi runtime
+
+`RuntimeCommandProcessor` e il punto di ingresso idempotente dei comandi
+operativi. Ogni richiesta contiene un `command_id` e un payload tipizzato:
+
+- cambio della Strategy;
+- caricamento di una nuova versione della ricetta;
+- conferma o rifiuto di una configurazione;
+- fault injection e reset del fault sintetico;
+- avanzamento forzato della fase;
+- arresto di emergenza e richiesta di reset da `EmergencyLockdown`.
+
+Il primo esito, positivo o negativo, viene memorizzato. Un retry con lo stesso
+`command_id` non riesegue il comando e restituisce lo stesso risultato con
+`replayed=true`. Il processore converte inoltre gli errori di validazione in un
+`RuntimeCommandResult` rifiutato, evitando di propagare eccezioni al futuro
+trasporto HTTP o MQTT.
+
+Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
+della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla
+prima fase e invalida le conferme. Il fault sintetico rimane attivo fino al
+relativo reset. Dopo un `EmergencyStop`, `ResetEmergency` abilita soltanto il
+recovery controllato: gli attuatori restano fermi finche la FSM non verifica
+campioni sani.
+
 L'eseguibile principale collega un `ConsoleLogger` alla zona `zone-1`. Altri
 observer possono essere registrati con `EventBus::subscribe()` e rimossi con
 `unsubscribe()`; `EdgeRuntime::detach_event_bus()` disattiva la pubblicazione.

@@ -140,6 +140,9 @@ EdgeRuntime::EdgeRuntime(
       lighting_(*actuators_),
       fertilizer_valves_(*actuators_),
       state_policy_(require_valid_state_policy(state_policy)) {
+    recipe_start_time_seconds_ =
+        environment_->state().simulation_time_seconds;
+    active_substrate_ = *control_system_.recipe().substrate;
     seconds_since_last_dose_.fill(
         std::numeric_limits<double>::max() / 4.0);
 }
@@ -170,6 +173,9 @@ EdgeRuntime::EdgeRuntime(
                 "sensor adapter is stored in the wrong channel");
         }
     }
+    recipe_start_time_seconds_ =
+        environment_->state().simulation_time_seconds;
+    active_substrate_ = *control_system_.recipe().substrate;
     seconds_since_last_dose_.fill(
         std::numeric_limits<double>::max() / 4.0);
 }
@@ -204,6 +210,162 @@ const ActuatorOutput& EdgeRuntime::actuator_output() const noexcept {
 
 OperationalState EdgeRuntime::operational_state() const noexcept {
     return operational_state_;
+}
+
+double EdgeRuntime::elapsed_recipe_hours() const noexcept {
+    return elapsed_recipe_seconds() / kSecondsPerHour;
+}
+
+const std::string& EdgeRuntime::active_phase_name() const {
+    return control_system_.recipe()
+        .phases[active_phase_index(elapsed_recipe_hours())]
+        .name;
+}
+
+void EdgeRuntime::change_strategy(
+    ControlledVariable variable,
+    StrategyType strategy,
+    ControllerParameters parameters) {
+    const auto index = controlled_variable_index(variable);
+    const auto previous_strategy =
+        control_system_.recipe().controllers[index].selected_strategy;
+    control_system_.select_strategy(
+        variable, strategy, std::move(parameters));
+    if (event_bus_) {
+        event_bus_->publish(
+            StrategyChanged{
+                zone_id_,
+                environment_->state().simulation_time_seconds,
+                variable,
+                previous_strategy,
+                strategy,
+            });
+    }
+}
+
+void EdgeRuntime::replace_recipe(Recipe recipe) {
+    RecipeControlSystem::validate_recipe(recipe);
+    if (*recipe.substrate != active_substrate_) {
+        throw std::invalid_argument(
+            "replacement recipe substrate differs from the physical zone");
+    }
+    actuators_->stop_all();
+    control_system_.replace_recipe(std::move(recipe));
+    recipe_start_time_seconds_ =
+        environment_->state().simulation_time_seconds;
+    recipe_time_offset_seconds_ = 0.0;
+    reported_phase_index_.reset();
+    history_phase_index_ = kControlledVariableCount;
+    cumulative_phase_dose_milliliters_.fill(0.0);
+    seconds_since_last_dose_.fill(
+        std::numeric_limits<double>::max() / 4.0);
+}
+
+ConfirmationResult EdgeRuntime::confirm_configuration(
+    ControlledVariable variable) {
+    return control_system_.confirm_configuration(variable);
+}
+
+void EdgeRuntime::reject_configuration(ControlledVariable variable) {
+    control_system_.reject_configuration(variable);
+}
+
+bool EdgeRuntime::advance_recipe_phase() {
+    const auto current_index =
+        active_phase_index(elapsed_recipe_hours());
+    const auto& phases = control_system_.recipe().phases;
+    if (current_index + 1 >= phases.size()) {
+        return false;
+    }
+
+    double next_phase_start_hours = 0.0;
+    for (std::size_t index = 0; index <= current_index; ++index) {
+        next_phase_start_hours += phases[index].duration_hours;
+    }
+    const double unshifted_recipe_seconds =
+        environment_->state().simulation_time_seconds -
+        recipe_start_time_seconds_;
+    recipe_time_offset_seconds_ =
+        next_phase_start_hours * kSecondsPerHour -
+        unshifted_recipe_seconds;
+
+    const auto& previous_phase = phases[current_index].name;
+    const auto& current_phase = phases[current_index + 1].name;
+    history_phase_index_ = current_index + 1;
+    cumulative_phase_dose_milliliters_.fill(0.0);
+    reported_phase_index_ = current_index + 1;
+    if (event_bus_) {
+        event_bus_->publish(
+            RecipePhaseChanged{
+                zone_id_,
+                environment_->state().simulation_time_seconds,
+                previous_phase,
+                current_phase,
+            });
+    }
+    return true;
+}
+
+void EdgeRuntime::inject_fault(
+    std::string fault_id,
+    ControlFaultSeverity severity,
+    std::string diagnostic) {
+    if (fault_id.empty() || diagnostic.empty()) {
+        throw std::invalid_argument(
+            "injected fault requires identifier and diagnostic");
+    }
+    if (severity != ControlFaultSeverity::RECOVERABLE &&
+        severity != ControlFaultSeverity::CRITICAL) {
+        throw std::invalid_argument(
+            "injected fault severity must be Recoverable or Critical");
+    }
+    const auto [iterator, inserted] = injected_faults_.emplace(
+        fault_id,
+        InjectedFault{severity, diagnostic});
+    if (!inserted) {
+        throw std::invalid_argument(
+            "injected fault identifier is already active");
+    }
+    if (event_bus_) {
+        event_bus_->publish(
+            FaultDetected{
+                zone_id_,
+                environment_->state().simulation_time_seconds,
+                iterator->first,
+                iterator->second.severity,
+                iterator->second.diagnostic,
+            });
+    }
+}
+
+bool EdgeRuntime::reset_injected_fault(
+    const std::string& fault_id) noexcept {
+    return !fault_id.empty() && injected_faults_.erase(fault_id) != 0;
+}
+
+bool EdgeRuntime::has_injected_fault(
+    const std::string& fault_id) const noexcept {
+    return injected_faults_.find(fault_id) != injected_faults_.end();
+}
+
+bool EdgeRuntime::trigger_emergency_stop(const std::string& reason) {
+    if (reason.empty()) {
+        throw std::invalid_argument(
+            "emergency stop reason must not be empty");
+    }
+    actuators_->stop_all();
+    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
+        return false;
+    }
+    EdgeStepResult transition;
+    transition.start_time_seconds =
+        environment_->state().simulation_time_seconds;
+    transition.operational_state = operational_state_;
+    transition_operational_state(
+        OperationalState::EMERGENCY_LOCKDOWN,
+        reason,
+        transition);
+    return true;
 }
 
 bool EdgeRuntime::request_manual_reset() noexcept {
@@ -251,14 +413,23 @@ double EdgeRuntime::daily_dose_milliliters(
 ControlRequest EdgeRuntime::base_request(double delta_time_seconds) const {
     const double elapsed_seconds =
         environment_->state().simulation_time_seconds;
-    const double elapsed_hours = elapsed_seconds / kSecondsPerHour;
+    const double elapsed_hours = elapsed_recipe_hours();
 
     ControlRequest request;
     request.controller_input.delta_time_seconds = delta_time_seconds;
     request.elapsed_recipe_hours = elapsed_hours;
     request.simulated_time_seconds = elapsed_seconds;
-    request.hour_of_day = hour_of_day(elapsed_hours);
+    request.hour_of_day =
+        hour_of_day(elapsed_seconds / kSecondsPerHour);
     return request;
+}
+
+double EdgeRuntime::elapsed_recipe_seconds() const noexcept {
+    return std::max(
+        0.0,
+        environment_->state().simulation_time_seconds -
+            recipe_start_time_seconds_ +
+            recipe_time_offset_seconds_);
 }
 
 std::size_t EdgeRuntime::active_phase_index(
@@ -284,8 +455,7 @@ void EdgeRuntime::reset_histories_if_needed() {
         history_day_index_ = current_day;
     }
 
-    const auto phase = active_phase_index(
-        elapsed_seconds / kSecondsPerHour);
+    const auto phase = active_phase_index(elapsed_recipe_hours());
     if (phase != history_phase_index_) {
         cumulative_phase_dose_milliliters_.fill(0.0);
         history_phase_index_ = phase;
@@ -329,8 +499,7 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         environment_->state().simulation_time_seconds;
     result.duration_seconds = delta_time_seconds;
     result.operational_state = operational_state_;
-    const auto phase_index = active_phase_index(
-        result.start_time_seconds / kSecondsPerHour);
+    const auto phase_index = active_phase_index(elapsed_recipe_hours());
     result.phase_name =
         control_system_.recipe().phases[phase_index].name;
     if (!reported_phase_index_.has_value()) {
@@ -471,15 +640,31 @@ bool EdgeRuntime::update_operational_state(
     EdgeStepResult& result) {
     ControlFaultSeverity severity = ControlFaultSeverity::NONE;
     std::string reason;
+    for (const auto& [fault_id, fault] : injected_faults_) {
+        if (fault.severity == ControlFaultSeverity::CRITICAL ||
+            severity == ControlFaultSeverity::NONE) {
+            severity = fault.severity;
+            reason =
+                "injected fault " + fault_id + ": " +
+                fault.diagnostic;
+        }
+        if (severity == ControlFaultSeverity::CRITICAL) {
+            break;
+        }
+    }
     if (!result.readings.temperature_c.has_value() ||
         !std::isfinite(*result.readings.temperature_c)) {
-        severity = ControlFaultSeverity::RECOVERABLE;
-        reason = "temperature sensor input is invalid";
+        if (severity == ControlFaultSeverity::NONE) {
+            severity = ControlFaultSeverity::RECOVERABLE;
+            reason = "temperature sensor input is invalid";
+        }
     } else if (!result.readings.air_humidity_percent.has_value() ||
                !std::isfinite(
                    *result.readings.air_humidity_percent)) {
-        severity = ControlFaultSeverity::RECOVERABLE;
-        reason = "air humidity sensor input is invalid";
+        if (severity == ControlFaultSeverity::NONE) {
+            severity = ControlFaultSeverity::RECOVERABLE;
+            reason = "air humidity sensor input is invalid";
+        }
     }
     for (std::size_t index = 0;
          index < kControlledVariableCount;
