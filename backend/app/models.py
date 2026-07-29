@@ -19,7 +19,7 @@ quando la ricetta viene letta da JSON, e non sono quindi replicati qui.
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, model_validator
 
 
 # --- Struttura della serra --------------------------------------------------
@@ -68,7 +68,7 @@ class Zone(ZoneCreate):
     ## @brief Stato corrente del collegamento Edge.
     status: ZoneStatus = ZoneStatus.OFFLINE
     ## @brief Timestamp UTC dell'ultimo contatto Edge, oppure `None`.
-    last_edge_contact: str | None = None
+    last_edge_contact: AwareDatetime | None = None
 
 
 # --- Telemetria dei sensori ------------------------------------------------
@@ -122,6 +122,31 @@ class GreenhouseTelemetry(BaseModel):
         le=3000.0,
         description="PPFD della luce, in umol/(m2 s).",
     )
+
+
+class TelemetryCreate(GreenhouseTelemetry):
+    """@brief Campione di telemetria ricevuto dall'Edge Controller.
+
+    @details `sequence_number` identifica univocamente il campione all'interno
+    della zona e rende idempotenti i retry dell'Edge. `recorded_at` indica
+    quando la misura e stata prodotta e deve includere il fuso orario.
+    """
+
+    ## @brief Progressivo monotono generato dall'Edge per la singola zona.
+    sequence_number: int = Field(ge=0)
+    ## @brief Istante della misura completo di fuso orario.
+    recorded_at: AwareDatetime
+
+
+class TelemetrySample(TelemetryCreate):
+    """@brief Campione di telemetria persistito dal backend."""
+
+    ## @brief Identificativo interno assegnato da SQLite.
+    sample_id: int = Field(ge=1)
+    ## @brief Zona alla quale appartiene il campione.
+    zone_id: str
+    ## @brief Istante UTC nel quale il backend ha ricevuto il campione.
+    received_at: AwareDatetime
 
 
 # --- Enum condivisi dalla ricetta -------------------------------------------

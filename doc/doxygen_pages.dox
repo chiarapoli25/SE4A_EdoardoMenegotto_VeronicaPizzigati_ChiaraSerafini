@@ -130,6 +130,9 @@
  * | POST | `/zones` | backend.app.main.register_zone() | Registrazione di un settore della serra |
  * | GET | `/zones` | backend.app.main.read_zones() | Elenco dei settori ordinati per reparto |
  * | GET | `/zones/{zone_id}` | backend.app.main.read_zone() | Lettura di un settore tramite identificativo |
+ * | POST | `/zones/{zone_id}/telemetry` | backend.app.main.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
+ * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.main.read_latest_telemetry() | Ultimo campione sensori disponibile |
+ * | GET | `/zones/{zone_id}/telemetry` | backend.app.main.read_telemetry_history() | Storico filtrato dei sensori |
  * | POST | `/recipes` | backend.app.main.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.main.read_recipe() | Lettura di una ricetta salvata |
  *
@@ -140,6 +143,6 @@
  *
  * - backend/app/main.py: applicazione ASGI ed endpoint HTTP;
  * - backend/app/models.py: contratto Pydantic condiviso con l'Edge Controller;
- * - backend/app/database.py: persistenza SQLite delle ricette;
+ * - backend/app/database.py: persistenza SQLite di zone, telemetria e ricette;
  * - backend/app/recipe_export.py: esportazione JSON sicura per l'Edge.
  */

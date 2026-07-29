@@ -13,20 +13,25 @@ from collections.abc import Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import AwareDatetime
 
 from .database import (
     RecipeVersionConflict,
+    TelemetryConflict,
     ZoneConflict,
     create_zone,
     get_connection,
+    get_latest_telemetry,
     get_recipe,
     get_zone,
     init_db,
+    list_telemetry,
     list_zones,
     save_recipe,
+    save_telemetry,
 )
-from .models import Recipe, Zone, ZoneCreate
+from .models import Recipe, TelemetryCreate, TelemetrySample, Zone, ZoneCreate
 from .recipe_export import (
     DEFAULT_EXPORT_DIRECTORY,
     UnsafeRecipeId,
@@ -151,6 +156,107 @@ def read_zone(
     if zone is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
     return zone
+
+
+def _require_zone(connection: sqlite3.Connection, zone_id: str) -> None:
+    """@brief Verifica che una zona esista prima di operare sui suoi dati.
+
+    @param connection Connessione SQLite associata alla richiesta.
+    @param zone_id Identificativo della zona.
+    @throws HTTPException Se la zona non e registrata.
+    """
+    if get_zone(connection, zone_id) is None:
+        raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
+
+
+@app.post(
+    "/zones/{zone_id}/telemetry",
+    response_model=TelemetrySample,
+    status_code=201,
+)
+def create_telemetry(
+    zone_id: str,
+    telemetry: TelemetryCreate,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> TelemetrySample:
+    """@brief Riceve e salva un campione di sensori inviato dall'Edge.
+
+    @details Il progressivo deve essere univoco nella zona. Un campione valido
+    porta la zona nello stato `online` e aggiorna `last_edge_contact`.
+
+    @param zone_id Zona che ha prodotto le misure.
+    @param telemetry Campione validato, inclusi progressivo e data di misura.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Campione persistito con id e data di ricezione del backend.
+    @throws HTTPException Se la zona non esiste o il progressivo e duplicato.
+    """
+    _require_zone(connection, zone_id)
+    try:
+        return save_telemetry(connection, zone_id, telemetry)
+    except TelemetryConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get(
+    "/zones/{zone_id}/telemetry/latest",
+    response_model=TelemetrySample,
+)
+def read_latest_telemetry(
+    zone_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> TelemetrySample:
+    """@brief Restituisce l'ultima misura disponibile per una zona.
+
+    @param zone_id Identificativo della zona.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Campione con `recorded_at` piu recente.
+    @throws HTTPException Se zona o telemetria non esistono.
+    """
+    _require_zone(connection, zone_id)
+    telemetry = get_latest_telemetry(connection, zone_id)
+    if telemetry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"telemetry for zone {zone_id!r} not found",
+        )
+    return telemetry
+
+
+@app.get(
+    "/zones/{zone_id}/telemetry",
+    response_model=list[TelemetrySample],
+)
+def read_telemetry_history(
+    zone_id: str,
+    recorded_from: AwareDatetime | None = Query(default=None, alias="from"),
+    recorded_to: AwareDatetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=100, ge=1, le=1000),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> list[TelemetrySample]:
+    """@brief Restituisce lo storico filtrabile dei sensori di una zona.
+
+    @param zone_id Identificativo della zona.
+    @param recorded_from Data minima inclusa, parametro HTTP `from`.
+    @param recorded_to Data massima inclusa, parametro HTTP `to`.
+    @param limit Numero massimo di campioni, compreso fra 1 e 1000.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Campioni recenti ordinati cronologicamente.
+    @throws HTTPException Se la zona non esiste o l'intervallo e invertito.
+    """
+    _require_zone(connection, zone_id)
+    if (
+        recorded_from is not None
+        and recorded_to is not None
+        and recorded_from > recorded_to
+    ):
+        raise HTTPException(status_code=400, detail="'from' must not be after 'to'")
+    return list_telemetry(
+        connection,
+        zone_id,
+        recorded_from=recorded_from,
+        recorded_to=recorded_to,
+        limit=limit,
+    )
 
 
 @app.post("/recipes", response_model=Recipe, status_code=201)
