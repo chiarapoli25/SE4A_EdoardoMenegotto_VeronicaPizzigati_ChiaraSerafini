@@ -1,5 +1,6 @@
 #include <smarthydro/runtime/greenhouse_manager.hpp>
 
+#include <exception>
 #include <stdexcept>
 #include <utility>
 
@@ -15,6 +16,12 @@ std::string ZoneController::require_zone_id(std::string zone_id) {
 
 ZoneController::ZoneController(
     std::string zone_id,
+    std::shared_ptr<EventBus> event_bus)
+    : zone_id_(require_zone_id(std::move(zone_id))),
+      event_bus_(std::move(event_bus)) {}
+
+ZoneController::ZoneController(
+    std::string zone_id,
     Recipe recipe,
     ActuatorConfig actuator_config,
     EnvironmentConfig environment_config,
@@ -24,15 +31,16 @@ ZoneController::ZoneController(
     OperationalStatePolicy state_policy,
     std::shared_ptr<EventBus> event_bus)
     : zone_id_(require_zone_id(std::move(zone_id))),
-      runtime_(
+      runtime_(std::make_unique<EdgeRuntime>(
           std::move(recipe),
           std::move(actuator_config),
           std::move(environment_config),
           std::move(sensor_config),
           environment_seed,
           sensor_seed,
-          state_policy),
-      command_processor_(runtime_) {
+          state_policy)),
+      command_processor_(
+          std::make_unique<RuntimeCommandProcessor>(*runtime_)) {
     if (event_bus) {
         attach_event_bus(std::move(event_bus));
     }
@@ -47,13 +55,14 @@ ZoneController::ZoneController(
     OperationalStatePolicy state_policy,
     std::shared_ptr<EventBus> event_bus)
     : zone_id_(require_zone_id(std::move(zone_id))),
-      runtime_(
+      runtime_(std::make_unique<EdgeRuntime>(
           std::move(recipe),
           std::move(sensors),
           std::move(actuators),
           std::move(environment),
-          state_policy),
-      command_processor_(runtime_) {
+          state_policy)),
+      command_processor_(
+          std::make_unique<RuntimeCommandProcessor>(*runtime_)) {
     if (event_bus) {
         attach_event_bus(std::move(event_bus));
     }
@@ -63,30 +72,143 @@ const std::string& ZoneController::id() const noexcept {
     return zone_id_;
 }
 
-EdgeRuntime& ZoneController::runtime() noexcept {
-    return runtime_;
+bool ZoneController::is_active() const noexcept {
+    return runtime_ != nullptr;
 }
 
-const EdgeRuntime& ZoneController::runtime() const noexcept {
-    return runtime_;
+const std::string& ZoneController::cultivation_id() const noexcept {
+    return cultivation_id_;
+}
+
+EdgeRuntime& ZoneController::runtime() {
+    if (!runtime_) {
+        throw std::logic_error(
+            "greenhouse zone is inactive: " + zone_id_);
+    }
+    return *runtime_;
+}
+
+const EdgeRuntime& ZoneController::runtime() const {
+    if (!runtime_) {
+        throw std::logic_error(
+            "greenhouse zone is inactive: " + zone_id_);
+    }
+    return *runtime_;
 }
 
 void ZoneController::confirm_all_configurations() {
-    runtime_.confirm_all_configurations();
+    runtime().confirm_all_configurations();
 }
 
 EdgeStepResult ZoneController::step(double delta_time_seconds) {
-    return runtime_.step(delta_time_seconds);
+    return runtime().step(delta_time_seconds);
 }
 
 RuntimeCommandResult ZoneController::execute_command(
     const RuntimeCommandEnvelope& envelope) {
-    return command_processor_.execute(envelope);
+    if (envelope.command_id.empty()) {
+        return {
+            envelope.command_id,
+            runtime_command_type(envelope.command),
+            RuntimeCommandStatus::REJECTED,
+            false,
+            "command_id must not be empty",
+        };
+    }
+
+    std::lock_guard<std::mutex> lock(command_mutex_);
+    const auto previous = command_results_.find(envelope.command_id);
+    if (previous != command_results_.end()) {
+        auto replay = previous->second;
+        replay.replayed = true;
+        return replay;
+    }
+
+    auto result = execute_command_once(envelope);
+    command_results_.emplace(envelope.command_id, result);
+    return result;
+}
+
+RuntimeCommandResult ZoneController::execute_command_once(
+    const RuntimeCommandEnvelope& envelope) noexcept {
+    try {
+        if (const auto* activation =
+                std::get_if<ActivateCultivationCommand>(
+                    &envelope.command)) {
+            activate_cultivation(
+                activation->cultivation_id,
+                activation->recipe);
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::SUCCEEDED,
+                false,
+                "cultivation activated",
+            };
+        }
+        if (!runtime_ || !command_processor_) {
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::REJECTED,
+                false,
+                "zone is inactive; ActivateCultivation is required",
+            };
+        }
+        return command_processor_->execute(envelope);
+    } catch (const std::exception& error) {
+        return {
+            envelope.command_id,
+            runtime_command_type(envelope.command),
+            RuntimeCommandStatus::REJECTED,
+            false,
+            error.what(),
+        };
+    } catch (...) {
+        return {
+            envelope.command_id,
+            runtime_command_type(envelope.command),
+            RuntimeCommandStatus::REJECTED,
+            false,
+            "unknown zone command execution failure",
+        };
+    }
+}
+
+void ZoneController::activate_cultivation(
+    std::string cultivation_id,
+    Recipe recipe) {
+    if (runtime_) {
+        throw std::logic_error(
+            "zone already has an active cultivation: " + zone_id_);
+    }
+    if (cultivation_id.empty()) {
+        throw std::invalid_argument(
+            "cultivation_id must not be empty");
+    }
+
+    auto candidate = std::make_unique<EdgeRuntime>(std::move(recipe));
+    if (event_bus_) {
+        candidate->attach_event_bus(event_bus_, zone_id_);
+    }
+    candidate->confirm_all_configurations();
+
+    runtime_ = std::move(candidate);
+    command_processor_ =
+        std::make_unique<RuntimeCommandProcessor>(*runtime_);
+    cultivation_id_ = std::move(cultivation_id);
 }
 
 void ZoneController::attach_event_bus(
     std::shared_ptr<EventBus> event_bus) {
-    runtime_.attach_event_bus(std::move(event_bus), zone_id_);
+    if (!event_bus) {
+        throw std::invalid_argument(
+            "zone controller requires a non-null event bus");
+    }
+    event_bus_ = std::move(event_bus);
+    if (runtime_) {
+        runtime_->attach_event_bus(event_bus_, zone_id_);
+    }
 }
 
 GreenhouseManager::GreenhouseManager(
@@ -95,6 +217,12 @@ GreenhouseManager::GreenhouseManager(
           event_bus
               ? std::move(event_bus)
               : std::make_shared<EventBus>()) {}
+
+ZoneController& GreenhouseManager::add_inactive_zone(
+    std::string zone_id) {
+    return add_zone(
+        std::make_unique<ZoneController>(std::move(zone_id)));
+}
 
 ZoneController& GreenhouseManager::add_simulated_zone(
     std::string zone_id,
@@ -186,6 +314,9 @@ GreenhouseStepResults GreenhouseManager::step_all(
     double delta_time_seconds) {
     GreenhouseStepResults results;
     for (auto& [zone_id, controller] : zones_) {
+        if (!controller->is_active()) {
+            continue;
+        }
         results.emplace(
             zone_id,
             controller->step(delta_time_seconds));

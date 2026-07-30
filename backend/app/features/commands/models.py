@@ -9,6 +9,7 @@ from pydantic import AwareDatetime, BaseModel, Field, model_validator
 class CommandType(str, Enum):
     CHANGE_STRATEGY = "ChangeStrategy"
     LOAD_RECIPE = "LoadRecipe"
+    ACTIVATE_CULTIVATION = "ActivateCultivation"
     CONFIRM_CONFIGURATION = "ConfirmConfiguration"
     REJECT_CONFIGURATION = "RejectConfiguration"
     INJECT_FAULT = "InjectFault"

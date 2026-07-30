@@ -54,6 +54,69 @@ public:
     std::vector<smarthydro::EdgeDomainEvent> events;
 };
 
+TEST(GreenhouseManagerTest, InactiveZoneHasNoRuntimeAndProducesNoSteps) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+
+    EXPECT_EQ(manager.size(), 1U);
+    EXPECT_FALSE(zone.is_active());
+    EXPECT_TRUE(zone.cultivation_id().empty());
+    EXPECT_TRUE(manager.step_all(60.0).empty());
+    EXPECT_THROW(zone.runtime(), std::logic_error);
+    EXPECT_THROW(
+        manager.step_zone("zone-1", 60.0),
+        std::logic_error);
+}
+
+TEST(GreenhouseManagerTest, ActivationCreatesAndConfirmsRuntimeOnlyOnce) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+    const smarthydro::RuntimeCommandEnvelope activation{
+        "activate-1",
+        smarthydro::ActivateCultivationCommand{
+            "cultivation-1",
+            load_demo_recipe(),
+        },
+    };
+
+    const auto first =
+        manager.execute_command("zone-1", activation);
+    const auto replay =
+        manager.execute_command("zone-1", activation);
+    const auto results = manager.step_all(60.0);
+
+    EXPECT_TRUE(first.success());
+    EXPECT_FALSE(first.replayed);
+    EXPECT_TRUE(replay.success());
+    EXPECT_TRUE(replay.replayed);
+    EXPECT_TRUE(zone.is_active());
+    EXPECT_EQ(zone.cultivation_id(), "cultivation-1");
+    EXPECT_TRUE(
+        zone.runtime()
+            .control_system()
+            .all_configurations_confirmed());
+    EXPECT_EQ(results.size(), 1U);
+    EXPECT_EQ(results.at("zone-1").sequence_number, 0U);
+}
+
+TEST(GreenhouseManagerTest, InactiveZoneRejectsOperationalCommands) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+
+    const auto result = manager.execute_command(
+        "zone-1",
+        {
+            "stop-before-activation",
+            smarthydro::EmergencyStopCommand{"operator stop"},
+        });
+
+    EXPECT_FALSE(result.success());
+    EXPECT_EQ(
+        result.message,
+        "zone is inactive; ActivateCultivation is required");
+    EXPECT_FALSE(zone.is_active());
+}
+
 TEST(GreenhouseManagerTest, KeepsTimelinesAndSequencesIndependent) {
     smarthydro::GreenhouseManager manager;
     auto& north = manager.add_simulated_zone(

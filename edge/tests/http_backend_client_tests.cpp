@@ -245,4 +245,61 @@ TEST(HttpBackendClientTest, DownloadsRecipeReferencedByRemoteCommand) {
     std::filesystem::remove_all(outbox);
 }
 
+TEST(HttpBackendClientTest, DownloadsRecipeForCultivationActivation) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("activate-cultivation");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->command_response = R"json([
+        {
+            "command_id": "activate-1",
+            "command_type": "ActivateCultivation",
+            "payload": {
+                "cultivation_id": "cultivation-1",
+                "recipe_id": "tomato_demo_v1"
+            }
+        }
+    ])json";
+    {
+        std::ifstream input(SMARTHYDRO_EXAMPLE_RECIPE_PATH);
+        ASSERT_TRUE(input);
+        transport->recipe_response =
+            nlohmann::json::parse(input).dump();
+    }
+    smarthydro::HttpBackendConfig config;
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    auto client = std::make_shared<smarthydro::HttpBackendClient>(
+        bus,
+        std::vector<std::string>{"zone-1"},
+        config,
+        transport);
+    client->start();
+
+    std::vector<smarthydro::RemoteRuntimeCommand> commands;
+    ASSERT_TRUE(wait_until([&] {
+        commands = client->take_commands();
+        return !commands.empty();
+    }));
+    client->stop();
+
+    ASSERT_EQ(commands.size(), 1U);
+    ASSERT_TRUE(
+        std::holds_alternative<
+            smarthydro::ActivateCultivationCommand>(
+            commands[0].envelope.command));
+    const auto& activation =
+        std::get<smarthydro::ActivateCultivationCommand>(
+            commands[0].envelope.command);
+    EXPECT_EQ(activation.cultivation_id, "cultivation-1");
+    EXPECT_EQ(activation.recipe.id, "tomato_demo_v1");
+    EXPECT_NE(
+        std::find(
+            transport->get_paths.begin(),
+            transport->get_paths.end(),
+            "/api/v1/recipes/tomato_demo_v1"),
+        transport->get_paths.end());
+    std::filesystem::remove_all(outbox);
+}
+
 }  // namespace

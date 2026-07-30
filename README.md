@@ -46,8 +46,28 @@ ctest --test-dir edge/build --output-on-failure
 ./edge/build/bin/edge
 ```
 
-L'eseguibile principale carica `config/example_recipe.json`, valida e conferma
-localmente le sei configurazioni, quindi esegue un ciclo completo:
+L'eseguibile principale non carica una ricetta locale. Si collega al backend,
+registra le zone indicate come inattive e rimane in esecuzione fino a
+`Ctrl+C` o `SIGTERM`. Una zona inattiva non possiede ancora un `EdgeRuntime`:
+sensori, ambiente e attuatori vengono creati soltanto dopo un comando
+`ActivateCultivation` valido.
+
+Per avviare il servizio con le zone predefinite `zone-1..zone-N`:
+
+```bash
+./edge/build/bin/edge --zones 2
+```
+
+Per usare gli identificativi gia registrati nel backend:
+
+```bash
+./edge/build/bin/edge \
+  --zone-id r1-s1 \
+  --zone-id r1-s2 \
+  --backend-url http://127.0.0.1:8000
+```
+
+Quando una coltivazione e attiva, ogni ciclo:
 
 1. legge sensori e modelli N/P/K;
 2. calcola i comandi tramite `RecipeControlSystem`;
@@ -73,18 +93,10 @@ stato e causa. L'ingresso in emergenza produce anche
 il comando interessato.
 
 Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
-fase produce `RecipePhaseChanged`.
-
-Per usare una ricetta diversa o simulare piu cicli:
-
-```bash
-./edge/build/bin/edge --recipe backend/data/recipes/tomato_demo_v1.json
-./edge/build/bin/edge --steps 96 --step-seconds 900
-```
-
-`--steps` indica il numero di cicli e `--step-seconds` la durata simulata di
-ciascun ciclo. L'Edge usa esclusivamente il JSON locale durante l'esecuzione e
-non richiede che il backend sia raggiungibile.
+fase produce `RecipePhaseChanged`. `--step-seconds` definisce sia l'intervallo
+reale sia la durata simulata del ciclo; il valore predefinito e 900 secondi.
+Il polling dei comandi resta indipendente e continua anche mentre tutte le
+zone sono inattive.
 
 ### Adapter e hardware
 
@@ -125,20 +137,22 @@ includono indicando il dominio, per esempio
 
 ### Multi-zona
 
-`ZoneController` racchiude tutto lo stato di una zona: ambiente, sensori,
-attuatori, ricetta, controllori, FSM, fault, storico e sequenze. Ogni zona ha
-anche il proprio `RuntimeCommandProcessor`, quindi comandi e chiavi di
-idempotenza non interferiscono con le altre.
+`ZoneController` puo essere registrato senza ricetta. In stato inattivo non
+possiede runtime o attuatori e viene ignorato da `step_all()`. Il comando
+`ActivateCultivation` crea atomicamente ambiente, sensori, attuatori, ricetta,
+controllori, FSM, storico e sequenze, quindi conferma le sei configurazioni
+validate. Ogni zona mantiene una cache dei comandi indipendente dalle altre.
 
 `GreenhouseManager` registra piu zone e permette di avanzarne una con
 `step_zone()` oppure tutte con `step_all()`. Soltanto l'`EventBus` viene
 condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
 possono descrivere reparti e settori, ad esempio `reparto-a/settore-nord`.
 
-L'eseguibile accetta `--zones N`; per avviare due zone:
+L'eseguibile accetta `--zones N` oppure piu opzioni `--zone-id`; per registrare
+due zone inattive:
 
 ```bash
-./edge/build/bin/edge --zones 2 --steps 4 --step-seconds 60
+./edge/build/bin/edge --zones 2
 ```
 
 ### Observer ed EventBus
@@ -161,7 +175,8 @@ interrompere il controllo locale.
 
 ### Collegamento HTTP al backend
 
-L'Edge resta offline per default. Per attivare il collegamento:
+L'Edge usa `http://127.0.0.1:8000` come backend predefinito. Per scegliere un
+altro endpoint:
 
 ```bash
 ./edge/build/bin/edge \
@@ -176,9 +191,10 @@ interroga la coda comandi con `GET` e invia l'esito di ogni comando. I
 progressivi sono idempotenti per `(zone_id, boot_id, sequence_number)`; gli
 eventi e i comandi hanno un identificativo idempotente proprio. I file
 dell'outbox vengono riletti al riavvio e rimossi soltanto dopo una risposta
-HTTP 2xx. Un comando `LoadRecipe` puo includere soltanto `recipe_id`: il worker
-scarica la versione validata con `GET /api/v1/recipes/{recipe_id}` prima
-dell'esecuzione.
+HTTP 2xx. I comandi `LoadRecipe` e `ActivateCultivation` possono includere
+soltanto `recipe_id`: il worker scarica la ricetta validata con
+`GET /api/v1/recipes/{recipe_id}` prima dell'esecuzione. Per l'attivazione il
+payload deve includere anche `cultivation_id`.
 
 Per proteggere le API versionate, impostare lo stesso token nei processi
 backend ed Edge:
@@ -190,9 +206,8 @@ uvicorn backend.app.main:app
 
 L'Edge legge il token dalla variabile e invia
 `Authorization: Bearer <token>`. Se la variabile non e impostata,
-l'autenticazione resta disattivata. `--cycle-delay-ms` aggiunge una pausa reale
-fra i cicli ed e utile nelle demo accelerate per lasciare tempo al polling dei
-comandi.
+l'autenticazione resta disattivata. Il polling viene eseguito dal worker HTTP
+e rimane attivo indipendentemente dall'intervallo dei cicli agronomici.
 
 ### Comandi runtime
 
@@ -201,6 +216,7 @@ operativi. Ogni richiesta contiene un `command_id` e un payload tipizzato:
 
 - cambio della Strategy;
 - caricamento di una nuova versione della ricetta;
+- attivazione di una coltivazione in una zona inattiva;
 - conferma o rifiuto di una configurazione;
 - fault injection e reset del fault sintetico;
 - avanzamento forzato della fase;

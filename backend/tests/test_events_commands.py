@@ -85,3 +85,21 @@ def test_command_round_trip_is_idempotent(client: TestClient) -> None:
     assert result.json()["status"] == "succeeded"
     assert replay.json() == result.json()
     assert client.get("/api/v1/zones/zone-1/commands").json() == []
+
+
+def test_can_enqueue_cultivation_activation(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": "activate-1",
+            "command_type": "ActivateCultivation",
+            "payload": {
+                "cultivation_id": "cultivation-1",
+                "recipe_id": "tomato_demo_v1",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+    assert response.json()["command_type"] == "ActivateCultivation"

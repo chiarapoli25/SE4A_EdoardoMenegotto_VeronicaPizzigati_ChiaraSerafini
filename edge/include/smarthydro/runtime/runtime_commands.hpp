@@ -30,6 +30,20 @@ struct LoadRecipeCommand {
     Recipe recipe;
 };
 
+/**
+ * @brief Attiva una coltivazione in una zona Edge precedentemente inattiva.
+ *
+ * La ricetta viene scaricata dal livello HTTP prima che il comando raggiunga
+ * il GreenhouseManager. L'attivazione crea un nuovo runtime simulato e
+ * conferma le configurazioni soltanto dopo averle validate localmente.
+ */
+struct ActivateCultivationCommand {
+    /** Identificativo stabile della coltivazione assegnato dal backend. */
+    std::string cultivation_id;
+    /** Ricetta completa e versionata da usare nel nuovo runtime. */
+    Recipe recipe;
+};
+
 /** @brief Conferma una configurazione agronomica pendente. */
 struct ConfirmConfigurationCommand {
     /** Variabile la cui configurazione deve essere confermata. */
@@ -74,6 +88,7 @@ struct ResetEmergencyCommand {};
 using RuntimeCommand = std::variant<
     ChangeStrategyCommand,
     LoadRecipeCommand,
+    ActivateCultivationCommand,
     ConfirmConfigurationCommand,
     RejectConfigurationCommand,
     InjectFaultCommand,

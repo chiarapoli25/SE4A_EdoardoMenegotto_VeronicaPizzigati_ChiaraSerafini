@@ -199,10 +199,6 @@ target_link_libraries(edge
         http_backend_client
         recipe_json
 )
-target_compile_definitions(edge
-    PRIVATE
-        SMARTHYDRO_DEFAULT_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
-)
 set_target_properties(edge PROPERTIES CXX_EXTENSIONS OFF)
 
 # Se si vuole cambiare solo il nome del file, lasciando invariato il target:

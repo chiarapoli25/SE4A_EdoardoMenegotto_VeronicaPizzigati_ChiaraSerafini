@@ -474,6 +474,17 @@ RuntimeCommandEnvelope runtime_command_from_json(
                 LoadRecipeCommand{recipe_from_json(recipe_json.dump())},
             };
         }
+        if (command_type == "ActivateCultivation") {
+            const auto& recipe_json =
+                payload.contains("recipe") ? payload.at("recipe") : payload;
+            return {
+                command_id,
+                ActivateCultivationCommand{
+                    payload.at("cultivation_id").get<std::string>(),
+                    recipe_from_json(recipe_json.dump()),
+                },
+            };
+        }
         if (command_type == "ConfirmConfiguration") {
             return {
                 command_id,
@@ -776,8 +787,12 @@ private:
                 }
                 try {
                     auto prepared_command = command;
+                    const auto prepared_type =
+                        prepared_command.at("command_type")
+                            .get<std::string>();
                     if (
-                        prepared_command.at("command_type") == "LoadRecipe" &&
+                        (prepared_type == "LoadRecipe" ||
+                         prepared_type == "ActivateCultivation") &&
                         prepared_command.at("payload").contains("recipe_id") &&
                         !prepared_command.at("payload").contains("recipe")) {
                         const auto recipe_id =

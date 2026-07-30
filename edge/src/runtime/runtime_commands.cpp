@@ -43,6 +43,9 @@ const char* runtime_command_type(const RuntimeCommand& command) noexcept {
             } else if constexpr (std::is_same_v<Command, LoadRecipeCommand>) {
                 return "LoadRecipe";
             } else if constexpr (
+                std::is_same_v<Command, ActivateCultivationCommand>) {
+                return "ActivateCultivation";
+            } else if constexpr (
                 std::is_same_v<Command, ConfirmConfigurationCommand>) {
                 return "ConfirmConfiguration";
             } else if constexpr (
@@ -119,6 +122,11 @@ RuntimeCommandResult RuntimeCommandProcessor::execute_once(
                     std::is_same_v<Command, LoadRecipeCommand>) {
                     runtime_.replace_recipe(command.recipe);
                     return succeeded(envelope, "recipe loaded");
+                } else if constexpr (
+                    std::is_same_v<Command, ActivateCultivationCommand>) {
+                    return rejected(
+                        envelope,
+                        "ActivateCultivation must be handled by the zone controller");
                 } else if constexpr (
                     std::is_same_v<Command, ConfirmConfigurationCommand>) {
                     const auto confirmation =
