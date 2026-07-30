@@ -149,6 +149,27 @@ target_link_libraries(runtime_commands
 )
 set_target_properties(runtime_commands PROPERTIES CXX_EXTENSIONS OFF)
 
+# Client asincrono Edge-to-Backend con outbox persistente e libcurl.
+add_library(
+    http_backend_client
+    backend/http_backend_client.cpp
+)
+target_include_directories(http_backend_client
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(http_backend_client PUBLIC cxx_std_17)
+target_link_libraries(http_backend_client
+    PUBLIC
+        event_bus
+        runtime_commands
+        recipe_json
+    PRIVATE
+        CURL::libcurl
+        Threads::Threads
+        nlohmann_json::nlohmann_json
+)
+set_target_properties(http_backend_client PROPERTIES CXX_EXTENSIONS OFF)
+
 # Coordinamento multi-zona senza condivisione dello stato operativo.
 add_library(
     greenhouse_manager
@@ -175,6 +196,7 @@ target_compile_features(edge PRIVATE cxx_std_17)
 target_link_libraries(edge
     PRIVATE
         greenhouse_manager
+        http_backend_client
         recipe_json
 )
 target_compile_definitions(edge

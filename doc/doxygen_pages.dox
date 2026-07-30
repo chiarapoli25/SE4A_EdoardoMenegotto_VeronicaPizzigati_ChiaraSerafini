@@ -167,6 +167,16 @@
  * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
  * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
+ * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Elenco delle ricette disponibili |
+ * | POST | `/zones/{zone_id}/events` | backend.app.features.events.routes.create_event() | Acquisizione idempotente di un evento Edge |
+ * | GET | `/zones/{zone_id}/events` | backend.app.features.events.routes.read_events() | Storico degli eventi Edge |
+ * | POST | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.enqueue_command() | Accodamento di un comando runtime |
+ * | GET | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.read_pending_commands() | Polling dei comandi pendenti |
+ * | POST | `/zones/{zone_id}/commands/{command_id}/result` | backend.app.features.commands.routes.report_command_result() | Esito idempotente del comando |
+ *
+ * Gli endpoint applicativi sono esposti anche sotto `/api/v1`, contratto usato
+ * dall'Edge. Se `SMARTHYDRO_API_TOKEN` e configurata, questa superficie richiede
+ * un Bearer token; gli endpoint storici restano compatibili.
  *
  * L'endpoint `/health` e attualmente statico: non verifica sensori, database o
  * collegamento con l'Edge. La specifica OpenAPI interattiva e disponibile in
@@ -190,6 +200,8 @@
  *         |     +-- routes.py
  *         +-- telemetry/
  *         +-- actuators/
+ *         +-- events/
+ *         +-- commands/
  *         +-- recipes/
  *         +-- system/
  * @endcode
@@ -208,12 +220,13 @@
  *
  * @section backend_data_flow Flusso dei dati dall'Edge
  *
- * L'Edge non viene interrogato direttamente dal backend. Invia i sensori al
- * router `telemetry` e gli attuatori al router `actuators`; entrambi verificano
- * la zona e delegano il salvataggio al relativo repository. Le transazioni
- * portano il settore nello stato `online` e aggiornano `last_edge_contact`.
- * La dashboard legge poi ultimo campione e storico attraverso gli stessi
- * router.
+ * L'Edge invia i sensori al router `telemetry`, gli attuatori al router
+ * `actuators` e gli eventi al router `events`; tutti verificano la zona e
+ * delegano il salvataggio al relativo repository. Un worker HTTP nell'Edge
+ * usa timeout brevi, outbox persistente e retry con backoff. In senso opposto
+ * interroga `commands`, esegue il comando fra due cicli e pubblica l'esito.
+ * Le transazioni portano il settore nello stato `online` e aggiornano
+ * `last_edge_contact`.
  *
  * @code{.txt}
  * Edge -> features/telemetry/routes.py
@@ -222,6 +235,9 @@
  *
  * Edge -> features/actuators/routes.py
  *      -> features/actuators/repository.py -> SQLite
+ *
+ * Backend -> features/commands/routes.py <- Edge polling asincrono
+ * Backend <- risultato comando <- Edge runtime
  * Dashboard <- features/actuators/routes.py <- repository.py <- SQLite
  * @endcode
  *
@@ -248,6 +264,8 @@
  * - backend/app/features/zones/: reparti, settori e specie vegetali;
  * - backend/app/features/telemetry/: acquisizione e storico dei sensori;
  * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
+ * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;
+ * - backend/app/features/commands/: coda ed esiti dei comandi runtime;
  * - backend/app/features/recipes/: ricette, persistenza ed esportazione;
  * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */

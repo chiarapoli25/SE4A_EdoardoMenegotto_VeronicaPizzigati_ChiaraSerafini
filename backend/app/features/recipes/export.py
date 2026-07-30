@@ -1,11 +1,9 @@
 """@file export.py
 @brief Esportazione delle ricette in JSON per l'Edge Controller.
 
-@details Non esiste ancora un canale di comunicazione diretto fra backend e Edge
-Controller. L'unico punto di ingresso gia disponibile lato C++ e
-`load_recipe_json(path)` (edge/src/recipe_json.cpp), che legge un file da
-un percorso passato esplicitamente: questo modulo scrive li lo stesso JSON
-che il backend valida e salva, cosi l'Edge puo caricarlo senza modifiche.
+@details Il canale HTTP permette all'Edge di scaricare una ricetta tramite
+`GET /api/v1/recipes/{recipe_id}`. L'esportazione su file resta disponibile
+per l'avvio offline e produce lo stesso JSON accettato da `load_recipe_json`.
 
 `recipe.id` arriva da una richiesta HTTP esterna e diventa qui un nome di
 file: senza controlli un id come ``"../../etc/passwd"`` scriverebbe fuori

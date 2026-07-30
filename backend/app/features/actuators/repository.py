@@ -36,13 +36,14 @@ def save_actuator_snapshot(
         cursor = connection.execute(
             """
             INSERT INTO actuator_snapshots (
-                zone_id, sequence_number, timestamp_seconds, recorded_at,
+                zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                 received_at, command_data, output_data
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 zone_id,
+                snapshot.boot_id,
                 snapshot.sequence_number,
                 snapshot.timestamp_seconds,
                 recorded_at.isoformat(),
@@ -52,6 +53,25 @@ def save_actuator_snapshot(
             ),
         )
     except sqlite3.IntegrityError as error:
+        existing = connection.execute(
+            """
+            SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds,
+                   recorded_at, received_at, command_data, output_data
+            FROM actuator_snapshots
+            WHERE zone_id = ? AND boot_id = ? AND sequence_number = ?
+            """,
+            (zone_id, snapshot.boot_id, snapshot.sequence_number),
+        ).fetchone()
+        if existing is not None:
+            stored = _snapshot_from_row(existing)
+            comparable = stored.model_dump(
+                exclude={"snapshot_id", "zone_id", "received_at"},
+            )
+            incoming = snapshot.model_dump()
+            comparable["recorded_at"] = stored.recorded_at
+            incoming["recorded_at"] = recorded_at
+            if comparable == incoming:
+                return stored
         raise ActuatorSnapshotConflict(
             f"actuator sequence {snapshot.sequence_number} already exists "
             f"for zone {zone_id!r}"
@@ -81,12 +101,13 @@ def _snapshot_from_row(row: tuple) -> ActuatorSnapshot:
     return ActuatorSnapshot(
         snapshot_id=row[0],
         zone_id=row[1],
-        sequence_number=row[2],
-        timestamp_seconds=row[3],
-        recorded_at=row[4],
-        received_at=row[5],
-        command=ActuatorCommandState.model_validate_json(row[6]),
-        output=ActuatorPhysicalOutput.model_validate_json(row[7]),
+        boot_id=row[2],
+        sequence_number=row[3],
+        timestamp_seconds=row[4],
+        recorded_at=row[5],
+        received_at=row[6],
+        command=ActuatorCommandState.model_validate_json(row[7]),
+        output=ActuatorPhysicalOutput.model_validate_json(row[8]),
     )
 
 
@@ -97,7 +118,7 @@ def get_latest_actuator_snapshot(
     """@brief Recupera lo snapshot attuatori piu recente."""
     row = connection.execute(
         """
-        SELECT id, zone_id, sequence_number, timestamp_seconds, recorded_at,
+        SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, command_data, output_data
         FROM actuator_snapshots
         WHERE zone_id = ?
@@ -131,7 +152,7 @@ def list_actuator_snapshots(
 
     rows = connection.execute(
         f"""
-        SELECT id, zone_id, sequence_number, timestamp_seconds, recorded_at,
+        SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, command_data, output_data
         FROM actuator_snapshots
         WHERE {" AND ".join(conditions)}

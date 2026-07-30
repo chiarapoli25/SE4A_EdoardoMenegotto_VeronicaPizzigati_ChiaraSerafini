@@ -54,3 +54,11 @@ def get_recipe(connection: sqlite3.Connection, recipe_id: str) -> Recipe | None:
     if row is None:
         return None
     return Recipe.model_validate_json(row[0])
+
+
+def list_recipes(connection: sqlite3.Connection) -> list[Recipe]:
+    """Elenca le ricette ordinate per identificativo."""
+    rows = connection.execute(
+        "SELECT data FROM recipes ORDER BY id"
+    ).fetchall()
+    return [Recipe.model_validate_json(row[0]) for row in rows]

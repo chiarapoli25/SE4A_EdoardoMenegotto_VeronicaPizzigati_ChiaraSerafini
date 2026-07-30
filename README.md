@@ -7,8 +7,10 @@ una ricetta di coltivazione di esempio.
 
 L'area Edge include un simulatore dinamico della serra, sensori con errori
 strumentali, attuatori e un sistema di controllo configurabile basato su
-ricette versionate e pattern Strategy. Non sono ancora presenti dispositivi
-reali, database, autenticazione, comunicazione tra Edge e backend o Docker.
+ricette versionate e pattern Strategy. Edge e backend comunicano tramite API
+HTTP versionate, con consegna asincrona, outbox persistente, retry, comandi
+remoti e autenticazione Bearer opzionale. Non sono ancora presenti dispositivi
+reali o Docker.
 
 ## Struttura del progetto
 
@@ -28,6 +30,7 @@ reali, database, autenticazione, comunicazione tra Edge e backend o Docker.
 
 - CMake 3.16 o successivo
 - Un compilatore compatibile con C++17
+- libcurl con header di sviluppo
 - gnuplot (facoltativo per l'Edge, necessario per i grafici degli experiments)
 - Python 3.10 o successivo
 - Un browser web moderno
@@ -149,10 +152,47 @@ dipendente da console, file o rete. Il runtime pubblica automaticamente:
 - `CommandExecuted` e `CommandFailed`.
 
 Il contratto include anche `FaultDetected`, `StrategyChanged` e
-`BackendUnavailable`. `ConsoleLogger` stampa gli eventi, `CsvLogger` li salva
-in un CSV uniforme e `BackendClient` usa una funzione di trasporto iniettabile.
-Se il trasporto fallisce, il client pubblica `BackendUnavailable` senza
+`BackendUnavailable`. `ConsoleLogger` stampa gli eventi e `CsvLogger` li salva
+in un CSV uniforme. `HttpBackendClient` serializza telemetria, attuatori ed
+eventi in JSON e li invia in un worker dedicato: `EventBus::publish()` non
+esegue richieste di rete. Prima dell'invio ogni messaggio viene salvato
+nell'outbox; errori e timeout producono retry con backoff esponenziale senza
 interrompere il controllo locale.
+
+### Collegamento HTTP al backend
+
+L'Edge resta offline per default. Per attivare il collegamento:
+
+```bash
+./edge/build/bin/edge \
+  --backend-url http://127.0.0.1:8000 \
+  --edge-id edge-serra-1 \
+  --outbox-path edge-data/outbox \
+  --command-poll-ms 1000
+```
+
+Il client esegue `POST` di telemetria, snapshot degli attuatori ed eventi,
+interroga la coda comandi con `GET` e invia l'esito di ogni comando. I
+progressivi sono idempotenti per `(zone_id, boot_id, sequence_number)`; gli
+eventi e i comandi hanno un identificativo idempotente proprio. I file
+dell'outbox vengono riletti al riavvio e rimossi soltanto dopo una risposta
+HTTP 2xx. Un comando `LoadRecipe` puo includere soltanto `recipe_id`: il worker
+scarica la versione validata con `GET /api/v1/recipes/{recipe_id}` prima
+dell'esecuzione.
+
+Per proteggere le API versionate, impostare lo stesso token nei processi
+backend ed Edge:
+
+```bash
+export SMARTHYDRO_API_TOKEN='scegliere-un-segreto'
+uvicorn backend.app.main:app
+```
+
+L'Edge legge il token dalla variabile e invia
+`Authorization: Bearer <token>`. Se la variabile non e impostata,
+l'autenticazione resta disattivata. `--cycle-delay-ms` aggiunge una pausa reale
+fra i cicli ed e utile nelle demo accelerate per lasciare tempo al polling dei
+comandi.
 
 ### Comandi runtime
 
@@ -544,6 +584,15 @@ curl http://127.0.0.1:8000/health
 ```
 
 La risposta attesa e `{"status":"healthy"}`.
+
+Le API Edge sono disponibili anche con prefisso `/api/v1`. Comprendono:
+
+- telemetria e snapshot degli attuatori per zona;
+- eventi Edge;
+- elenco e distribuzione delle ricette;
+- accodamento, polling e conferma dei comandi runtime.
+
+Gli endpoint senza prefisso rimangono disponibili per compatibilita.
 
 Per eseguire i test automatici:
 

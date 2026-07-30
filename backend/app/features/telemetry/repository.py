@@ -24,14 +24,15 @@ def save_telemetry(
         cursor = connection.execute(
             """
             INSERT INTO telemetry_samples (
-                zone_id, sequence_number, timestamp_seconds, recorded_at,
+                zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                 received_at, temperature_c, air_humidity_percent,
                 soil_moisture_percent, ph, light_ppfd_umol_m2_s
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 zone_id,
+                telemetry.boot_id,
                 telemetry.sequence_number,
                 telemetry.timestamp_seconds,
                 recorded_at.isoformat(),
@@ -44,6 +45,27 @@ def save_telemetry(
             ),
         )
     except sqlite3.IntegrityError as error:
+        existing = connection.execute(
+            """
+            SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds,
+                   recorded_at, received_at, temperature_c,
+                   air_humidity_percent, soil_moisture_percent, ph,
+                   light_ppfd_umol_m2_s
+            FROM telemetry_samples
+            WHERE zone_id = ? AND boot_id = ? AND sequence_number = ?
+            """,
+            (zone_id, telemetry.boot_id, telemetry.sequence_number),
+        ).fetchone()
+        if existing is not None:
+            stored = _telemetry_from_row(existing)
+            comparable = stored.model_dump(
+                exclude={"sample_id", "zone_id", "received_at"},
+            )
+            incoming = telemetry.model_dump()
+            comparable["recorded_at"] = stored.recorded_at
+            incoming["recorded_at"] = recorded_at
+            if comparable == incoming:
+                return stored
         raise TelemetryConflict(
             f"telemetry sequence {telemetry.sequence_number} already exists "
             f"for zone {zone_id!r}"
@@ -73,15 +95,16 @@ def _telemetry_from_row(row: tuple) -> TelemetrySample:
     return TelemetrySample(
         sample_id=row[0],
         zone_id=row[1],
-        sequence_number=row[2],
-        timestamp_seconds=row[3],
-        recorded_at=row[4],
-        received_at=row[5],
-        temperature_c=row[6],
-        air_humidity_percent=row[7],
-        soil_moisture_percent=row[8],
-        ph=row[9],
-        light_ppfd_umol_m2_s=row[10],
+        boot_id=row[2],
+        sequence_number=row[3],
+        timestamp_seconds=row[4],
+        recorded_at=row[5],
+        received_at=row[6],
+        temperature_c=row[7],
+        air_humidity_percent=row[8],
+        soil_moisture_percent=row[9],
+        ph=row[10],
+        light_ppfd_umol_m2_s=row[11],
     )
 
 
@@ -92,7 +115,7 @@ def get_latest_telemetry(
     """@brief Recupera il campione piu recente di una zona."""
     row = connection.execute(
         """
-        SELECT id, zone_id, sequence_number, timestamp_seconds, recorded_at,
+        SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, temperature_c, air_humidity_percent,
                soil_moisture_percent, ph, light_ppfd_umol_m2_s
         FROM telemetry_samples
@@ -127,7 +150,7 @@ def list_telemetry(
 
     rows = connection.execute(
         f"""
-        SELECT id, zone_id, sequence_number, timestamp_seconds, recorded_at,
+        SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, temperature_c, air_humidity_percent,
                soil_moisture_percent, ph, light_ppfd_umol_m2_s
         FROM telemetry_samples

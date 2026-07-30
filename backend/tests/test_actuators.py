@@ -120,13 +120,14 @@ def test_actuator_snapshot_marks_zone_online(client: TestClient) -> None:
     assert zone["last_edge_contact"] == response.json()["received_at"]
 
 
-def test_duplicate_actuator_sequence_is_rejected(client: TestClient) -> None:
+def test_duplicate_identical_actuator_sequence_is_replayed(client: TestClient) -> None:
     first = client.post("/zones/r1-s1/actuators", json=actuator_payload())
     assert first.status_code == 201
 
     duplicate = client.post("/zones/r1-s1/actuators", json=actuator_payload())
 
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 201
+    assert duplicate.json() == first.json()
 
 
 def test_actuator_history_filters_and_orders_results(client: TestClient) -> None:

@@ -84,6 +84,13 @@ class ActuatorSnapshotCreate(BaseModel):
 
     ## @brief Progressivo monotono generato dall'Edge per la zona.
     sequence_number: int = Field(ge=0)
+    ## @brief Identifica univocamente il processo Edge fra due riavvii.
+    boot_id: str = Field(
+        default="legacy",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
     ## @brief Timestamp del simulatore, in secondi.
     timestamp_seconds: float = Field(ge=0.0)
     ## @brief Istante della rilevazione completo di fuso orario.

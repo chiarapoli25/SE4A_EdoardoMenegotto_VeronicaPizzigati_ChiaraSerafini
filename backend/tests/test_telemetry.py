@@ -90,13 +90,29 @@ def test_sensor_dropout_accepts_null_values(client: TestClient) -> None:
     assert response.json()["ph"] is None
 
 
-def test_duplicate_sequence_is_rejected(client: TestClient) -> None:
+def test_duplicate_identical_sequence_is_replayed(client: TestClient) -> None:
     first = client.post("/zones/r1-s1/telemetry", json=telemetry_payload())
     assert first.status_code == 201
 
     duplicate = client.post("/zones/r1-s1/telemetry", json=telemetry_payload())
 
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 201
+    assert duplicate.json() == first.json()
+
+
+def test_same_sequence_in_a_new_boot_is_accepted(client: TestClient) -> None:
+    first = client.post(
+        "/zones/r1-s1/telemetry",
+        json={**telemetry_payload(), "boot_id": "boot-a"},
+    )
+    restarted = client.post(
+        "/zones/r1-s1/telemetry",
+        json={**telemetry_payload(), "boot_id": "boot-b"},
+    )
+
+    assert first.status_code == 201
+    assert restarted.status_code == 201
+    assert first.json()["sample_id"] != restarted.json()["sample_id"]
 
 
 def test_history_filters_dates_and_orders_results(client: TestClient) -> None:

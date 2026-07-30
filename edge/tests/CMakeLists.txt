@@ -141,6 +141,22 @@ target_compile_definitions(runtime_command_tests
 set_target_properties(runtime_command_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(runtime_command_tests)
 
+# Test del trasporto asincrono, dell'outbox e del polling dei comandi.
+add_executable(http_backend_client_tests http_backend_client_tests.cpp)
+target_link_libraries(http_backend_client_tests
+    PRIVATE
+        http_backend_client
+        GTest::gtest_main
+        nlohmann_json::nlohmann_json
+)
+target_compile_features(http_backend_client_tests PRIVATE cxx_std_17)
+target_compile_definitions(http_backend_client_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(http_backend_client_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(http_backend_client_tests)
+
 # Test dell'isolamento di stato e comandi fra piu zone della serra.
 add_executable(greenhouse_manager_tests greenhouse_manager_tests.cpp)
 target_link_libraries(greenhouse_manager_tests

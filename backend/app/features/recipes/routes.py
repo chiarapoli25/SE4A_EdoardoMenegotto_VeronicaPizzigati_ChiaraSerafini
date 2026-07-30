@@ -18,6 +18,7 @@ from .models import Recipe
 from .repository import (
     RecipeVersionConflict,
     get_recipe,
+    list_recipes,
     save_recipe,
 )
 
@@ -50,6 +51,14 @@ def create_recipe(
 
     export_recipe_for_edge(recipe, export_directory)
     return recipe
+
+
+@router.get("", response_model=list[Recipe])
+def read_recipes(
+    connection: sqlite3.Connection = Depends(get_db),
+) -> list[Recipe]:
+    """Elenca tutte le ricette disponibili per gli Edge."""
+    return list_recipes(connection)
 
 
 @router.get("/{recipe_id}", response_model=Recipe)

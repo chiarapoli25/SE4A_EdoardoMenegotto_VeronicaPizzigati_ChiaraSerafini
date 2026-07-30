@@ -1,10 +1,13 @@
+#include <smarthydro/backend/http_backend_client.hpp>
 #include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/recipes/recipe_json.hpp>
 #include <smarthydro/runtime/greenhouse_manager.hpp>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -12,6 +15,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -23,6 +27,11 @@ struct CommandLineOptions {
     std::size_t zones = 1;
     std::size_t steps = 1;
     double step_seconds = kDefaultStepSeconds;
+    std::optional<std::string> backend_url;
+    std::string edge_id = "smarthydro-edge";
+    std::filesystem::path outbox_path = "edge-data/outbox";
+    std::size_t command_poll_milliseconds = 1000;
+    std::size_t cycle_delay_milliseconds = 0;
     bool show_help = false;
 };
 
@@ -109,6 +118,58 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
                 argv[index], "--step-seconds");
             continue;
         }
+        if (argument == "--backend-url") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--backend-url requires a URL");
+            }
+            options.backend_url = argv[index];
+            continue;
+        }
+        if (argument == "--edge-id") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--edge-id requires a value");
+            }
+            options.edge_id = argv[index];
+            continue;
+        }
+        if (argument == "--outbox-path") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--outbox-path requires a directory");
+            }
+            options.outbox_path = argv[index];
+            continue;
+        }
+        if (argument == "--command-poll-ms") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--command-poll-ms requires a value");
+            }
+            options.command_poll_milliseconds =
+                parse_positive_size(argv[index], "--command-poll-ms");
+            continue;
+        }
+        if (argument == "--cycle-delay-ms") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--cycle-delay-ms requires a value");
+            }
+            std::size_t parsed_characters = 0;
+            const std::string value = argv[index];
+            const auto parsed = std::stoull(value, &parsed_characters);
+            if (
+                value.empty() ||
+                value.front() == '-' ||
+                parsed_characters != value.size()) {
+                throw std::invalid_argument(
+                    "--cycle-delay-ms requires a non-negative integer");
+            }
+            options.cycle_delay_milliseconds =
+                static_cast<std::size_t>(parsed);
+            continue;
+        }
         throw std::invalid_argument(
             "unknown argument: " + argument);
     }
@@ -124,6 +185,11 @@ void print_help(const char* executable) {
         << "  --zones N           Number of independent zones (default: 1)\n"
         << "  --steps N           Number of control cycles (default: 1)\n"
         << "  --step-seconds SEC  Simulated seconds per cycle (default: 900)\n"
+        << "  --backend-url URL   Enable asynchronous backend delivery\n"
+        << "  --edge-id ID        Stable Edge identifier\n"
+        << "  --outbox-path PATH  Persistent delivery queue directory\n"
+        << "  --command-poll-ms N Command polling interval (default: 1000)\n"
+        << "  --cycle-delay-ms N  Real-time pause before each cycle (default: 0)\n"
         << "  -h, --help          Show this help\n";
 }
 
@@ -255,6 +321,28 @@ int main(int argc, char* argv[]) {
             zone.confirm_all_configurations();
         }
 
+        std::shared_ptr<smarthydro::HttpBackendClient> backend_client;
+        if (options.backend_url.has_value()) {
+            smarthydro::HttpBackendConfig backend_config;
+            backend_config.base_url = *options.backend_url;
+            backend_config.edge_id = options.edge_id;
+            if (const auto* token =
+                    std::getenv("SMARTHYDRO_API_TOKEN")) {
+                backend_config.bearer_token = token;
+            }
+            backend_config.outbox_directory = options.outbox_path;
+            backend_config.command_poll_interval =
+                std::chrono::milliseconds(
+                    options.command_poll_milliseconds);
+            backend_client =
+                std::make_shared<smarthydro::HttpBackendClient>(
+                    *event_bus,
+                    greenhouse.zone_ids(),
+                    std::move(backend_config));
+            event_bus->subscribe(backend_client);
+            backend_client->start();
+        }
+
         std::cout
             << "SmartHydro Edge Controller\n"
             << "Version: 0.1.0\n"
@@ -265,12 +353,32 @@ int main(int argc, char* argv[]) {
             << " (" << recipe.plant_type << ")\n"
             << "Recipe file: "
             << std::filesystem::absolute(options.recipe_path)
+            << "\nBackend: "
+            << (
+                   options.backend_url.has_value()
+                       ? *options.backend_url
+                       : "offline")
             << "\nConfigurations: locally validated and confirmed\n"
             << std::fixed << std::setprecision(2);
 
         for (std::size_t step = 1;
              step <= options.steps;
              ++step) {
+            if (options.cycle_delay_milliseconds > 0) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(
+                        options.cycle_delay_milliseconds));
+            }
+            if (backend_client) {
+                for (auto& remote : backend_client->take_commands()) {
+                    const auto result = greenhouse.execute_command(
+                        remote.zone_id,
+                        remote.envelope);
+                    backend_client->submit_command_result(
+                        remote.zone_id,
+                        result);
+                }
+            }
             const auto results =
                 greenhouse.step_all(options.step_seconds);
             for (const auto& [zone_id, result] : results) {
@@ -280,6 +388,10 @@ int main(int argc, char* argv[]) {
                     options.steps,
                     result);
             }
+        }
+        if (backend_client) {
+            backend_client->flush(std::chrono::milliseconds(2500));
+            backend_client->stop();
         }
         return 0;
     } catch (const std::exception& error) {
