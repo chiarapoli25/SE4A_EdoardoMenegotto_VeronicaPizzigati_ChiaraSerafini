@@ -30,7 +30,11 @@ def get_connection(
     """
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(database_path)
+    # FastAPI può aprire e chiudere la stessa dipendenza sincrona in thread
+    # diversi del proprio worker pool. Ogni richiesta possiede comunque una
+    # connessione dedicata, quindi la disattivazione del vincolo di thread è
+    # necessaria e non introduce condivisione fra richieste.
+    return sqlite3.connect(database_path, check_same_thread=False)
 
 
 def get_db() -> Generator[sqlite3.Connection, None, None]:

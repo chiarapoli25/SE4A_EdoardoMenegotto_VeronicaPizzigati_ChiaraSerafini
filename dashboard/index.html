@@ -3,21 +3,21 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Dashboard locale SmartHydro per ricette e simulazione Edge.">
+    <meta name="description" content="Control room SmartHydro per reparti, settori, colture e simulazione Edge.">
     <title>SmartHydro · Control room</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
-        <a class="brand" href="#overview" aria-label="SmartHydro home">
+        <a class="brand" href="#serra" aria-label="SmartHydro home">
           <span class="brand-mark" aria-hidden="true">S</span>
           <span><strong>SmartHydro</strong><small>Control room</small></span>
         </a>
 
         <nav class="main-nav" aria-label="Sezioni principali">
-          <button class="nav-item active" data-view="overview" type="button">
-            <span class="nav-icon" aria-hidden="true">◫</span>Panoramica
+          <button class="nav-item active" data-view="serra" type="button">
+            <span class="nav-icon" aria-hidden="true">▦</span>Serra
           </button>
           <button class="nav-item" data-view="recipe" type="button">
             <span class="nav-icon" aria-hidden="true">⌁</span>Ricetta
@@ -39,8 +39,8 @@
         <header class="topbar">
           <button id="mobile-menu" class="mobile-menu" type="button" aria-label="Apri menu">☰</button>
           <div>
-            <p class="eyebrow">Serra didattica · Pomodoro</p>
-            <h1 id="page-title">Panoramica</h1>
+            <p id="page-context" class="eyebrow">Serra didattica · 4 reparti</p>
+            <h1 id="page-title">Serra</h1>
           </div>
           <div class="topbar-actions">
             <span id="connection-pill" class="pill neutral"><span class="pulse"></span>Connessione in verifica</span>
@@ -50,60 +50,23 @@
 
         <div id="toast-region" class="toast-region" aria-live="polite"></div>
 
-        <section id="view-overview" class="view active" aria-labelledby="page-title">
-          <div class="hero-grid">
-            <article class="hero-card">
-              <div>
-                <p class="eyebrow light">Ricetta attiva</p>
-                <h2 id="overview-recipe-name">Nessuna ricetta salvata</h2>
-                <p id="overview-recipe-meta">Crea la prima ricetta per iniziare la simulazione.</p>
-              </div>
-              <div class="hero-phase">
-                <span>Fase corrente</span>
-                <strong id="overview-phase">—</strong>
-              </div>
-              <button class="secondary light" data-go-to="recipe" type="button">Apri ricetta</button>
-            </article>
+        <section id="view-serra" class="view active" aria-labelledby="page-title">
+          <nav id="greenhouse-breadcrumbs" class="breadcrumbs" aria-label="Percorso nella serra"></nav>
 
-            <article class="system-card">
-              <div class="section-heading">
-                <div><p class="eyebrow">Disponibilità</p><h2>Tre componenti, un flusso</h2></div>
-                <span id="overview-system-badge" class="badge neutral">Verifica</span>
-              </div>
-              <div class="component-flow">
-                <div><span class="component-icon">UI</span><strong>Dashboard</strong><small id="flow-dashboard">In verifica</small></div>
-                <i>→</i>
-                <div><span class="component-icon">API</span><strong>Backend</strong><small id="flow-backend">In verifica</small></div>
-                <i>→</i>
-                <div><span class="component-icon">C++</span><strong>Edge</strong><small id="flow-edge">In verifica</small></div>
-              </div>
-            </article>
+          <div class="greenhouse-toolbar">
+            <div>
+              <p id="greenhouse-kicker" class="eyebrow">Mappa operativa</p>
+              <h2 id="greenhouse-heading">Piantina della serra</h2>
+              <p id="greenhouse-description" class="muted">Seleziona un reparto per visualizzare i suoi settori di coltivazione.</p>
+            </div>
+            <div class="refresh-block">
+              <span id="greenhouse-updated" class="muted">Dati non ancora aggiornati</span>
+              <button id="refresh-greenhouse" class="secondary compact" type="button">Aggiorna</button>
+            </div>
           </div>
 
-          <div class="section-heading spaced">
-            <div><p class="eyebrow">Ultimo ciclo</p><h2>Sensori e modelli</h2></div>
-            <span id="overview-cycle" class="muted">Simulazione non avviata</span>
-          </div>
-          <div id="sensor-grid" class="metric-grid"></div>
-
-          <div class="split-grid spaced">
-            <article class="panel">
-              <div class="section-heading">
-                <div><p class="eyebrow">Output fisico</p><h2>Attuatori</h2></div>
-                <span id="actuator-live-badge" class="badge neutral">In attesa</span>
-              </div>
-              <div id="overview-actuators" class="actuator-list"></div>
-            </article>
-            <article class="panel">
-              <div class="section-heading">
-                <div><p class="eyebrow">Decisioni</p><h2>Controllo ricetta</h2></div>
-                <span class="badge outline">6 variabili</span>
-              </div>
-              <div id="overview-decisions" class="decision-summary empty-message">
-                Avvia una simulazione per osservare le decisioni dell’Edge.
-              </div>
-            </article>
-          </div>
+          <div id="greenhouse-alert" class="inline-status greenhouse-alert" hidden></div>
+          <div id="greenhouse-content" aria-live="polite"></div>
         </section>
 
         <section id="view-recipe" class="view" aria-labelledby="page-title">

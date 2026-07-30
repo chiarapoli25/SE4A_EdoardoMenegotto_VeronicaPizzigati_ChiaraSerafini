@@ -57,6 +57,11 @@ const state = {
   recipe: null,
   template: null,
   persistedVersion: null,
+  zones: [],
+  zoneDetails: {},
+  route: { name: "serra" },
+  greenhouseTimer: null,
+  greenhouseRefreshing: false,
   simulation: [],
   simulationIndex: -1,
   timer: null,
@@ -107,17 +112,87 @@ function toast(message, isError = false) {
   window.setTimeout(() => element.remove(), 4200);
 }
 
+function navigate(route) {
+  const nextHash = `#${route}`;
+  if (window.location.hash === nextHash) {
+    applyRoute();
+  } else {
+    window.location.hash = route;
+  }
+}
+
 function setView(view) {
-  const titles = {
-    overview: "Panoramica",
-    recipe: "Gestione ricetta",
-    simulation: "Simulazione Edge",
-  };
+  navigate(view);
+}
+
+function parseRoute() {
+  const hash = window.location.hash.replace(/^#/, "");
+  if (!hash || hash === "overview") return { name: "serra" };
+  if (hash === "serra" || hash === "recipe" || hash === "simulation") return { name: hash };
+  const [name, value] = hash.split("/");
+  if (name === "reparto" && /^[1-4]$/.test(value || "")) {
+    return { name: "reparto", departmentNumber: Number(value) };
+  }
+  if (name === "settore" && value) {
+    try {
+      return { name: "settore", zoneId: decodeURIComponent(value) };
+    } catch (_) {
+      return { name: "serra" };
+    }
+  }
+  return { name: "serra" };
+}
+
+function updateShell(view, title, context) {
   document.querySelectorAll(".view").forEach((node) => node.classList.toggle("active", node.id === `view-${view}`));
-  document.querySelectorAll(".nav-item").forEach((node) => node.classList.toggle("active", node.dataset.view === view));
-  document.querySelector("#page-title").textContent = titles[view];
+  document.querySelectorAll(".nav-item").forEach((node) => {
+    node.classList.toggle("active", node.dataset.view === view);
+  });
+  document.querySelector("#page-title").textContent = title;
+  document.querySelector("#page-context").textContent = context;
   document.querySelector(".sidebar").classList.remove("open");
-  window.location.hash = view;
+}
+
+function stopGreenhouseRefresh() {
+  if (state.greenhouseTimer) window.clearInterval(state.greenhouseTimer);
+  state.greenhouseTimer = null;
+}
+
+function startGreenhouseRefresh() {
+  stopGreenhouseRefresh();
+  state.greenhouseTimer = window.setInterval(() => refreshGreenhouse(true), 10000);
+}
+
+function applyRoute() {
+  const route = parseRoute();
+  state.route = route;
+  if (route.name === "recipe") {
+    stopGreenhouseRefresh();
+    updateShell("recipe", "Gestione ricetta", "Serra didattica · Pomodoro");
+    return;
+  }
+  if (route.name === "simulation") {
+    stopGreenhouseRefresh();
+    updateShell("simulation", "Simulazione Edge", "Serra didattica · Pomodoro");
+    return;
+  }
+
+  const zone = route.name === "settore"
+    ? state.zones.find((item) => item.id === route.zoneId)
+    : null;
+  if (route.name === "reparto") {
+    updateShell("serra", `Reparto ${route.departmentNumber}`, "Serra didattica · Settori");
+  } else if (route.name === "settore") {
+    const sectorTitle = zone
+      ? `Settore ${zone.sector_number} · ${zone.plant_species}`
+      : "Dettaglio settore";
+    updateShell("serra", sectorTitle, zone ? `Reparto ${zone.department_number} · Coltivazione` : "Serra didattica");
+  } else {
+    updateShell("serra", "Serra", "Serra didattica · 4 reparti");
+  }
+  renderGreenhouse();
+  refreshGreenhouse(true);
+  startGreenhouseRefresh();
 }
 
 function setSystemNode(id, ready) {
@@ -132,15 +207,9 @@ async function refreshSystemStatus() {
     setSystemNode("#side-dashboard", status.dashboard === "ready");
     setSystemNode("#side-backend", status.backend === "ready");
     setSystemNode("#side-edge", status.edge === "ready");
-    document.querySelector("#flow-dashboard").textContent = status.dashboard === "ready" ? "Pronta" : "Non disponibile";
-    document.querySelector("#flow-backend").textContent = status.backend === "ready" ? "Pronto" : "Non disponibile";
-    document.querySelector("#flow-edge").textContent = status.edge === "ready" ? "Pronto" : "Da compilare";
     const pill = document.querySelector("#connection-pill");
     pill.className = `pill ${ready ? "ready" : "error"}`;
     pill.innerHTML = `<span class="pulse"></span>${ready ? "Sistema pronto" : "Sistema parzialmente disponibile"}`;
-    const badge = document.querySelector("#overview-system-badge");
-    badge.className = `badge ${ready ? "ready" : "limited"}`;
-    badge.textContent = ready ? "Operativo" : "Parziale";
   } catch (error) {
     ["#side-dashboard", "#side-backend", "#side-edge"].forEach((id) => setSystemNode(id, false));
     const pill = document.querySelector("#connection-pill");
@@ -152,6 +221,438 @@ async function refreshSystemStatus() {
 function formatNumber(value, digits = 1) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
   return Number(value).toLocaleString("it-IT", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+function formatDateTime(value) {
+  if (!value) return "Nessun contatto";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Data non disponibile";
+  return date.toLocaleString("it-IT", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function zoneAt(departmentNumber, sectorNumber) {
+  return state.zones.find((zone) =>
+    zone.department_number === departmentNumber && zone.sector_number === sectorNumber
+  );
+}
+
+function zoneStatusBadge(zone) {
+  const online = zone?.status === "online";
+  return `<span class="badge ${online ? "ready" : "neutral"}"><span class="status-pin"></span>${online ? "Online" : "Offline"}</span>`;
+}
+
+function latestPhase(zone, events = []) {
+  if (zone?.current_phase) return zone.current_phase;
+  const phaseEvent = [...events].reverse().find((event) =>
+    event.event_type === "RecipePhaseChanged" && event.payload?.current_phase
+  );
+  return phaseEvent?.payload?.current_phase || null;
+}
+
+function stateLabel(value) {
+  const labels = {
+    Nominal: "Nominale",
+    Degraded: "Degradato",
+    EmergencyLockdown: "Blocco di emergenza",
+  };
+  return labels[value] || value || "Non disponibile";
+}
+
+function deriveOperationalState(events = []) {
+  const event = [...events].reverse().find((item) =>
+    item.event_type === "StateChanged" || item.event_type === "EmergencyTriggered"
+  );
+  if (!event) return { value: null, label: "Non disponibile", tone: "neutral" };
+  if (event.event_type === "EmergencyTriggered") {
+    return { value: "EmergencyLockdown", label: "Blocco di emergenza", tone: "blocked" };
+  }
+  const value = event.payload?.current_state || null;
+  const tone = value === "EmergencyLockdown" ? "blocked" : value === "Degraded" ? "limited" : value === "Nominal" ? "ready" : "neutral";
+  return { value, label: stateLabel(value), tone };
+}
+
+function greenhouseBreadcrumbs(route, zone) {
+  const items = [
+    `<button type="button" data-greenhouse-route="serra">Serra</button>`,
+  ];
+  if (route.name === "reparto" || zone) {
+    const departmentNumber = route.departmentNumber || zone?.department_number;
+    items.push(`<span aria-hidden="true">›</span>`);
+    if (zone) {
+      items.push(`<button type="button" data-greenhouse-route="reparto/${departmentNumber}">Reparto ${departmentNumber}</button>`);
+    } else {
+      items.push(`<strong aria-current="page">Reparto ${departmentNumber}</strong>`);
+    }
+  }
+  if (zone) {
+    items.push(`<span aria-hidden="true">›</span>`);
+    items.push(`<strong aria-current="page">Settore ${zone.sector_number}</strong>`);
+  }
+  return items.join("");
+}
+
+function greenhouseSummaryMarkup() {
+  const configured = state.zones.length;
+  const online = state.zones.filter((zone) => zone.status === "online").length;
+  const species = new Set(state.zones.map((zone) => zone.plant_species)).size;
+  return `
+    <div class="greenhouse-summary" aria-label="Riepilogo serra">
+      <div><span>Reparti</span><strong>4</strong></div>
+      <div><span>Settori configurati</span><strong>${configured} <small>/ 8</small></strong></div>
+      <div><span>Settori online</span><strong>${online}</strong></div>
+      <div><span>Specie coltivate</span><strong>${species}</strong></div>
+    </div>`;
+}
+
+function mapSectorMarkup(departmentNumber, sectorNumber) {
+  const zone = zoneAt(departmentNumber, sectorNumber);
+  if (!zone) {
+    return `
+      <div class="map-sector empty">
+        <span>Settore ${sectorNumber}</span>
+        <strong>Non configurato</strong>
+      </div>`;
+  }
+  const phase = latestPhase(zone, state.zoneDetails[zone.id]?.events);
+  return `
+    <div class="map-sector ${zone.status === "online" ? "online" : "offline"}">
+      <span>Settore ${sectorNumber} · ${zone.status === "online" ? "Online" : "Offline"}</span>
+      <strong>${escapeHtml(zone.plant_species)}</strong>
+      <small>${escapeHtml(phase || "Fase non disponibile")}</small>
+    </div>`;
+}
+
+function renderGreenhouseMap() {
+  const departments = [1, 2, 3, 4].map((departmentNumber) => {
+    const configured = state.zones.filter((zone) => zone.department_number === departmentNumber).length;
+    return `
+      <button class="department-card" type="button" data-department="${departmentNumber}" aria-label="Apri reparto ${departmentNumber}, ${configured} settori configurati">
+        <span class="department-card-head">
+          <span><small>Reparto</small><strong>${departmentNumber}</strong></span>
+          <span class="department-count">${configured}/2 settori</span>
+        </span>
+        <span class="department-sectors">
+          ${mapSectorMarkup(departmentNumber, 1)}
+          ${mapSectorMarkup(departmentNumber, 2)}
+        </span>
+      </button>`;
+  }).join("");
+  return `
+    ${greenhouseSummaryMarkup()}
+    <div class="greenhouse-plan-shell">
+      <div class="greenhouse-plan-label"><span>Ingresso serra</span><i></i></div>
+      <div class="greenhouse-plan">${departments}</div>
+    </div>`;
+}
+
+function sectorCardMarkup(departmentNumber, sectorNumber) {
+  const zone = zoneAt(departmentNumber, sectorNumber);
+  if (!zone) {
+    return `
+      <button class="sector-card empty" type="button" disabled>
+        <span class="sector-number">${sectorNumber}</span>
+        <span class="sector-card-body">
+          <small>Settore ${sectorNumber}</small>
+          <strong>Non configurato</strong>
+          <span>Nessuna zona registrata in questa posizione.</span>
+        </span>
+      </button>`;
+  }
+  const phase = latestPhase(zone, state.zoneDetails[zone.id]?.events);
+  return `
+    <button class="sector-card" type="button" data-zone-id="${escapeHtml(zone.id)}">
+      <span class="sector-number">${sectorNumber}</span>
+      <span class="sector-card-body">
+        <span class="sector-card-top"><small>Settore ${sectorNumber}</small>${zoneStatusBadge(zone)}</span>
+        <strong>${escapeHtml(zone.plant_species)}</strong>
+        <span>${escapeHtml(phase || "Fase non disponibile")}</span>
+        <em>Ultimo contatto: ${escapeHtml(formatDateTime(zone.last_edge_contact))}</em>
+      </span>
+      <span class="sector-arrow" aria-hidden="true">→</span>
+    </button>`;
+}
+
+function renderDepartment(departmentNumber) {
+  const configured = state.zones.filter((zone) => zone.department_number === departmentNumber).length;
+  return `
+    <div class="department-overview">
+      <article class="department-hero">
+        <div>
+          <p class="eyebrow light">Area di coltivazione</p>
+          <h3>Reparto ${departmentNumber}</h3>
+          <p>${configured ? `${configured} ${configured === 1 ? "settore configurato" : "settori configurati"}` : "Nessun settore ancora configurato"} su 2 disponibili.</p>
+        </div>
+        <span class="department-hero-number">${departmentNumber}</span>
+      </article>
+      <div class="sector-list">
+        ${sectorCardMarkup(departmentNumber, 1)}
+        ${sectorCardMarkup(departmentNumber, 2)}
+      </div>
+    </div>`;
+}
+
+function telemetryMarkup(telemetry) {
+  if (!telemetry) {
+    return `<div class="data-empty"><strong>Nessuna telemetria disponibile</strong><span>Il settore non ha ancora inviato misure.</span></div>`;
+  }
+  const values = [
+    ["Temperatura", "T", telemetry.temperature_c, "°C", "Sensore aria"],
+    ["Umidità aria", "RH", telemetry.air_humidity_percent, "%", "Sensore aria"],
+    ["Umidità terreno", "H₂O", telemetry.soil_moisture_percent, "%", "Sensore terreno"],
+    ["pH", "pH", telemetry.ph, "", "Elettrodo"],
+    ["Luce", "PAR", telemetry.light_ppfd_umol_m2_s, "µmol/m²s", "Sensore PAR"],
+  ];
+  return `<div class="sector-metric-grid">${values.map(([label, symbol, value, unit, source]) => `
+    <article class="metric-card">
+      <header><span>${label}</span><span class="metric-symbol">${symbol}</span></header>
+      <div class="metric-value">${formatNumber(value)} <small>${unit}</small></div>
+      <footer>${source}${value === null ? " · dropout" : ""}</footer>
+    </article>`).join("")}</div>`;
+}
+
+function snapshotActuatorMarkup(snapshot) {
+  if (!snapshot) {
+    return `<div class="data-empty"><strong>Nessuno stato disponibile</strong><span>Gli attuatori non hanno ancora inviato uno snapshot.</span></div>`;
+  }
+  const command = snapshot.command || {};
+  const output = snapshot.output || {};
+  const valves = output.fertilizer_valves_open || {};
+  const nutrientsOpen = ["nitrogen", "phosphorus", "potassium"].some((key) => Boolean(valves[key]));
+  const phOpen = Boolean(valves["ph-up"] ?? valves.ph_up) || Boolean(valves["ph-down"] ?? valves.ph_down);
+  return `
+    <div class="actuator-row"><span class="actuator-icon">P</span><div><strong>Pompa acqua</strong>
+      <small>${formatNumber(output.water_pump_flow_liters_per_hour)} L/h · ultimo passo ${formatNumber(output.irrigation_volume_liters_last_step, 2)} L</small></div>
+      <span class="state-value ${output.water_pump_on ? "on" : ""}">${output.water_pump_on ? "ON" : "OFF"}</span></div>
+    <div class="actuator-row"><span class="actuator-icon">LED</span><div><strong>Illuminazione</strong>
+      <small>${formatNumber(output.lighting_power_watts)} W fisici</small></div>
+      <span class="state-value ${Number(command.lighting_percent) > 0 ? "on" : ""}">${formatNumber(command.lighting_percent, 0)}%</span></div>
+    <div class="actuator-row"><span class="actuator-icon">NPK</span><div><strong>Valvole nutrienti</strong>
+      <small>Azoto, fosforo e potassio</small></div><span class="state-value ${nutrientsOpen ? "on" : ""}">${nutrientsOpen ? "APERTE" : "CHIUSE"}</span></div>
+    <div class="actuator-row"><span class="actuator-icon">pH</span><div><strong>Correttori pH</strong>
+      <small>Valvole pH+ e pH−</small></div><span class="state-value ${phOpen ? "on" : ""}">${phOpen ? "ATTIVI" : "FERMI"}</span></div>`;
+}
+
+function eventDescription(event) {
+  const payload = event.payload || {};
+  switch (event.event_type) {
+    case "RecipePhaseChanged":
+      return `${payload.previous_phase || "Inizio"} → ${payload.current_phase || "Fase sconosciuta"}`;
+    case "StateChanged":
+      return `${stateLabel(payload.previous_state)} → ${stateLabel(payload.current_state)}${payload.reason ? ` · ${payload.reason}` : ""}`;
+    case "FaultDetected":
+      return `${payload.fault_type || "Guasto"}${payload.diagnostic ? ` · ${payload.diagnostic}` : ""}`;
+    case "EmergencyTriggered":
+      return payload.reason || "Arresto di emergenza";
+    case "StrategyChanged":
+      return `${payload.variable || "Variabile"} · ${payload.previous_strategy || "—"} → ${payload.current_strategy || "—"}`;
+    case "CommandFailed":
+      return `${payload.actuator || "Attuatore"}${payload.diagnostic ? ` · ${payload.diagnostic}` : ""}`;
+    default:
+      return payload.diagnostic || payload.reason || "Evento registrato dall’Edge";
+  }
+}
+
+function eventLabel(type) {
+  const labels = {
+    RecipePhaseChanged: "Cambio fase",
+    StateChanged: "Cambio stato",
+    FaultDetected: "Guasto",
+    EmergencyTriggered: "Emergenza",
+    StrategyChanged: "Cambio strategia",
+    CommandFailed: "Comando fallito",
+    CommandExecuted: "Comando eseguito",
+  };
+  return labels[type] || type;
+}
+
+function eventsMarkup(events = []) {
+  const visibleEvents = [...events].reverse().filter((event) => event.event_type !== "CommandExecuted").slice(0, 10);
+  if (!visibleEvents.length) {
+    return `<div class="data-empty"><strong>Nessun evento recente</strong><span>La cronologia comparirà quando l’Edge invierà aggiornamenti.</span></div>`;
+  }
+  return `<ol class="event-timeline">${visibleEvents.map((event) => {
+    const critical = ["EmergencyTriggered", "FaultDetected", "CommandFailed"].includes(event.event_type);
+    return `
+      <li class="${critical ? "critical" : ""}">
+        <span class="event-dot"></span>
+        <div><span>${escapeHtml(eventLabel(event.event_type))}<time>${escapeHtml(formatDateTime(event.recorded_at))}</time></span>
+        <strong>${escapeHtml(eventDescription(event))}</strong></div>
+      </li>`;
+  }).join("")}</ol>`;
+}
+
+function renderSectorDetail(zone) {
+  const details = state.zoneDetails[zone.id] || {};
+  const events = details.events || [];
+  const phase = latestPhase(zone, events);
+  const operationalState = deriveOperationalState(events);
+  return `
+    <article class="sector-hero panel">
+      <div class="sector-identity">
+        <span class="plant-mark" aria-hidden="true">${escapeHtml(zone.plant_species.charAt(0).toUpperCase())}</span>
+        <div>
+          <p class="eyebrow">Coltivazione attiva</p>
+          <h2>${escapeHtml(zone.plant_species)}</h2>
+          <p>${escapeHtml(zone.name)} · Reparto ${zone.department_number}, settore ${zone.sector_number}</p>
+        </div>
+      </div>
+      ${zoneStatusBadge(zone)}
+      <dl class="sector-facts">
+        <div><dt>Fase corrente</dt><dd>${escapeHtml(phase || "Non disponibile")}</dd></div>
+        <div><dt>Stato operativo</dt><dd><span class="badge ${operationalState.tone}">${escapeHtml(operationalState.label)}</span></dd></div>
+        <div><dt>Ricetta assegnata</dt><dd>${escapeHtml(zone.active_recipe_id || "Non assegnata")}</dd></div>
+        <div><dt>Ultimo contatto Edge</dt><dd>${escapeHtml(formatDateTime(zone.last_edge_contact))}</dd></div>
+      </dl>
+    </article>
+
+    <div class="section-heading spaced">
+      <div><p class="eyebrow">Ultimo campione</p><h2>Condizioni del settore</h2></div>
+      <span class="muted">${details.telemetry ? escapeHtml(formatDateTime(details.telemetry.recorded_at)) : "In attesa di dati"}</span>
+    </div>
+    ${telemetryMarkup(details.telemetry)}
+
+    <div class="sector-detail-grid spaced">
+      <article class="panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Output fisico</p><h2>Attuatori</h2></div>
+          <span class="badge ${details.actuators ? "ready" : "neutral"}">${details.actuators ? "Snapshot Edge" : "In attesa"}</span>
+        </div>
+        <div class="actuator-list">${snapshotActuatorMarkup(details.actuators)}</div>
+      </article>
+      <article class="panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Registro operativo</p><h2>Eventi recenti</h2></div>
+          <span class="badge outline">${events.length} eventi</span>
+        </div>
+        ${eventsMarkup(events)}
+      </article>
+    </div>`;
+}
+
+function renderGreenhouse() {
+  const route = state.route;
+  const content = document.querySelector("#greenhouse-content");
+  const breadcrumbs = document.querySelector("#greenhouse-breadcrumbs");
+  const kicker = document.querySelector("#greenhouse-kicker");
+  const heading = document.querySelector("#greenhouse-heading");
+  const description = document.querySelector("#greenhouse-description");
+  if (!content || !breadcrumbs) return;
+
+  const zone = route.name === "settore"
+    ? state.zones.find((item) => item.id === route.zoneId)
+    : null;
+  breadcrumbs.innerHTML = greenhouseBreadcrumbs(route, zone);
+
+  if (route.name === "reparto") {
+    kicker.textContent = "Dettaglio reparto";
+    heading.textContent = `Reparto ${route.departmentNumber}`;
+    description.textContent = "Seleziona un settore configurato per aprire coltura, sensori, attuatori ed eventi.";
+    content.innerHTML = renderDepartment(route.departmentNumber);
+    return;
+  }
+  if (route.name === "settore") {
+    kicker.textContent = "Dettaglio settore";
+    if (!zone) {
+      heading.textContent = "Settore non disponibile";
+      description.textContent = "Il settore richiesto non è registrato oppure è stato rimosso.";
+      content.innerHTML = `
+        <div class="panel route-empty">
+          <span aria-hidden="true">⌁</span>
+          <h2>Impossibile aprire il settore</h2>
+          <p>Ritorna alla piantina e scegli un settore configurato.</p>
+          <button class="secondary" type="button" data-greenhouse-route="serra">Torna alla serra</button>
+        </div>`;
+      return;
+    }
+    heading.textContent = `${zone.name}`;
+    description.textContent = `Monitoraggio della coltivazione di ${zone.plant_species}.`;
+    content.innerHTML = renderSectorDetail(zone);
+    updateShell("serra", `Settore ${zone.sector_number} · ${zone.plant_species}`, `Reparto ${zone.department_number} · Coltivazione`);
+    return;
+  }
+
+  kicker.textContent = "Mappa operativa";
+  heading.textContent = "Piantina della serra";
+  description.textContent = "Seleziona un reparto per visualizzare i suoi settori di coltivazione.";
+  content.innerHTML = renderGreenhouseMap();
+}
+
+async function requestOptional(path) {
+  try {
+    return await request(path);
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+}
+
+async function refreshGreenhouse(silent = false) {
+  if (state.greenhouseRefreshing) return;
+  state.greenhouseRefreshing = true;
+  const button = document.querySelector("#refresh-greenhouse");
+  const alert = document.querySelector("#greenhouse-alert");
+  const errors = [];
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Aggiornamento…";
+  }
+
+  try {
+    try {
+      state.zones = await request("/zones");
+    } catch (error) {
+      errors.push(`Settori: ${error.message}`);
+    }
+
+    const route = state.route;
+    const zone = route.name === "settore"
+      ? state.zones.find((item) => item.id === route.zoneId)
+      : null;
+    if (zone) {
+      const paths = [
+        `/zones/${encodeURIComponent(zone.id)}/telemetry/latest`,
+        `/zones/${encodeURIComponent(zone.id)}/actuators/latest`,
+        `/zones/${encodeURIComponent(zone.id)}/events?limit=20`,
+      ];
+      const keys = ["telemetry", "actuators", "events"];
+      const results = await Promise.allSettled(paths.map((path) => requestOptional(path)));
+      const nextDetails = { ...(state.zoneDetails[zone.id] || {}) };
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          nextDetails[keys[index]] = result.value;
+        } else {
+          errors.push(`${keys[index]}: ${result.reason.message}`);
+        }
+      });
+      state.zoneDetails[zone.id] = nextDetails;
+    }
+
+    renderGreenhouse();
+    if (!errors.length) {
+      const updated = document.querySelector("#greenhouse-updated");
+      if (updated) updated.textContent = `Aggiornato alle ${new Date().toLocaleTimeString("it-IT")}`;
+    }
+    if (alert) {
+      alert.hidden = errors.length === 0;
+      alert.className = `inline-status greenhouse-alert${errors.length ? " error" : ""}`;
+      alert.textContent = errors.length
+        ? `Alcuni dati non sono aggiornati. ${errors.join(" · ")}`
+        : "";
+    }
+    if (errors.length && !silent) toast("Aggiornamento parziale della serra.", true);
+  } finally {
+    state.greenhouseRefreshing = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Aggiorna";
+    }
+  }
 }
 
 function metricCards(cycle = null) {
@@ -206,21 +707,8 @@ function actuatorMarkup(cycle = null) {
 
 function renderEmptyMetrics() {
   const markup = metricCards();
-  document.querySelector("#sensor-grid").innerHTML = markup;
   document.querySelector("#simulation-sensors").innerHTML = markup;
-  document.querySelector("#overview-actuators").innerHTML = actuatorMarkup();
   document.querySelector("#simulation-actuators").innerHTML = actuatorMarkup();
-}
-
-function updateOverviewRecipe() {
-  const recipe = state.recipe;
-  document.querySelector("#overview-recipe-name").textContent = recipe ? recipe.id : "Nessuna ricetta salvata";
-  document.querySelector("#overview-recipe-meta").textContent = recipe
-    ? `Pomodoro · ${recipe.phases.length} fasi · versione ${recipe.version}`
-    : "Crea la prima ricetta per iniziare la simulazione.";
-  if (state.simulationIndex < 0) {
-    document.querySelector("#overview-phase").textContent = recipe?.phases?.[0]?.name || "—";
-  }
 }
 
 async function refreshRecipeList(preferredId = null) {
@@ -242,7 +730,6 @@ async function loadRecipe(id) {
     state.recipe = await request(`/recipes/${encodeURIComponent(id)}`);
     state.persistedVersion = state.recipe.version;
     renderRecipeEditor();
-    updateOverviewRecipe();
     document.querySelector("#recipe-selector").value = id;
     document.querySelector("#simulation-recipe").value = id;
   } catch (error) {
@@ -359,7 +846,7 @@ function renderRecipeEditor() {
   renderControllers();
 }
 
-function newRecipe() {
+function newRecipe(shouldNavigate = true) {
   state.recipe = clone(state.template);
   state.recipe.id = "tomato_recipe";
   state.recipe.version = 1;
@@ -369,9 +856,8 @@ function newRecipe() {
   });
   state.persistedVersion = null;
   renderRecipeEditor();
-  updateOverviewRecipe();
   document.querySelector("#recipe-selector").value = "";
-  setView("recipe");
+  if (shouldNavigate) setView("recipe");
 }
 
 async function saveRecipe() {
@@ -394,7 +880,6 @@ async function saveRecipe() {
     state.persistedVersion = saved.version;
     await refreshRecipeList(saved.id);
     renderRecipeEditor();
-    updateOverviewRecipe();
     toast(`Ricetta ${saved.id} salvata come versione ${saved.version}.`);
   } catch (error) {
     toast(error.status === 409 ? "La ricetta è stata aggiornata altrove. Ricaricala e riprova." : error.message, true);
@@ -429,15 +914,7 @@ function renderCycle(index) {
   document.querySelector("#simulation-phase").textContent = cycle.phase_name;
   document.querySelector("#simulation-time").textContent = `${formatNumber(timeHours, 2)} h`;
   document.querySelector("#simulation-sensors").innerHTML = metricCards(cycle);
-  document.querySelector("#sensor-grid").innerHTML = metricCards(cycle);
   document.querySelector("#simulation-actuators").innerHTML = actuatorMarkup(cycle);
-  document.querySelector("#overview-actuators").innerHTML = actuatorMarkup(cycle);
-  document.querySelector("#overview-phase").textContent = cycle.phase_name;
-  document.querySelector("#overview-cycle").textContent = `Ciclo ${cycle.cycle} · ${formatNumber(timeHours, 2)} h`;
-  document.querySelector("#actuator-live-badge").className = "badge ready";
-  document.querySelector("#actuator-live-badge").textContent = "Dati Edge";
-  document.querySelector("#overview-decisions").className = "decision-summary";
-  document.querySelector("#overview-decisions").innerHTML = renderDecisionSummary(cycle);
   document.querySelector("#decision-table").innerHTML = Object.entries(cycle.decisions).map(([variable, decision]) => `
     <tr><td><strong>${variableMeta[variable].label}</strong></td>
     <td><span class="badge ${decision.status.toLowerCase()}">${decision.status}</span></td>
@@ -526,6 +1003,22 @@ function resetSimulation() {
 function bindEvents() {
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
   document.querySelectorAll("[data-go-to]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.goTo)));
+  document.querySelector("#refresh-greenhouse").addEventListener("click", () => refreshGreenhouse(false));
+  document.addEventListener("click", (event) => {
+    const routeButton = event.target.closest("[data-greenhouse-route]");
+    if (routeButton) {
+      navigate(routeButton.dataset.greenhouseRoute);
+      return;
+    }
+    const departmentButton = event.target.closest("[data-department]");
+    if (departmentButton) {
+      navigate(`reparto/${departmentButton.dataset.department}`);
+      return;
+    }
+    const zoneButton = event.target.closest("[data-zone-id]");
+    if (zoneButton) navigate(`settore/${encodeURIComponent(zoneButton.dataset.zoneId)}`);
+  });
+  window.addEventListener("hashchange", applyRoute);
   document.querySelector("#mobile-menu").addEventListener("click", () => document.querySelector(".sidebar").classList.toggle("open"));
   document.querySelector("#new-recipe").addEventListener("click", newRecipe);
   document.querySelector("#save-recipe").addEventListener("click", saveRecipe);
@@ -580,6 +1073,11 @@ function bindEvents() {
 async function initialize() {
   bindEvents();
   renderEmptyMetrics();
+  if (!window.location.hash || window.location.hash === "#overview") {
+    navigate("serra");
+  } else {
+    applyRoute();
+  }
   await refreshSystemStatus();
   try {
     state.template = await request("/recipes/template");
@@ -587,14 +1085,11 @@ async function initialize() {
     if (state.recipes.length) {
       await loadRecipe(state.recipes[0].id);
     } else {
-      newRecipe();
-      setView("overview");
+      newRecipe(false);
     }
   } catch (error) {
     toast(`Inizializzazione non riuscita: ${error.message}`, true);
   }
-  const initialView = window.location.hash.replace("#", "");
-  if (["overview", "recipe", "simulation"].includes(initialView)) setView(initialView);
 }
 
 initialize();

@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -72,3 +73,20 @@ def test_get_connection_creates_parent_directory(tmp_path: Path) -> None:
         assert database_path.exists()
     finally:
         new_connection.close()
+
+
+def test_get_connection_can_be_closed_by_fastapi_worker_thread() -> None:
+    new_connection = get_connection(":memory:")
+    errors: list[BaseException] = []
+
+    def close_connection() -> None:
+        try:
+            new_connection.close()
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=close_connection)
+    worker.start()
+    worker.join()
+
+    assert errors == []

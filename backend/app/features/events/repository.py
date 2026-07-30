@@ -71,14 +71,29 @@ def save_event(
             f"event_id {event.event_id!r} already exists with different data"
         ) from error
 
-    connection.execute(
-        """
-        UPDATE zones
-        SET status = 'online', last_edge_contact = ?
-        WHERE id = ?
-        """,
-        (received_at.isoformat(), zone_id),
-    )
+    current_phase = event.payload.get("current_phase")
+    if (
+        event.event_type == "RecipePhaseChanged"
+        and isinstance(current_phase, str)
+        and current_phase.strip()
+    ):
+        connection.execute(
+            """
+            UPDATE zones
+            SET status = 'online', last_edge_contact = ?, current_phase = ?
+            WHERE id = ?
+            """,
+            (received_at.isoformat(), current_phase, zone_id),
+        )
+    else:
+        connection.execute(
+            """
+            UPDATE zones
+            SET status = 'online', last_edge_contact = ?
+            WHERE id = ?
+            """,
+            (received_at.isoformat(), zone_id),
+        )
     connection.commit()
     stored_data = event.model_dump()
     stored_data["recorded_at"] = recorded_at
