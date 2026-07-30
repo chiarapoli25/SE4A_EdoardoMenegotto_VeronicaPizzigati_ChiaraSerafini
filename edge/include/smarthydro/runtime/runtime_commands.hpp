@@ -89,14 +89,16 @@ struct RejectConfigurationCommand {
     ControlledVariable variable = ControlledVariable::SOIL_MOISTURE;
 };
 
-/** @brief Inietta un guasto sintetico persistente nella simulazione. */
+/**
+ * @brief Inietta un'anomalia fisica tipizzata nella simulazione.
+ *
+ * La richiesta non decide la gravita operativa: sensori, attuatori e detector
+ * producono prima un sintomo osservabile; soltanto allora la FSM sceglie
+ * Degraded o EmergencyLockdown.
+ */
 struct InjectFaultCommand {
-    /** Identificatore usato per riconoscere e rimuovere il fault. */
-    std::string fault_id;
-    /** Severita con cui la FSM deve valutare il fault. */
-    ControlFaultSeverity severity = ControlFaultSeverity::RECOVERABLE;
-    /** Diagnostica leggibile che accompagna gli eventi e le transizioni. */
-    std::string diagnostic;
+    /** Specifica completa del componente, modalita, valore e durata. */
+    FaultSpecification specification;
 };
 
 /** @brief Rimuove un guasto sintetico identificato. */

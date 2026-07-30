@@ -17,6 +17,7 @@ constexpr double kDeliveredTolerance = 1.0e-12;
 
 void EdgeRuntime::stop_all_actuators() noexcept {
     actuators_->stop_all();
+    effective_actuator_output_ = {};
 }
 
 void EdgeRuntime::apply_safe_fallback(
@@ -161,7 +162,11 @@ void EdgeRuntime::advance_physics(
     double delta_time_seconds,
     EdgeStepResult& result) {
     actuators_->step(delta_time_seconds);
-    const auto& output = actuators_->output();
+    effective_actuator_output_ = apply_actuator_faults(
+        actuators_->command(),
+        actuators_->output(),
+        delta_time_seconds);
+    const auto& output = effective_actuator_output_;
     result.delivered_water_liters +=
         output.irrigation_volume_liters_last_step;
     for (std::size_t index = 0;

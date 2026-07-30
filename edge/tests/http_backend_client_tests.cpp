@@ -381,6 +381,39 @@ TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
             .has_value());
 }
 
+TEST(HttpBackendClientTest, DeserializesTypedFaultCommand) {
+    const auto envelope = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "fault-1",
+            "command_type": "InjectFault",
+            "payload": {
+                "fault_id": "temporary-ph-offset",
+                "target_type": "sensor",
+                "target": "ph",
+                "mode": "sensor_offset",
+                "value": 0.4,
+                "duration_seconds": 1800.0
+            }
+        })json");
+
+    ASSERT_TRUE(
+        std::holds_alternative<smarthydro::InjectFaultCommand>(
+            envelope.command));
+    const auto& specification =
+        std::get<smarthydro::InjectFaultCommand>(envelope.command)
+            .specification;
+    EXPECT_EQ(specification.fault_id, "temporary-ph-offset");
+    EXPECT_EQ(
+        specification.target_kind,
+        smarthydro::FaultTargetKind::SENSOR);
+    EXPECT_EQ(specification.target, "ph");
+    EXPECT_EQ(specification.mode, smarthydro::FaultMode::SENSOR_OFFSET);
+    ASSERT_TRUE(specification.value.has_value());
+    EXPECT_DOUBLE_EQ(*specification.value, 0.4);
+    ASSERT_TRUE(specification.duration_seconds.has_value());
+    EXPECT_DOUBLE_EQ(*specification.duration_seconds, 1800.0);
+}
+
 TEST(HttpBackendClientTest, SerializesZoneLifecycleEvents) {
     smarthydro::EventBus bus;
     const auto outbox = temporary_outbox("lifecycle-event");

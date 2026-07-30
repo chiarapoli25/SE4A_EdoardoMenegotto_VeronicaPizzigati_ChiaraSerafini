@@ -166,10 +166,7 @@ RuntimeCommandResult RuntimeCommandProcessor::execute_once(
                     return succeeded(envelope, "configuration rejected");
                 } else if constexpr (
                     std::is_same_v<Command, InjectFaultCommand>) {
-                    runtime_.inject_fault(
-                        command.fault_id,
-                        command.severity,
-                        command.diagnostic);
+                    runtime_.inject_fault(command.specification);
                     return succeeded(envelope, "fault injected");
                 } else if constexpr (
                     std::is_same_v<Command, ResetFaultCommand>) {

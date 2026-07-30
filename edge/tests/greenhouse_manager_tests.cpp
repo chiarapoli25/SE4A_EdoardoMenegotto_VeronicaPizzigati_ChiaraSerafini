@@ -671,9 +671,14 @@ TEST(GreenhouseManagerTest, CriticalFaultInOneZoneDoesNotLockTheOther) {
         {
             "inject-zone-fault",
             smarthydro::InjectFaultCommand{
-                "pump-overcurrent",
-                smarthydro::ControlFaultSeverity::CRITICAL,
-                "simulated zone-local overcurrent",
+                smarthydro::FaultSpecification{
+                    "lighting-stuck-on",
+                    smarthydro::FaultTargetKind::ACTUATOR,
+                    "lighting",
+                    smarthydro::FaultMode::ACTUATOR_STUCK_ON,
+                    std::nullopt,
+                    std::nullopt,
+                },
             },
         });
     const auto results = manager.step_all(60.0);
@@ -686,9 +691,9 @@ TEST(GreenhouseManagerTest, CriticalFaultInOneZoneDoesNotLockTheOther) {
         results.at("healthy-zone").operational_state,
         smarthydro::OperationalState::NOMINAL);
     EXPECT_TRUE(
-        faulty.runtime().has_injected_fault("pump-overcurrent"));
+        faulty.runtime().has_injected_fault("lighting-stuck-on"));
     EXPECT_FALSE(
-        healthy.runtime().has_injected_fault("pump-overcurrent"));
+        healthy.runtime().has_injected_fault("lighting-stuck-on"));
 }
 
 TEST(GreenhouseManagerTest, StrategyAndPhaseChangesRemainZoneLocal) {

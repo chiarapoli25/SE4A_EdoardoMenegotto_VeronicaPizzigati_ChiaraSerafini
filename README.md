@@ -257,7 +257,7 @@ operativi. Ogni richiesta contiene un `command_id` e un payload tipizzato:
 - attivazione di una coltivazione in una zona inattiva;
 - pausa, ripresa e arresto di una coltivazione;
 - conferma o rifiuto di una configurazione;
-- fault injection e reset del fault sintetico;
+- simulazione tipizzata e reset delle anomalie di sensori e attuatori;
 - avanzamento forzato della fase;
 - arresto di emergenza e richiesta di reset da `EmergencyLockdown`.
 
@@ -267,12 +267,86 @@ Il primo esito, positivo o negativo, viene memorizzato. Un retry con lo stesso
 `RuntimeCommandResult` rifiutato, evitando di propagare eccezioni al futuro
 trasporto HTTP o MQTT.
 
+### Simulazione e gestione delle anomalie
+
+L'utente non sceglie direttamente la gravita o lo stato della FSM. Invia invece
+un comando `InjectFault` che descrive un componente e un comportamento fisico
+anomalo. L'Edge altera letture o uscite, rileva il sintomo osservabile, pubblica
+`FaultDetected` e decide autonomamente la reazione operativa.
+
+Esempio: offset di pH attivo per 30 minuti simulati:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/zones/zone-1/commands \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "command_id": "fault-ph-offset-1",
+    "command_type": "InjectFault",
+    "payload": {
+      "fault_id": "temporary-ph-offset",
+      "target_type": "sensor",
+      "target": "ph",
+      "mode": "sensor_offset",
+      "value": 0.4,
+      "duration_seconds": 1800
+    }
+  }'
+```
+
+Esempio: illuminazione bloccata accesa fino al reset esplicito:
+
+```json
+{
+  "command_id": "fault-lighting-1",
+  "command_type": "InjectFault",
+  "payload": {
+    "fault_id": "lighting-stuck-on",
+    "target_type": "actuator",
+    "target": "lighting",
+    "mode": "actuator_stuck_on"
+  }
+}
+```
+
+I target sensore sono `temperature`, `air_humidity`, `soil_moisture`, `ph` e
+`light`. I target attuatore sono `water_pump`, `lighting`,
+`nitrogen_valve`, `phosphorus_valve`, `potassium_valve`, `ph_up_valve` e
+`ph_down_valve`. Le modalita supportate sono:
+
+| Componente | Modalita | Uso di `value` |
+| --- | --- | --- |
+| Sensore | `sensor_dropout` | nessuno |
+| Sensore | `sensor_stuck` | valore congelato opzionale; senza valore usa la prima lettura |
+| Sensore | `sensor_offset` | offset additivo obbligatorio |
+| Attuatore | `actuator_stuck_off` | nessuno |
+| Attuatore | `actuator_stuck_on` | nessuno |
+| Attuatore | `actuator_slow_response` | fattore obbligatorio strettamente fra 0 e 1 |
+
+`duration_seconds` e opzionale ed e espresso in tempo simulato. Alla scadenza
+il fault viene rimosso automaticamente. In alternativa l'utente invia:
+
+```json
+{
+  "command_id": "fault-reset-1",
+  "command_type": "ResetFault",
+  "payload": {"fault_id": "lighting-stuck-on"}
+}
+```
+
+Un fault recuperabile porta a `Degraded`: la sola variabile non affidabile
+rimane senza comando, mentre gli altri controlli continuano a funzionare. Se
+persiste per il numero di cicli configurato, passa a `EmergencyLockdown`.
+Un attuatore rilevato attivo senza comando e invece critico e causa il lockdown
+immediato. Dopo un fault temporaneo la zona recupera automaticamente da
+`Degraded` dopo campioni sani; dopo un lockdown servono sia `ResetFault` sia
+`ResetEmergency`, seguiti dal periodo di verifica gia previsto dalla FSM.
+
 Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
 della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla
-prima fase e invalida le conferme. Il fault sintetico rimane attivo fino al
-relativo reset. Dopo un `EmergencyStop`, `ResetEmergency` abilita soltanto il
-recovery controllato: gli attuatori restano fermi finche la FSM non verifica
-campioni sani.
+prima fase e invalida le conferme. Un fault persistente rimane attivo fino al
+relativo reset, mentre un fault temporaneo scade sul tempo simulato. Dopo un
+`EmergencyStop`, `ResetEmergency` abilita soltanto il recovery controllato: gli
+attuatori restano fermi finche la FSM non verifica campioni sani.
 
 L'eseguibile principale collega un `ConsoleLogger` alla zona `zone-1`. Altri
 observer possono essere registrati con `EventBus::subscribe()` e rimossi con

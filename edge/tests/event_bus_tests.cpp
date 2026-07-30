@@ -309,4 +309,28 @@ TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
         1U);
 }
 
+TEST(EventBusTest, RuntimePublishesAutomaticallyDetectedSensorFault) {
+    auto sensor_config = deterministic_sensors();
+    sensor_config.temperature.dropout_probability = 1.0;
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto recorder = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(recorder);
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(), {}, {}, sensor_config);
+    runtime.attach_event_bus(event_bus, "automatic-detector-zone");
+    runtime.confirm_all_configurations();
+
+    const auto result = runtime.step(60.0);
+
+    EXPECT_EQ(
+        result.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_EQ(
+        count_events<smarthydro::FaultDetected>(recorder->events),
+        1U);
+    EXPECT_EQ(
+        count_events<smarthydro::StateChanged>(recorder->events),
+        1U);
+}
+
 }  // namespace

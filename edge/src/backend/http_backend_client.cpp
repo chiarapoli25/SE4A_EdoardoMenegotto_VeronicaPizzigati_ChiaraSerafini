@@ -339,6 +339,39 @@ ControlDirection direction_from_string(const std::string& value) {
     throw std::invalid_argument("unknown control direction: " + value);
 }
 
+FaultTargetKind fault_target_kind_from_string(
+    const std::string& value) {
+    if (value == "sensor") {
+        return FaultTargetKind::SENSOR;
+    }
+    if (value == "actuator") {
+        return FaultTargetKind::ACTUATOR;
+    }
+    throw std::invalid_argument("unknown fault target kind: " + value);
+}
+
+FaultMode fault_mode_from_string(const std::string& value) {
+    if (value == "sensor_dropout") {
+        return FaultMode::SENSOR_DROPOUT;
+    }
+    if (value == "sensor_stuck") {
+        return FaultMode::SENSOR_STUCK;
+    }
+    if (value == "sensor_offset") {
+        return FaultMode::SENSOR_OFFSET;
+    }
+    if (value == "actuator_stuck_off") {
+        return FaultMode::ACTUATOR_STUCK_OFF;
+    }
+    if (value == "actuator_stuck_on") {
+        return FaultMode::ACTUATOR_STUCK_ON;
+    }
+    if (value == "actuator_slow_response") {
+        return FaultMode::ACTUATOR_SLOW_RESPONSE;
+    }
+    throw std::invalid_argument("unknown fault mode: " + value);
+}
+
 ControllerParameters controller_parameters_from_json(
     StrategyType strategy,
     const Json& json) {
@@ -573,18 +606,31 @@ RuntimeCommandEnvelope runtime_command_from_json(
             };
         }
         if (command_type == "InjectFault") {
-            const auto severity_text =
-                payload.at("severity").get<std::string>();
-            const auto severity =
-                severity_text == "Critical"
-                    ? ControlFaultSeverity::CRITICAL
-                    : ControlFaultSeverity::RECOVERABLE;
+            std::optional<double> value;
+            if (payload.contains("value") &&
+                !payload.at("value").is_null()) {
+                value = payload.at("value").get<double>();
+            }
+            std::optional<double> duration_seconds;
+            if (payload.contains("duration_seconds") &&
+                !payload.at("duration_seconds").is_null()) {
+                duration_seconds =
+                    payload.at("duration_seconds").get<double>();
+            }
             return {
                 command_id,
                 InjectFaultCommand{
-                    payload.at("fault_id").get<std::string>(),
-                    severity,
-                    payload.at("diagnostic").get<std::string>(),
+                    FaultSpecification{
+                        payload.at("fault_id").get<std::string>(),
+                        fault_target_kind_from_string(
+                            payload.at("target_type")
+                                .get<std::string>()),
+                        payload.at("target").get<std::string>(),
+                        fault_mode_from_string(
+                            payload.at("mode").get<std::string>()),
+                        value,
+                        duration_seconds,
+                    },
                 },
             };
         }
