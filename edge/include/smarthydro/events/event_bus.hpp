@@ -39,6 +39,20 @@ struct TelemetrySample {
     EnvironmentState environment_state;
 };
 
+/** @brief Transizione del lifecycle applicativo di una zona. */
+struct ZoneLifecycleChanged {
+    /** Zona interessata dalla transizione. */
+    std::string zone_id;
+    /** Timestamp simulato disponibile, zero prima della creazione del runtime. */
+    double timestamp_seconds = 0.0;
+    /** Nome stabile dello stato precedente. */
+    std::string previous_state;
+    /** Nome stabile del nuovo stato. */
+    std::string current_state;
+    /** Causa della transizione. */
+    std::string reason;
+};
+
 /** @brief Transizione osservabile della macchina a stati operativa. */
 struct StateChanged {
     /** Zona interessata dalla transizione. */
@@ -146,6 +160,7 @@ struct CommandFailed {
 /** @brief Unione chiusa degli eventi pubblicabili sul bus dell'Edge. */
 using EdgeDomainEvent = std::variant<
     TelemetrySample,
+    ZoneLifecycleChanged,
     StateChanged,
     FaultDetected,
     StrategyChanged,

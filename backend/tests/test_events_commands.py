@@ -103,3 +103,28 @@ def test_can_enqueue_cultivation_activation(client: TestClient) -> None:
     assert response.status_code == 201
     assert response.json()["status"] == "pending"
     assert response.json()["command_type"] == "ActivateCultivation"
+
+
+@pytest.mark.parametrize(
+    "command_type",
+    [
+        "PauseCultivation",
+        "ResumeCultivation",
+        "StopCultivation",
+    ],
+)
+def test_can_enqueue_zone_lifecycle_commands(
+    client: TestClient,
+    command_type: str,
+) -> None:
+    response = client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": f"{command_type}-1",
+            "command_type": command_type,
+            "payload": {},
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["command_type"] == command_type

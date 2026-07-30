@@ -169,6 +169,13 @@ public:
      */
     bool request_manual_reset() noexcept;
     /**
+     * @brief Porta immediatamente tutti gli attuatori nello stato sicuro.
+     *
+     * Non modifica la FSM operativa: serve al lifecycle esterno della zona
+     * per sospendere o terminare una coltivazione senza simulare un guasto.
+     */
+    void stop_all_actuators() noexcept;
+    /**
      * @brief Collega un EventBus alla pubblicazione automatica del runtime.
      * @param event_bus Bus non nullo, condiviso con gli observer.
      * @param zone_id Identificatore non vuoto della zona.

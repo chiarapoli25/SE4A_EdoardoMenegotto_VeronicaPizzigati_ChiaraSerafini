@@ -59,7 +59,14 @@ TEST(GreenhouseManagerTest, InactiveZoneHasNoRuntimeAndProducesNoSteps) {
     auto& zone = manager.add_inactive_zone("zone-1");
 
     EXPECT_EQ(manager.size(), 1U);
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::IDLE);
+    EXPECT_STREQ(
+        smarthydro::to_string(zone.lifecycle_state()),
+        "Idle");
     EXPECT_FALSE(zone.is_active());
+    EXPECT_FALSE(zone.is_running());
     EXPECT_TRUE(zone.cultivation_id().empty());
     EXPECT_TRUE(manager.step_all(60.0).empty());
     EXPECT_THROW(zone.runtime(), std::logic_error);
@@ -90,6 +97,10 @@ TEST(GreenhouseManagerTest, ActivationCreatesAndConfirmsRuntimeOnlyOnce) {
     EXPECT_TRUE(replay.success());
     EXPECT_TRUE(replay.replayed);
     EXPECT_TRUE(zone.is_active());
+    EXPECT_TRUE(zone.is_running());
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::RUNNING);
     EXPECT_EQ(zone.cultivation_id(), "cultivation-1");
     EXPECT_TRUE(
         zone.runtime()
@@ -115,6 +126,236 @@ TEST(GreenhouseManagerTest, InactiveZoneRejectsOperationalCommands) {
         result.message,
         "zone is inactive; ActivateCultivation is required");
     EXPECT_FALSE(zone.is_active());
+}
+
+TEST(GreenhouseManagerTest, ActivationFailureMovesZoneToErrorAndCanRetry) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+    auto invalid_recipe = load_demo_recipe();
+    invalid_recipe.phases.clear();
+
+    const auto failed = manager.execute_command(
+        "zone-1",
+        {
+            "activate-invalid",
+            smarthydro::ActivateCultivationCommand{
+                "cultivation-invalid",
+                invalid_recipe,
+            },
+        });
+
+    EXPECT_FALSE(failed.success());
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::ERROR);
+    EXPECT_FALSE(zone.is_active());
+    EXPECT_FALSE(zone.last_error().empty());
+    EXPECT_TRUE(manager.step_all(60.0).empty());
+
+    const auto retried = manager.execute_command(
+        "zone-1",
+        {
+            "activate-valid",
+            smarthydro::ActivateCultivationCommand{
+                "cultivation-valid",
+                load_demo_recipe(),
+            },
+        });
+
+    EXPECT_TRUE(retried.success());
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::RUNNING);
+    EXPECT_TRUE(zone.last_error().empty());
+    EXPECT_EQ(zone.cultivation_id(), "cultivation-valid");
+}
+
+TEST(GreenhouseManagerTest, PauseStopsActuatorsAndResumeRestartsCycles) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "activate-1",
+                smarthydro::ActivateCultivationCommand{
+                    "cultivation-1",
+                    load_demo_recipe(),
+                },
+            })
+            .success());
+    manager.step_zone("zone-1", 60.0);
+    const auto operational_state_before_pause =
+        zone.runtime().operational_state();
+
+    const auto paused = manager.execute_command(
+        "zone-1",
+        {
+            "pause-1",
+            smarthydro::PauseCultivationCommand{},
+        });
+
+    EXPECT_TRUE(paused.success());
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::PAUSED);
+    EXPECT_TRUE(zone.is_active());
+    EXPECT_FALSE(zone.is_running());
+    EXPECT_EQ(
+        zone.runtime().operational_state(),
+        operational_state_before_pause);
+    EXPECT_FALSE(zone.runtime().actuator_output().water_pump_on);
+    EXPECT_DOUBLE_EQ(
+        zone.runtime().actuator_output().lighting_power_watts,
+        0.0);
+    EXPECT_TRUE(manager.step_all(60.0).empty());
+    EXPECT_THROW(
+        manager.step_zone("zone-1", 60.0),
+        std::logic_error);
+
+    const auto resumed = manager.execute_command(
+        "zone-1",
+        {
+            "resume-1",
+            smarthydro::ResumeCultivationCommand{},
+        });
+
+    EXPECT_TRUE(resumed.success());
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::RUNNING);
+    EXPECT_TRUE(zone.is_running());
+    EXPECT_EQ(
+        zone.runtime().operational_state(),
+        operational_state_before_pause);
+    EXPECT_EQ(
+        manager.step_zone("zone-1", 60.0).sequence_number,
+        1U);
+}
+
+TEST(GreenhouseManagerTest, StopReleasesRuntimeAndReturnsZoneToIdle) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "activate-1",
+                smarthydro::ActivateCultivationCommand{
+                    "cultivation-1",
+                    load_demo_recipe(),
+                },
+            })
+            .success());
+
+    const auto stopped = manager.execute_command(
+        "zone-1",
+        {
+            "stop-1",
+            smarthydro::StopCultivationCommand{},
+        });
+
+    EXPECT_TRUE(stopped.success());
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::IDLE);
+    EXPECT_FALSE(zone.is_active());
+    EXPECT_FALSE(zone.is_running());
+    EXPECT_TRUE(zone.cultivation_id().empty());
+    EXPECT_TRUE(zone.last_error().empty());
+    EXPECT_THROW(zone.runtime(), std::logic_error);
+}
+
+TEST(GreenhouseManagerTest, LifecycleNamesAreStable) {
+    EXPECT_STREQ(
+        smarthydro::to_string(
+            smarthydro::ZoneLifecycleState::IDLE),
+        "Idle");
+    EXPECT_STREQ(
+        smarthydro::to_string(
+            smarthydro::ZoneLifecycleState::STARTING),
+        "Starting");
+    EXPECT_STREQ(
+        smarthydro::to_string(
+            smarthydro::ZoneLifecycleState::RUNNING),
+        "Running");
+    EXPECT_STREQ(
+        smarthydro::to_string(
+            smarthydro::ZoneLifecycleState::PAUSED),
+        "Paused");
+    EXPECT_STREQ(
+        smarthydro::to_string(
+            smarthydro::ZoneLifecycleState::STOPPING),
+        "Stopping");
+    EXPECT_STREQ(
+        smarthydro::to_string(
+            smarthydro::ZoneLifecycleState::ERROR),
+        "Error");
+}
+
+TEST(GreenhouseManagerTest, PublishesEveryLifecycleTransition) {
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    smarthydro::GreenhouseManager manager(event_bus);
+    manager.add_inactive_zone("zone-1");
+
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "activate-1",
+                smarthydro::ActivateCultivationCommand{
+                    "cultivation-1",
+                    load_demo_recipe(),
+                },
+            })
+            .success());
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "pause-1",
+                smarthydro::PauseCultivationCommand{},
+            })
+            .success());
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "resume-1",
+                smarthydro::ResumeCultivationCommand{},
+            })
+            .success());
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "stop-1",
+                smarthydro::StopCultivationCommand{},
+            })
+            .success());
+
+    std::vector<std::string> transitions;
+    for (const auto& event : observer->events) {
+        if (const auto* lifecycle =
+                std::get_if<smarthydro::ZoneLifecycleChanged>(
+                    &event)) {
+            transitions.push_back(
+                lifecycle->previous_state + "->" +
+                lifecycle->current_state);
+        }
+    }
+    EXPECT_EQ(
+        transitions,
+        (std::vector<std::string>{
+            "Idle->Starting",
+            "Starting->Running",
+            "Running->Paused",
+            "Paused->Running",
+            "Running->Stopping",
+            "Stopping->Idle",
+        }));
 }
 
 TEST(GreenhouseManagerTest, KeepsTimelinesAndSequencesIndependent) {

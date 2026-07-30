@@ -208,7 +208,14 @@ std::vector<PendingUpload> uploads_from_event(
                 };
             } else {
                 Json payload = Json::object();
-                if constexpr (std::is_same_v<Event, StateChanged>) {
+                if constexpr (
+                    std::is_same_v<Event, ZoneLifecycleChanged>) {
+                    payload = {
+                        {"previous_state", value.previous_state},
+                        {"current_state", value.current_state},
+                        {"reason", value.reason},
+                    };
+                } else if constexpr (std::is_same_v<Event, StateChanged>) {
                     payload = {
                         {"previous_state", to_string(value.previous_state)},
                         {"current_state", to_string(value.current_state)},
@@ -484,6 +491,15 @@ RuntimeCommandEnvelope runtime_command_from_json(
                     recipe_from_json(recipe_json.dump()),
                 },
             };
+        }
+        if (command_type == "PauseCultivation") {
+            return {command_id, PauseCultivationCommand{}};
+        }
+        if (command_type == "ResumeCultivation") {
+            return {command_id, ResumeCultivationCommand{}};
+        }
+        if (command_type == "StopCultivation") {
+            return {command_id, StopCultivationCommand{}};
         }
         if (command_type == "ConfirmConfiguration") {
             return {

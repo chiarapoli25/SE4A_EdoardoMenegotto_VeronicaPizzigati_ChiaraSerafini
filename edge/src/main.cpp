@@ -345,7 +345,7 @@ int main(int argc, char* argv[]) {
             auto now = Clock::now();
             for (const auto& zone_id : greenhouse.zone_ids()) {
                 auto& zone = greenhouse.zone(zone_id);
-                if (!zone.is_active()) {
+                if (!zone.is_running()) {
                     next_steps.erase(zone_id);
                     continue;
                 }

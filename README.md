@@ -143,6 +143,19 @@ possiede runtime o attuatori e viene ignorato da `step_all()`. Il comando
 controllori, FSM, storico e sequenze, quindi conferma le sei configurazioni
 validate. Ogni zona mantiene una cache dei comandi indipendente dalle altre.
 
+Il lifecycle applicativo di ogni zona e indipendente:
+
+- `Idle`: nessuna coltivazione e nessun runtime;
+- `Starting`: ricetta in validazione e runtime in costruzione;
+- `Running`: controllo e simulazione attivi;
+- `Paused`: runtime conservato, tempo fermo e attuatori spenti;
+- `Stopping`: arresto sicuro e rilascio del runtime;
+- `Error`: attivazione fallita, con diagnostica disponibile.
+
+La FSM `Nominal`, `Degraded`, `EmergencyLockdown` rimane interna a
+`EdgeRuntime` e descrive la sicurezza operativa soltanto mentre il lifecycle e
+`Running`. `step_all()` ignora sia le zone inattive sia quelle in pausa.
+
 `GreenhouseManager` registra piu zone e permette di avanzarne una con
 `step_zone()` oppure tutte con `step_all()`. Soltanto l'`EventBus` viene
 condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
@@ -217,6 +230,7 @@ operativi. Ogni richiesta contiene un `command_id` e un payload tipizzato:
 - cambio della Strategy;
 - caricamento di una nuova versione della ricetta;
 - attivazione di una coltivazione in una zona inattiva;
+- pausa, ripresa e arresto di una coltivazione;
 - conferma o rifiuto di una configurazione;
 - fault injection e reset del fault sintetico;
 - avanzamento forzato della fase;

@@ -70,6 +70,10 @@ std::string event_detail(const EdgeDomainEvent& event) {
             if constexpr (std::is_same_v<Event, TelemetrySample>) {
                 return "sequence=" +
                        std::to_string(value.sequence_number);
+            } else if constexpr (
+                std::is_same_v<Event, ZoneLifecycleChanged>) {
+                return value.previous_state + " -> " +
+                       value.current_state + ": " + value.reason;
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return std::string(state_name(value.previous_state)) +
                        " -> " + state_name(value.current_state) +
@@ -109,6 +113,9 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             using Event = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<Event, TelemetrySample>) {
                 return "TelemetrySample";
+            } else if constexpr (
+                std::is_same_v<Event, ZoneLifecycleChanged>) {
+                return "ZoneLifecycleChanged";
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return "StateChanged";
             } else if constexpr (std::is_same_v<Event, FaultDetected>) {

@@ -20,6 +20,24 @@
 namespace smarthydro {
 
 /**
+ * @brief Lifecycle applicativo di una zona, esterno alla FSM di sicurezza.
+ *
+ * RUNNING indica che esiste un EdgeRuntime eseguibile. Gli stati Nominal,
+ * Degraded ed EmergencyLockdown restano responsabilita di EdgeRuntime.
+ */
+enum class ZoneLifecycleState {
+    IDLE,
+    STARTING,
+    RUNNING,
+    PAUSED,
+    STOPPING,
+    ERROR,
+};
+
+/** @brief Nome stabile del lifecycle per log e serializzazione. */
+const char* to_string(ZoneLifecycleState state) noexcept;
+
+/**
  * @brief Controllore completo e indipendente di una singola zona.
  *
  * Una zona puo essere registrata senza ricetta e restare inattiva. In tale
@@ -90,10 +108,16 @@ public:
 
     /** @brief Identificatore stabile della zona. */
     const std::string& id() const noexcept;
-    /** @brief True quando una coltivazione ha creato il runtime della zona. */
+    /** @brief Stato corrente del lifecycle applicativo. */
+    ZoneLifecycleState lifecycle_state() const noexcept;
+    /** @brief True quando la zona possiede un runtime, anche se in pausa. */
     bool is_active() const noexcept;
+    /** @brief True soltanto quando il runtime puo eseguire cicli. */
+    bool is_running() const noexcept;
     /** @brief Identificativo della coltivazione attiva, oppure stringa vuota. */
     const std::string& cultivation_id() const noexcept;
+    /** @brief Ultimo errore di lifecycle, oppure stringa vuota. */
+    const std::string& last_error() const noexcept;
     /**
      * @brief Runtime della zona per ispezione o configurazione locale.
      * @throws std::logic_error Quando la zona e ancora inattiva.
@@ -113,14 +137,22 @@ public:
 
 private:
     static std::string require_zone_id(std::string zone_id);
+    void transition_lifecycle(
+        ZoneLifecycleState next_state,
+        std::string reason) noexcept;
     RuntimeCommandResult execute_command_once(
         const RuntimeCommandEnvelope& envelope) noexcept;
     void activate_cultivation(
         std::string cultivation_id,
         Recipe recipe);
+    void pause_cultivation();
+    void resume_cultivation();
+    void stop_cultivation();
 
     std::string zone_id_;
     std::string cultivation_id_;
+    std::string last_error_;
+    ZoneLifecycleState lifecycle_state_ = ZoneLifecycleState::IDLE;
     std::unique_ptr<EdgeRuntime> runtime_;
     std::unique_ptr<RuntimeCommandProcessor> command_processor_;
     std::shared_ptr<EventBus> event_bus_;

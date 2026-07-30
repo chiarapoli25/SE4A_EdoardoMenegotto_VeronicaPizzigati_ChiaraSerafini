@@ -15,6 +15,10 @@ constexpr double kDeliveredTolerance = 1.0e-12;
 
 }  // namespace
 
+void EdgeRuntime::stop_all_actuators() noexcept {
+    actuators_->stop_all();
+}
+
 void EdgeRuntime::apply_safe_fallback(
     double delta_time_seconds,
     EdgeStepResult& result,

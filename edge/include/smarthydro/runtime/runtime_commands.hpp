@@ -44,6 +44,15 @@ struct ActivateCultivationCommand {
     Recipe recipe;
 };
 
+/** @brief Sospende tempo simulato e attuatori della coltivazione. */
+struct PauseCultivationCommand {};
+
+/** @brief Riprende una coltivazione precedentemente sospesa. */
+struct ResumeCultivationCommand {};
+
+/** @brief Arresta la coltivazione e riporta la zona nello stato Idle. */
+struct StopCultivationCommand {};
+
 /** @brief Conferma una configurazione agronomica pendente. */
 struct ConfirmConfigurationCommand {
     /** Variabile la cui configurazione deve essere confermata. */
@@ -89,6 +98,9 @@ using RuntimeCommand = std::variant<
     ChangeStrategyCommand,
     LoadRecipeCommand,
     ActivateCultivationCommand,
+    PauseCultivationCommand,
+    ResumeCultivationCommand,
+    StopCultivationCommand,
     ConfirmConfigurationCommand,
     RejectConfigurationCommand,
     InjectFaultCommand,

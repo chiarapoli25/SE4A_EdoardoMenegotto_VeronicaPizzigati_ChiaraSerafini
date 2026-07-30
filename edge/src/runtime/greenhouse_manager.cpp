@@ -6,6 +6,53 @@
 
 namespace smarthydro {
 
+const char* to_string(ZoneLifecycleState state) noexcept {
+    switch (state) {
+        case ZoneLifecycleState::IDLE:
+            return "Idle";
+        case ZoneLifecycleState::STARTING:
+            return "Starting";
+        case ZoneLifecycleState::RUNNING:
+            return "Running";
+        case ZoneLifecycleState::PAUSED:
+            return "Paused";
+        case ZoneLifecycleState::STOPPING:
+            return "Stopping";
+        case ZoneLifecycleState::ERROR:
+            return "Error";
+    }
+    return "Unknown";
+}
+
+void ZoneController::transition_lifecycle(
+    ZoneLifecycleState next_state,
+    std::string reason) noexcept {
+    const auto previous_state = lifecycle_state_;
+    if (previous_state == next_state) {
+        return;
+    }
+    lifecycle_state_ = next_state;
+    if (!event_bus_) {
+        return;
+    }
+    try {
+        const double timestamp_seconds =
+            runtime_
+                ? runtime_->environment_state().simulation_time_seconds
+                : 0.0;
+        event_bus_->publish(
+            ZoneLifecycleChanged{
+                zone_id_,
+                timestamp_seconds,
+                to_string(previous_state),
+                to_string(next_state),
+                std::move(reason),
+            });
+    } catch (...) {
+        // Il lifecycle locale non dipende dagli observer esterni.
+    }
+}
+
 std::string ZoneController::require_zone_id(std::string zone_id) {
     if (zone_id.empty()) {
         throw std::invalid_argument(
@@ -31,6 +78,7 @@ ZoneController::ZoneController(
     OperationalStatePolicy state_policy,
     std::shared_ptr<EventBus> event_bus)
     : zone_id_(require_zone_id(std::move(zone_id))),
+      lifecycle_state_(ZoneLifecycleState::RUNNING),
       runtime_(std::make_unique<EdgeRuntime>(
           std::move(recipe),
           std::move(actuator_config),
@@ -55,6 +103,7 @@ ZoneController::ZoneController(
     OperationalStatePolicy state_policy,
     std::shared_ptr<EventBus> event_bus)
     : zone_id_(require_zone_id(std::move(zone_id))),
+      lifecycle_state_(ZoneLifecycleState::RUNNING),
       runtime_(std::make_unique<EdgeRuntime>(
           std::move(recipe),
           std::move(sensors),
@@ -72,12 +121,24 @@ const std::string& ZoneController::id() const noexcept {
     return zone_id_;
 }
 
+ZoneLifecycleState ZoneController::lifecycle_state() const noexcept {
+    return lifecycle_state_;
+}
+
 bool ZoneController::is_active() const noexcept {
     return runtime_ != nullptr;
 }
 
+bool ZoneController::is_running() const noexcept {
+    return lifecycle_state_ == ZoneLifecycleState::RUNNING;
+}
+
 const std::string& ZoneController::cultivation_id() const noexcept {
     return cultivation_id_;
+}
+
+const std::string& ZoneController::last_error() const noexcept {
+    return last_error_;
 }
 
 EdgeRuntime& ZoneController::runtime() {
@@ -101,6 +162,11 @@ void ZoneController::confirm_all_configurations() {
 }
 
 EdgeStepResult ZoneController::step(double delta_time_seconds) {
+    if (!is_running()) {
+        throw std::logic_error(
+            "greenhouse zone is not running: " +
+            std::string(to_string(lifecycle_state_)));
+    }
     return runtime().step(delta_time_seconds);
 }
 
@@ -146,6 +212,39 @@ RuntimeCommandResult ZoneController::execute_command_once(
                 "cultivation activated",
             };
         }
+        if (std::holds_alternative<PauseCultivationCommand>(
+                envelope.command)) {
+            pause_cultivation();
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::SUCCEEDED,
+                false,
+                "cultivation paused",
+            };
+        }
+        if (std::holds_alternative<ResumeCultivationCommand>(
+                envelope.command)) {
+            resume_cultivation();
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::SUCCEEDED,
+                false,
+                "cultivation resumed",
+            };
+        }
+        if (std::holds_alternative<StopCultivationCommand>(
+                envelope.command)) {
+            stop_cultivation();
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::SUCCEEDED,
+                false,
+                "cultivation stopped",
+            };
+        }
         if (!runtime_ || !command_processor_) {
             return {
                 envelope.command_id,
@@ -153,6 +252,17 @@ RuntimeCommandResult ZoneController::execute_command_once(
                 RuntimeCommandStatus::REJECTED,
                 false,
                 "zone is inactive; ActivateCultivation is required",
+            };
+        }
+        if (!is_running()) {
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::REJECTED,
+                false,
+                "zone lifecycle is " +
+                    std::string(to_string(lifecycle_state_)) +
+                    "; ResumeCultivation is required",
             };
         }
         return command_processor_->execute(envelope);
@@ -178,25 +288,104 @@ RuntimeCommandResult ZoneController::execute_command_once(
 void ZoneController::activate_cultivation(
     std::string cultivation_id,
     Recipe recipe) {
-    if (runtime_) {
+    if (
+        lifecycle_state_ != ZoneLifecycleState::IDLE &&
+        lifecycle_state_ != ZoneLifecycleState::ERROR) {
         throw std::logic_error(
-            "zone already has an active cultivation: " + zone_id_);
+            "zone cannot start a cultivation while lifecycle is " +
+            std::string(to_string(lifecycle_state_)));
     }
     if (cultivation_id.empty()) {
         throw std::invalid_argument(
             "cultivation_id must not be empty");
     }
 
-    auto candidate = std::make_unique<EdgeRuntime>(std::move(recipe));
-    if (event_bus_) {
-        candidate->attach_event_bus(event_bus_, zone_id_);
-    }
-    candidate->confirm_all_configurations();
-
-    runtime_ = std::move(candidate);
-    command_processor_ =
-        std::make_unique<RuntimeCommandProcessor>(*runtime_);
+    last_error_.clear();
     cultivation_id_ = std::move(cultivation_id);
+    transition_lifecycle(
+        ZoneLifecycleState::STARTING,
+        "cultivation activation requested");
+    try {
+        auto candidate =
+            std::make_unique<EdgeRuntime>(std::move(recipe));
+        if (event_bus_) {
+            candidate->attach_event_bus(event_bus_, zone_id_);
+        }
+        candidate->confirm_all_configurations();
+
+        runtime_ = std::move(candidate);
+        command_processor_ =
+            std::make_unique<RuntimeCommandProcessor>(*runtime_);
+        transition_lifecycle(
+            ZoneLifecycleState::RUNNING,
+            "cultivation runtime ready");
+    } catch (const std::exception& error) {
+        command_processor_.reset();
+        runtime_.reset();
+        last_error_ = error.what();
+        transition_lifecycle(
+            ZoneLifecycleState::ERROR,
+            last_error_);
+        throw;
+    } catch (...) {
+        command_processor_.reset();
+        runtime_.reset();
+        last_error_ = "unknown cultivation activation failure";
+        transition_lifecycle(
+            ZoneLifecycleState::ERROR,
+            last_error_);
+        throw;
+    }
+}
+
+void ZoneController::pause_cultivation() {
+    if (lifecycle_state_ != ZoneLifecycleState::RUNNING) {
+        throw std::logic_error(
+            "zone cannot pause while lifecycle is " +
+            std::string(to_string(lifecycle_state_)));
+    }
+    runtime().stop_all_actuators();
+    transition_lifecycle(
+        ZoneLifecycleState::PAUSED,
+        "cultivation paused by command");
+}
+
+void ZoneController::resume_cultivation() {
+    if (lifecycle_state_ != ZoneLifecycleState::PAUSED) {
+        throw std::logic_error(
+            "zone cannot resume while lifecycle is " +
+            std::string(to_string(lifecycle_state_)));
+    }
+    transition_lifecycle(
+        ZoneLifecycleState::RUNNING,
+        "cultivation resumed by command");
+}
+
+void ZoneController::stop_cultivation() {
+    if (lifecycle_state_ == ZoneLifecycleState::IDLE) {
+        return;
+    }
+    if (
+        lifecycle_state_ == ZoneLifecycleState::STARTING ||
+        lifecycle_state_ == ZoneLifecycleState::STOPPING) {
+        throw std::logic_error(
+            "zone cannot stop while lifecycle is " +
+            std::string(to_string(lifecycle_state_)));
+    }
+
+    transition_lifecycle(
+        ZoneLifecycleState::STOPPING,
+        "cultivation stop requested");
+    if (runtime_) {
+        runtime_->stop_all_actuators();
+    }
+    command_processor_.reset();
+    runtime_.reset();
+    cultivation_id_.clear();
+    last_error_.clear();
+    transition_lifecycle(
+        ZoneLifecycleState::IDLE,
+        "cultivation runtime released");
 }
 
 void ZoneController::attach_event_bus(
@@ -314,7 +503,7 @@ GreenhouseStepResults GreenhouseManager::step_all(
     double delta_time_seconds) {
     GreenhouseStepResults results;
     for (auto& [zone_id, controller] : zones_) {
-        if (!controller->is_active()) {
+        if (!controller->is_running()) {
             continue;
         }
         results.emplace(

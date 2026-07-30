@@ -302,4 +302,84 @@ TEST(HttpBackendClientTest, DownloadsRecipeForCultivationActivation) {
     std::filesystem::remove_all(outbox);
 }
 
+TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
+    const auto pause = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "pause-1",
+            "command_type": "PauseCultivation",
+            "payload": {}
+        })json");
+    const auto resume = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "resume-1",
+            "command_type": "ResumeCultivation",
+            "payload": {}
+        })json");
+    const auto stop = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "stop-1",
+            "command_type": "StopCultivation",
+            "payload": {}
+        })json");
+
+    EXPECT_TRUE(
+        std::holds_alternative<
+            smarthydro::PauseCultivationCommand>(
+            pause.command));
+    EXPECT_TRUE(
+        std::holds_alternative<
+            smarthydro::ResumeCultivationCommand>(
+            resume.command));
+    EXPECT_TRUE(
+        std::holds_alternative<
+            smarthydro::StopCultivationCommand>(
+            stop.command));
+}
+
+TEST(HttpBackendClientTest, SerializesZoneLifecycleEvents) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("lifecycle-event");
+    auto transport = std::make_shared<RecordingTransport>();
+    smarthydro::HttpBackendConfig config;
+    config.boot_id = "boot-test";
+    config.edge_id = "edge-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::hours(1);
+    auto client = std::make_shared<smarthydro::HttpBackendClient>(
+        bus,
+        std::vector<std::string>{"zone-1"},
+        config,
+        transport);
+    bus.subscribe(client);
+    client->start();
+
+    bus.publish(
+        smarthydro::ZoneLifecycleChanged{
+            "zone-1",
+            60.0,
+            "Running",
+            "Paused",
+            "operator pause",
+        });
+
+    ASSERT_TRUE(wait_until([&] {
+        return transport->post_count() >= 1;
+    }));
+    client->stop();
+    const auto posts = transport->post_snapshot();
+    ASSERT_EQ(posts.size(), 1U);
+    EXPECT_EQ(
+        posts[0].first,
+        "/api/v1/zones/zone-1/events");
+    const auto event = nlohmann::json::parse(posts[0].second);
+    EXPECT_EQ(event.at("event_type"), "ZoneLifecycleChanged");
+    EXPECT_EQ(
+        event.at("payload").at("previous_state"),
+        "Running");
+    EXPECT_EQ(
+        event.at("payload").at("current_state"),
+        "Paused");
+    std::filesystem::remove_all(outbox);
+}
+
 }  // namespace
