@@ -1,17 +1,23 @@
-#include "smarthydro/edge_runtime.hpp"
-#include "smarthydro/recipe_json.hpp"
+#include <smarthydro/backend/http_backend_client.hpp>
+#include <smarthydro/events/event_bus.hpp>
+#include <smarthydro/recipes/recipe_json.hpp>
+#include <smarthydro/runtime/greenhouse_manager.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -26,9 +32,15 @@ enum class OutputFormat {
 
 struct CommandLineOptions {
     std::filesystem::path recipe_path = SMARTHYDRO_DEFAULT_RECIPE_PATH;
+    std::size_t zones = 1;
     std::size_t steps = 1;
     double step_seconds = kDefaultStepSeconds;
     OutputFormat output = OutputFormat::HUMAN;
+    std::optional<std::string> backend_url;
+    std::string edge_id = "smarthydro-edge";
+    std::filesystem::path outbox_path = "edge-data/outbox";
+    std::size_t command_poll_milliseconds = 1000;
+    std::size_t cycle_delay_milliseconds = 0;
     bool show_help = false;
 };
 
@@ -97,6 +109,15 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
                 parse_positive_size(argv[index], "--steps");
             continue;
         }
+        if (argument == "--zones") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--zones requires a value");
+            }
+            options.zones =
+                parse_positive_size(argv[index], "--zones");
+            continue;
+        }
         if (argument == "--step-seconds") {
             if (++index >= argc) {
                 throw std::invalid_argument(
@@ -122,6 +143,58 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
             }
             continue;
         }
+        if (argument == "--backend-url") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--backend-url requires a URL");
+            }
+            options.backend_url = argv[index];
+            continue;
+        }
+        if (argument == "--edge-id") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--edge-id requires a value");
+            }
+            options.edge_id = argv[index];
+            continue;
+        }
+        if (argument == "--outbox-path") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--outbox-path requires a directory");
+            }
+            options.outbox_path = argv[index];
+            continue;
+        }
+        if (argument == "--command-poll-ms") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--command-poll-ms requires a value");
+            }
+            options.command_poll_milliseconds =
+                parse_positive_size(argv[index], "--command-poll-ms");
+            continue;
+        }
+        if (argument == "--cycle-delay-ms") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--cycle-delay-ms requires a value");
+            }
+            std::size_t parsed_characters = 0;
+            const std::string value = argv[index];
+            const auto parsed = std::stoull(value, &parsed_characters);
+            if (
+                value.empty() ||
+                value.front() == '-' ||
+                parsed_characters != value.size()) {
+                throw std::invalid_argument(
+                    "--cycle-delay-ms requires a non-negative integer");
+            }
+            options.cycle_delay_milliseconds =
+                static_cast<std::size_t>(parsed);
+            continue;
+        }
         throw std::invalid_argument(
             "unknown argument: " + argument);
     }
@@ -134,9 +207,15 @@ void print_help(const char* executable) {
         << "Options:\n"
         << "  --recipe PATH       Recipe JSON to load (default: "
         << SMARTHYDRO_DEFAULT_RECIPE_PATH << ")\n"
+        << "  --zones N           Number of independent zones (default: 1)\n"
         << "  --steps N           Number of control cycles (default: 1)\n"
         << "  --step-seconds SEC  Simulated seconds per cycle (default: 900)\n"
         << "  --output FORMAT     Output format: human or json (default: human)\n"
+        << "  --backend-url URL   Enable asynchronous backend delivery\n"
+        << "  --edge-id ID        Stable Edge identifier\n"
+        << "  --outbox-path PATH  Persistent delivery queue directory\n"
+        << "  --command-poll-ms N Command polling interval (default: 1000)\n"
+        << "  --cycle-delay-ms N  Real-time pause before each cycle (default: 0)\n"
         << "  -h, --help          Show this help\n";
 }
 
@@ -151,13 +230,19 @@ void print_optional(
 }
 
 void print_step(
+    const std::string& zone_id,
     std::size_t step,
     std::size_t step_count,
     const smarthydro::EdgeStepResult& result) {
     std::cout
-        << "\nCycle " << step << '/' << step_count
+        << "\nZone " << zone_id
+        << " | cycle " << step << '/' << step_count
+        << " | sequence=" << result.sequence_number
         << " | t=" << result.start_time_seconds / 3600.0 << " h"
-        << " | phase=" << result.phase_name << '\n'
+        << " | phase=" << result.phase_name
+        << " | state="
+        << smarthydro::to_string(result.operational_state)
+        << '\n'
         << "Sensors: soil=";
     print_optional(result.readings.soil_moisture_percent, "%");
     std::cout << ", light=";
@@ -167,6 +252,13 @@ void print_step(
     std::cout << ", pH=";
     print_optional(result.readings.ph);
     std::cout << '\n';
+
+    for (const auto& event : result.events) {
+        std::cout
+            << "Event: " << smarthydro::to_string(event.type)
+            << " | t=" << event.timestamp_seconds / 3600.0
+            << " h | " << event.message << '\n';
+    }
 
     constexpr smarthydro::ControlledValues<
         smarthydro::ControlledVariable>
@@ -386,13 +478,48 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        auto recipe =
+        const auto recipe =
             smarthydro::load_recipe_json(options.recipe_path.string());
-        smarthydro::EdgeRuntime runtime(std::move(recipe));
-        runtime.confirm_all_configurations();
+        auto event_bus = std::make_shared<smarthydro::EventBus>();
+        if (options.output == OutputFormat::HUMAN) {
+            event_bus->subscribe(
+                std::make_shared<smarthydro::ConsoleLogger>(std::cout));
+        }
+        smarthydro::GreenhouseManager greenhouse(event_bus);
+        for (std::size_t index = 0; index < options.zones; ++index) {
+            auto& zone = greenhouse.add_simulated_zone(
+                "zone-" + std::to_string(index + 1),
+                recipe,
+                {},
+                {},
+                {},
+                static_cast<std::uint32_t>(0x53484D31U + index),
+                static_cast<std::uint32_t>(0x53484D32U + index));
+            zone.confirm_all_configurations();
+        }
 
-        const auto& active_recipe =
-            runtime.control_system().recipe();
+        std::shared_ptr<smarthydro::HttpBackendClient> backend_client;
+        if (options.backend_url.has_value()) {
+            smarthydro::HttpBackendConfig backend_config;
+            backend_config.base_url = *options.backend_url;
+            backend_config.edge_id = options.edge_id;
+            if (const auto* token =
+                    std::getenv("SMARTHYDRO_API_TOKEN")) {
+                backend_config.bearer_token = token;
+            }
+            backend_config.outbox_directory = options.outbox_path;
+            backend_config.command_poll_interval =
+                std::chrono::milliseconds(
+                    options.command_poll_milliseconds);
+            backend_client =
+                std::make_shared<smarthydro::HttpBackendClient>(
+                    *event_bus,
+                    greenhouse.zone_ids(),
+                    std::move(backend_config));
+            event_bus->subscribe(backend_client);
+            backend_client->start();
+        }
+
         Json json_output;
         if (options.output == OutputFormat::JSON) {
             json_output = {
@@ -402,12 +529,13 @@ int main(int argc, char* argv[]) {
                     {"status", "recipe runtime ready"},
                 }},
                 {"recipe", {
-                    {"id", active_recipe.id},
-                    {"plant_type", active_recipe.plant_type},
-                    {"version", active_recipe.version},
+                    {"id", recipe.id},
+                    {"plant_type", recipe.plant_type},
+                    {"version", recipe.version},
                     {"file", std::filesystem::absolute(
                         options.recipe_path).string()},
                 }},
+                {"zone_count", greenhouse.size()},
                 {"steps", Json::array()},
             };
         } else {
@@ -415,11 +543,17 @@ int main(int argc, char* argv[]) {
                 << "SmartHydro Edge Controller\n"
                 << "Version: 0.1.0\n"
                 << "Status: recipe runtime ready\n"
-                << "Recipe: " << active_recipe.id
-                << " v" << active_recipe.version
-                << " (" << active_recipe.plant_type << ")\n"
+                << "Zones: " << greenhouse.size() << "\n"
+                << "Recipe: " << recipe.id
+                << " v" << recipe.version
+                << " (" << recipe.plant_type << ")\n"
                 << "Recipe file: "
                 << std::filesystem::absolute(options.recipe_path)
+                << "\nBackend: "
+                << (
+                       options.backend_url.has_value()
+                           ? *options.backend_url
+                           : "offline")
                 << "\nConfigurations: locally validated and confirmed\n"
                 << std::fixed << std::setprecision(2);
         }
@@ -427,13 +561,44 @@ int main(int argc, char* argv[]) {
         for (std::size_t step = 1;
              step <= options.steps;
              ++step) {
-            const auto result = runtime.step(options.step_seconds);
-            if (options.output == OutputFormat::JSON) {
-                json_output["steps"].push_back(
-                    step_to_json(step, result));
-            } else {
-                print_step(step, options.steps, result);
+            if (options.cycle_delay_milliseconds > 0) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(
+                        options.cycle_delay_milliseconds));
             }
+            if (backend_client) {
+                for (auto& remote : backend_client->take_commands()) {
+                    const auto result = greenhouse.execute_command(
+                        remote.zone_id,
+                        remote.envelope);
+                    backend_client->submit_command_result(
+                        remote.zone_id,
+                        result);
+                }
+            }
+            const auto results =
+                greenhouse.step_all(options.step_seconds);
+            if (options.output == OutputFormat::JSON) {
+                const auto primary = results.find("zone-1");
+                if (primary == results.end()) {
+                    throw std::runtime_error(
+                        "primary zone result is missing");
+                }
+                json_output["steps"].push_back(
+                    step_to_json(step, primary->second));
+            } else {
+                for (const auto& [zone_id, result] : results) {
+                    print_step(
+                        zone_id,
+                        step,
+                        options.steps,
+                        result);
+                }
+            }
+        }
+        if (backend_client) {
+            backend_client->flush(std::chrono::milliseconds(2500));
+            backend_client->stop();
         }
         if (options.output == OutputFormat::JSON) {
             std::cout << json_output.dump() << '\n';

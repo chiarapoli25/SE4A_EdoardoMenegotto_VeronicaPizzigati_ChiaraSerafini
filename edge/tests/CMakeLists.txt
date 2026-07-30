@@ -56,6 +56,33 @@ target_compile_features(actuator_tests PRIVATE cxx_std_17)
 set_target_properties(actuator_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(actuator_tests)
 
+# Test delle interfacce e degli Adapter sostituibili usati dal runtime.
+add_executable(io_adapter_tests io_adapter_tests.cpp)
+target_link_libraries(io_adapter_tests
+    PRIVATE
+        io_adapters
+        GTest::gtest_main
+)
+target_compile_features(io_adapter_tests PRIVATE cxx_std_17)
+set_target_properties(io_adapter_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(io_adapter_tests)
+
+# Test del pattern Observer, dei logger e dell'integrazione col runtime.
+add_executable(event_bus_tests event_bus_tests.cpp)
+target_link_libraries(event_bus_tests
+    PRIVATE
+        edge_runtime
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(event_bus_tests PRIVATE cxx_std_17)
+target_compile_definitions(event_bus_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(event_bus_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(event_bus_tests)
+
 # Eseguibile dei test dei controllori.
 add_executable(controller_tests controllers_tests.cpp)
 target_link_libraries(controller_tests
@@ -98,6 +125,54 @@ target_compile_definitions(edge_runtime_tests
 set_target_properties(edge_runtime_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(edge_runtime_tests)
 
+# Test dei comandi runtime, degli esiti e della cache di idempotenza.
+add_executable(runtime_command_tests runtime_command_tests.cpp)
+target_link_libraries(runtime_command_tests
+    PRIVATE
+        runtime_commands
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(runtime_command_tests PRIVATE cxx_std_17)
+target_compile_definitions(runtime_command_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(runtime_command_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(runtime_command_tests)
+
+# Test del trasporto asincrono, dell'outbox e del polling dei comandi.
+add_executable(http_backend_client_tests http_backend_client_tests.cpp)
+target_link_libraries(http_backend_client_tests
+    PRIVATE
+        http_backend_client
+        GTest::gtest_main
+        nlohmann_json::nlohmann_json
+)
+target_compile_features(http_backend_client_tests PRIVATE cxx_std_17)
+target_compile_definitions(http_backend_client_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(http_backend_client_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(http_backend_client_tests)
+
+# Test dell'isolamento di stato e comandi fra piu zone della serra.
+add_executable(greenhouse_manager_tests greenhouse_manager_tests.cpp)
+target_link_libraries(greenhouse_manager_tests
+    PRIVATE
+        greenhouse_manager
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(greenhouse_manager_tests PRIVATE cxx_std_17)
+target_compile_definitions(greenhouse_manager_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(greenhouse_manager_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(greenhouse_manager_tests)
+
 # Il main deve caricare la ricetta e completare almeno un ciclo senza servizi
 # esterni o interazione utente.
 add_test(
@@ -121,6 +196,21 @@ add_test(
         -DEDGE_EXECUTABLE=$<TARGET_FILE:edge>
         -DRECIPE_PATH=${PROJECT_SOURCE_DIR}/../config/example_recipe.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/edge_json_smoke.cmake
+)
+
+# Verifica che l'eseguibile componga e avanzi almeno due zone indipendenti.
+add_test(
+    NAME edge_main_multizone_smoke
+    COMMAND $<TARGET_FILE:edge>
+        --recipe "${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        --zones 2
+        --steps 1
+        --step-seconds 60
+)
+set_tests_properties(
+    edge_main_multizone_smoke
+    PROPERTIES
+        PASS_REGULAR_EXPRESSION "Zones: 2"
 )
 
 # Smoke test dei programmi dimostrativi. Sensori e ricette creano un solo CSV

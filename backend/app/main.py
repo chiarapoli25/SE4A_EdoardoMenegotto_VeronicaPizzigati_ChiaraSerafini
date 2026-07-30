@@ -1,13 +1,12 @@
 """@file main.py
-@brief Applicazione FastAPI e relativi endpoint HTTP di SmartHydro.
+@brief Punto di composizione dell'applicazione FastAPI SmartHydro.
 
-@details Il modulo costruisce l'oggetto ASGI importato dal server, serve la
-dashboard, mantiene le ricette in SQLite, le esporta come JSON e orchestra
-simulazioni finite tramite il processo Edge Controller.
+@details Il modulo inizializza l'infrastruttura e registra i router dei domini.
+I servizi della dashboard sono composti sopra le feature senza duplicarne la
+persistenza o i contratti.
 """
 
 import sqlite3
-from collections.abc import Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,12 +15,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .database import (
     RecipeVersionConflict,
-    get_connection,
     get_recipe,
-    init_db,
     list_recipes,
     save_recipe,
 )
+from .core.database import get_connection, get_db, init_db
+from .core.security import require_api_token
 from .edge_runner import (
     EdgeExecutionFailed,
     EdgeOutputInvalid,
@@ -38,11 +37,20 @@ from .models import (
     SimulationRequest,
 )
 from .recipe_export import (
-    DEFAULT_EXPORT_DIRECTORY,
     UnsafeRecipeId,
     assert_safe_recipe_id,
     export_recipe_for_edge,
 )
+from .features.actuators.routes import router as actuator_router
+from .features.commands.routes import router as command_router
+from .features.events.routes import router as event_router
+from .features.recipes.routes import (
+    get_export_directory,
+    router as recipe_router,
+)
+from .features.system.routes import router as system_router
+from .features.telemetry.routes import router as telemetry_router
+from .features.zones.routes import router as zone_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DASHBOARD_DIRECTORY = PROJECT_ROOT / "dashboard"
@@ -52,11 +60,7 @@ SUPPORTED_PLANT_TYPE = "Tomato"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """@brief Inizializza il database durante l'avvio dell'applicazione.
-
-    @param app Applicazione FastAPI gestita dal contesto di vita.
-    @return Generatore asincrono che cede il controllo dopo l'inizializzazione.
-    """
+    """@brief Inizializza lo schema SQLite all'avvio dell'applicazione."""
     connection = get_connection()
     try:
         init_db(connection)
@@ -68,26 +72,28 @@ async def lifespan(app: FastAPI):
 ## @brief Applicazione ASGI principale esposta al server Uvicorn.
 app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 
+app.include_router(system_router)
+app.include_router(zone_router)
+app.include_router(telemetry_router)
+app.include_router(actuator_router)
+app.include_router(event_router)
+app.include_router(command_router)
 
-def get_db() -> Generator[sqlite3.Connection, None, None]:
-    """@brief Fornisce una connessione SQLite per una singola richiesta.
-
-    @return Generatore che espone la connessione e la chiude al termine della
-        richiesta.
-    """
-    connection = get_connection()
-    try:
-        yield connection
-    finally:
-        connection.close()
-
-
-def get_export_directory() -> Path:
-    """@brief Restituisce la cartella di esportazione delle ricette.
-
-    @return Percorso predefinito dei file JSON destinati all'Edge Controller.
-    """
-    return DEFAULT_EXPORT_DIRECTORY
+# Contratto versionato usato dai nuovi client Edge. Gli endpoint storici
+# restano disponibili per la dashboard e per i test precedenti.
+for versioned_router in (
+    zone_router,
+    telemetry_router,
+    actuator_router,
+    recipe_router,
+    event_router,
+    command_router,
+):
+    app.include_router(
+        versioned_router,
+        prefix="/api/v1",
+        dependencies=[Depends(require_api_token)],
+    )
 
 
 def get_edge_executable() -> Path:
@@ -113,32 +119,6 @@ def _prepare_recipe_for_save(recipe: Recipe) -> Recipe:
         for controller in recipe.controllers
     ]
     return recipe.model_copy(update={"controllers": controllers}, deep=True)
-
-
-@app.get("/")
-def read_root() -> dict[str, str]:
-    """@brief Restituisce l'identita pubblica del servizio.
-
-    @details Restituisce un dizionario JSON-serializzabile con nome del backend e
-    versione applicativa. La funzione non modifica stato e non accede a
-    risorse esterne.
-
-    @return Nome e versione del backend.
-    """
-    return {"name": "SmartHydro Backend", "version": "0.1.0"}
-
-
-@app.get("/health")
-def read_health() -> dict[str, str]:
-    """@brief Segnala che il processo HTTP e in esecuzione.
-
-    @details Restituisce un dizionario JSON-serializzabile con `status` uguale a
-    `"healthy"`. Il risultato e statico: non verifica database, sensori,
-    attuatori o collegamento con l'Edge Controller.
-
-    @return Stato statico di disponibilita del processo.
-    """
-    return {"status": "healthy"}
 
 
 @app.get("/system/status")
@@ -284,3 +264,5 @@ app.mount(
     StaticFiles(directory=DASHBOARD_DIRECTORY, html=True),
     name="dashboard",
 )
+
+__all__ = ["app", "get_db", "get_export_directory"]

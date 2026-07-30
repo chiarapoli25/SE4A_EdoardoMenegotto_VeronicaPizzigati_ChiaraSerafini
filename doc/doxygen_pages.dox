@@ -1,149 +1,278 @@
 /**
- * @mainpage Doxygen
+ * @mainpage SmartHydro - Documentazione tecnica
  *
- * La documentazione tecnica di SmartHydro e raccolta in un unico sito e
- * organizzata nelle due componenti software del progetto:
+ * SmartHydro e composto da:
  *
- * - @subpage edge_controller_cpp
- * - @subpage backend_python
+ * - @subpage edge_controller_cpp - simulazione e controllo locale in C++17;
+ * - @subpage backend_python - API HTTP realizzate con FastAPI.
  *
- * La @ref md__r_e_a_d_m_e descrive invece compilazione, test ed esperimenti
- * dell'intero progetto.
+ * Per compilazione, test ed esecuzione consultare la @ref md__r_e_a_d_m_e.
  *
- * @section architecture Architettura generale
+ * @section main_overview Panoramica
  *
  * L'Edge Controller mantiene il modello fisico, produce misure simulate e
  * applica ricette versionate tramite controllori Strategy. Il Backend espone
  * l'interfaccia HTTP, salva ed esporta le ricette e avvia l'eseguibile Edge
- * quando la dashboard richiede una simulazione finita.
+ * quando la dashboard richiede una simulazione finita. Il canale asincrono
+ * versionato gestisce inoltre telemetria, attuatori, eventi e comandi remoti.
  *
- * Il ciclo previsto nell'Edge Controller e:
- *
- * 1. EdgeRuntime legge sensori e modelli N/P/K;
- * 2. RecipeControlSystem calcola le sei decisioni sicure;
- * 3. EdgeRuntime configura gli attuatori;
- * 4. ActuatorSimulator::step() calcola l'uscita fisica;
- * 5. EnvironmentSimulator::step() applica l'uscita all'ambiente;
- * 6. EdgeRuntime aggiorna lo storico delle dosi realmente erogate.
+ * Il controllo rimane nell'Edge anche quando il backend non e disponibile.
  */
 
 /**
  * @page edge_controller_cpp Edge Controller C++
  *
- * Componente C++17 che simula ambiente, sensori e attuatori e mette a
- * disposizione controllori a soglia, PID e predittivi.
+ * L'Edge simula una zona di coltivazione, applica una ricetta e porta gli
+ * attuatori in stato sicuro quando rileva un problema.
  *
- * @section edge_execution Flusso di esecuzione
- *
- * @code{.cpp}
- * smarthydro::ActuatorSimulator actuators;
- * smarthydro::EnvironmentSimulator environment;
- * smarthydro::SensorSimulator sensors;
- *
- * actuators.request_irrigation_volume_liters(0.5);
- * actuators.set_fertilizer_valve_open(
- *     smarthydro::FertilizerType::NITROGEN, true);
- * actuators.step(900.0);
- * environment.step(900.0, actuators.output());
- * const auto readings = sensors.read(environment.state());
- * @endcode
- *
- * Separare i quattro passaggi evita di confondere:
- *
- * - il comando logico richiesto al dispositivo;
- * - l'uscita fisica realmente erogata;
- * - lo stato fisico dell'ambiente;
- * - la misura strumentale, che puo contenere rumore o dropout.
+ * @tableofcontents
  *
  * @section edge_components Componenti
  *
- * - @ref smarthydro::EnvironmentSimulator
- * - @ref smarthydro::SensorSimulator
- * - @ref smarthydro::ActuatorSimulator
- * - @ref smarthydro::ThresholdController
- * - @ref smarthydro::PidController
- * - @ref smarthydro::PredictiveController
- * - @ref smarthydro::RecipeControlSystem
- * - @ref smarthydro::EdgeRuntime
+ * | Area | Componenti principali | Scopo |
+ * | ---- | --------------------- | ----- |
+ * | Simulazione | @ref smarthydro::EnvironmentSimulator, @ref smarthydro::SensorSimulator, @ref smarthydro::ActuatorSimulator | Riproduce ambiente, misure ed effetti fisici |
+ * | Adapter | @ref smarthydro::ISensor, @ref smarthydro::IActuator, @ref smarthydro::IEnvironment | Separa il runtime da simulatori e hardware |
+ * | Controllo | @ref smarthydro::ThresholdController, @ref smarthydro::PidController, @ref smarthydro::PredictiveController | Calcola i comandi |
+ * | Ricette | @ref smarthydro::RecipeControlSystem | Seleziona fase, Strategy e limiti |
+ * | Runtime | @ref smarthydro::EdgeRuntime | Coordina un ciclo completo |
+ * | Multi-zona | @ref smarthydro::ZoneController, @ref smarthydro::GreenhouseManager | Isola e coordina piu zone |
+ * | Eventi | @ref smarthydro::EventBus | Distribuisce telemetria e cambi di stato |
+ * | Comandi | @ref smarthydro::RuntimeCommandProcessor | Esegue richieste idempotenti |
  *
- * @section edge_recipe_control Ricette e controllo Strategy
+ * @section edge_source_layout Struttura dei sorgenti
  *
- * Ogni @ref smarthydro::Recipe identifica pianta, substrato e versione e
- * contiene una sequenza di @ref smarthydro::RecipePhase. Ogni fase specifica
- * setpoint, intervallo ammesso, limiti di sicurezza, fotoperiodo e dose N/P/K
- * suggerita. Le configurazioni associano esplicitamente variabile, sorgente,
- * attuatore, unita, strategia e parametri. Il substrato deve essere dichiarato
- * nella ricetta: non esiste un terriccio implicito di fallback.
+ * Gli header in `edge/include/smarthydro` e le implementazioni in `edge/src`
+ * usano gli stessi domini:
  *
- * @ref smarthydro::IController e l'interfaccia comune implementata da
- * Threshold, PID e Predictive. @ref smarthydro::ControllerFactory istanzia la
- * scelta dell'agronomo. Acqua e luce usano Threshold con isteresi come
- * default; il pH usa un PID bidirezionale limitato a piccoli dosaggi; N/P/K
- * usano Predictive.
- * Per N/P/K la sorgente e un modello, mai un sensore fittizio.
+ * - `simulation/`: ambiente, sensori e attuatori;
+ * - `adapters/`: interfacce e adapter;
+ * - `control/`: Strategy e orchestrazione della ricetta;
+ * - `recipes/`: serializzazione JSON;
+ * - `events/`: EventBus e observer;
+ * - `runtime/`: ciclo operativo, FSM, comandi e gestione multi-zona.
  *
- * @ref smarthydro::RecipeControlSystem::execute() blocca ogni configurazione
- * non confermata o non valida. Una modifica tramite select_strategy() o
- * replace_recipe() incrementa o sostituisce la versione e invalida tutte le
- * conferme. Il passaggio temporale tra fasi della stessa ricetta non modifica
- * la versione e conserva l'approvazione.
+ * L'implementazione di @ref smarthydro::EdgeRuntime e divisa in file
+ * `core`, `configuration`, `cycle`, `fsm`, `actuation` ed `events`.
+ * @ref smarthydro::EdgeStepResult e gli altri DTO sono separati in
+ * `runtime/edge_runtime_types.hpp`.
  *
- * Dopo il calcolo, l'orchestratore limita volume d'acqua, durata della pompa,
- * dose singola e giornaliera e intervallo tra dosaggi. Per il pH applica anche
- * il tempo di assestamento e la mutua esclusione fra pH+ e pH-.
+ * @section edge_cycle Ciclo operativo
  *
- * @section edge_recipe_json Formato JSON
+ * Ogni chiamata a EdgeRuntime::step():
  *
- * load_recipe_json() e save_recipe_json() leggono e scrivono l'intero modello,
- * incluse configurazioni e versioni. Il file `config/example_recipe.json`
- * contiene una ricetta dimostrativa per pomodoro, con crescita vegetativa e
- * fioritura. I valori sono didattici e devono essere validati prima dell'uso
- * agronomico reale.
+ * 1. determina la fase della ricetta;
+ * 2. legge i sensori e i modelli N/P/K;
+ * 3. calcola le sei @ref smarthydro::ControlDecision;
+ * 4. verifica fault e stato operativo;
+ * 5. applica i comandi e aggiorna l'ambiente;
+ * 6. restituisce @ref smarthydro::EdgeStepResult e pubblica gli eventi.
  *
- * @section edge_environment Ambiente
+ * `EdgeStepResult` contiene progressivo, letture, decisioni, quantita
+ * erogate, stato degli attuatori, ambiente ed eventi del ciclo.
  *
- * Il modello ambientale dipende da condizioni esterne, terriccio, casualita
- * meteorologica e ingressi degli attuatori. Non dipende dalla specie coltivata.
- * Le grandezze possedute dal modello sono temperatura, umidita dell'aria,
- * umidita del terriccio, pH, EC, concentrazioni N/P/K e PPFD. Le
- * concentrazioni nutritive sono stato fisico e non canali del sensore.
+ * @section edge_multizone Multi-zona
  *
- * I cinque serbatoi liquidi N, P, K, pH+ e pH- confluiscono nella pompa
- * d'irrigazione tramite elettrovalvole. N/P/K possono fluire insieme, mentre
- * i correttori pH+ e pH- sono interbloccati.
+ * Ogni @ref smarthydro::ZoneController possiede un @ref smarthydro::EdgeRuntime
+ * e una cache dei comandi indipendenti. @ref smarthydro::GreenhouseManager
+ * registra le zone e offre `step_zone()`, `step_all()` ed `execute_command()`.
  *
- * @section edge_reproducibility Riproducibilita
+ * Le zone condividono soltanto l'EventBus; ricetta, fase, sensori, ambiente,
+ * attuatori, FSM, fault e sequenze restano locali. Gli identificatori sono
+ * stringhe e possono rappresentare gerarchie, per esempio
+ * `reparto-a/settore-2`.
  *
- * Ambiente e sensori possiedono generatori casuali distinti. Per ripetere una
- * simulazione occorre riutilizzare configurazioni, seed, ingressi, durate dei
- * passi e ordine delle letture.
+ * @section edge_safety Sicurezza e FSM
+ *
+ * | Stato | Comportamento |
+ * | ----- | ------------- |
+ * | `Nominal` | Il controllo applica normalmente i comandi |
+ * | `Degraded` | Gli attuatori restano fermi durante la verifica |
+ * | `EmergencyLockdown` | Tutte le uscite restano in stato sicuro |
+ *
+ * Un fault recuperabile porta a `Degraded`; se persiste puo causare
+ * `EmergencyLockdown`. Un fault critico provoca il blocco immediato.
+ * @ref smarthydro::OperationalStatePolicy configura le soglie di escalation e
+ * recovery. L'uscita dall'emergenza richiede un reset manuale e cicli sani.
+ *
+ * @section edge_recipes Ricette e Strategy
+ *
+ * Una @ref smarthydro::Recipe contiene versione, substrato, fasi, target e
+ * configurazioni dei controllori. Modificare Strategy o ricetta invalida le
+ * conferme precedenti; il controllo riparte solo dopo una nuova conferma.
+ *
+ * Le Strategy disponibili sono:
+ *
+ * - Threshold: soglie con isteresi;
+ * - PID: controllo proporzionale, integrale e derivativo;
+ * - Predictive: previsione basata su modello e storico.
+ *
+ * `load_recipe_json()` e `save_recipe_json()` gestiscono il formato JSON.
+ *
+ * @section edge_commands Comandi runtime
+ *
+ * Ogni @ref smarthydro::RuntimeCommandEnvelope contiene un `command_id`.
+ * Ripetere lo stesso identificatore non riesegue l'operazione: il processore
+ * restituisce il risultato precedente con `replayed=true`.
+ *
+ * | Gruppo | Comandi |
+ * | ------ | ------- |
+ * | Configurazione | @ref smarthydro::ChangeStrategyCommand, @ref smarthydro::LoadRecipeCommand |
+ * | Conferma | @ref smarthydro::ConfirmConfigurationCommand, @ref smarthydro::RejectConfigurationCommand |
+ * | Simulazione | @ref smarthydro::InjectFaultCommand, @ref smarthydro::ResetFaultCommand, @ref smarthydro::AdvanceRecipePhaseCommand |
+ * | Sicurezza | @ref smarthydro::EmergencyStopCommand, @ref smarthydro::ResetEmergencyCommand |
+ *
+ * @section edge_events Eventi e observer
+ *
+ * @ref smarthydro::EventBus notifica gli observer senza accoppiare il runtime
+ * a console, file o rete. Gli observer disponibili sono:
+ *
+ * - @ref smarthydro::ConsoleLogger;
+ * - @ref smarthydro::CsvLogger;
+ * - @ref smarthydro::BackendClient.
+ *
+ * Gli eventi principali segnalano telemetria, fault, cambi di Strategy o fase,
+ * transizioni della FSM ed esito dei comandi fisici. Un observer che fallisce
+ * non interrompe il ciclo locale.
+ *
+ * @section edge_adapters Adapter e sostituzione hardware
+ *
+ * Il costruttore predefinito usa adapter simulati. Il costruttore a dipendenze
+ * accetta implementazioni di @ref smarthydro::ISensor,
+ * @ref smarthydro::IActuator e @ref smarthydro::IEnvironment. Un futuro driver
+ * GPIO, Modbus o MQTT puo quindi essere inserito senza cambiare il runtime.
  */
 
 /**
  * @page backend_python Backend Python
  *
- * Componente FastAPI che espone gli endpoint HTTP di SmartHydro.
+ * Il backend FastAPI espone i servizi destinati alla dashboard. Il controllo
+ * fisico rimane responsabilita dell'Edge.
  *
- * @section backend_endpoints Endpoint disponibili
+ * @tableofcontents
+ *
+ * @section backend_endpoints Endpoint
  *
  * | Metodo | Percorso | Funzione | Significato |
  * | ------ | -------- | -------- | ----------- |
- * | GET | `/` | backend.app.main.read_root() | Nome e versione del servizio |
- * | GET | `/health` | backend.app.main.read_health() | Disponibilita del processo |
+ * | GET | `/` | backend.app.features.system.routes.read_root() | Nome e versione del servizio |
+ * | GET | `/health` | backend.app.features.system.routes.read_health() | Disponibilita del processo |
  * | GET | `/system/status` | backend.app.main.read_system_status() | Stato di database ed Edge |
  * | GET | `/recipes` | backend.app.main.read_recipes() | Elenco ricette del pomodoro |
  * | GET | `/recipes/template` | backend.app.main.read_recipe_template() | Modello iniziale |
  * | POST | `/recipes` | backend.app.main.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.main.read_recipe() | Lettura di una ricetta salvata |
  * | POST | `/simulations` | backend.app.main.create_simulation() | Esecuzione Edge e telemetria completa |
+ * | POST | `/zones` | backend.app.features.zones.routes.register_zone() | Registrazione di un settore della serra |
+ * | GET | `/zones` | backend.app.features.zones.routes.read_zones() | Elenco dei settori ordinati per reparto |
+ * | GET | `/zones/{zone_id}` | backend.app.features.zones.routes.read_zone() | Lettura di un settore tramite identificativo |
+ * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
+ * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo campione sensori disponibile |
+ * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato dei sensori |
+ * | POST | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
+ * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.features.actuators.routes.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
+ * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
+ * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
+ * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
+ * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Elenco delle ricette disponibili |
+ * | POST | `/zones/{zone_id}/events` | backend.app.features.events.routes.create_event() | Acquisizione idempotente di un evento Edge |
+ * | GET | `/zones/{zone_id}/events` | backend.app.features.events.routes.read_events() | Storico degli eventi Edge |
+ * | POST | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.enqueue_command() | Accodamento di un comando runtime |
+ * | GET | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.read_pending_commands() | Polling dei comandi pendenti |
+ * | POST | `/zones/{zone_id}/commands/{command_id}/result` | backend.app.features.commands.routes.report_command_result() | Esito idempotente del comando |
  *
- * L'endpoint `/health` restituisce attualmente uno stato statico: non verifica
- * sensori, database o comunicazione con l'Edge Controller.
+ * Gli endpoint applicativi sono esposti anche sotto `/api/v1`, contratto usato
+ * dall'Edge. Se `SMARTHYDRO_API_TOKEN` e configurata, questa superficie richiede
+ * un Bearer token; gli endpoint storici restano compatibili.
+ *
+ * L'endpoint `/health` e attualmente statico: non verifica sensori, database o
+ * collegamento con l'Edge. La specifica OpenAPI interattiva e disponibile in
+ * `/docs` quando il server e in esecuzione.
+ *
+ * @section backend_architecture Organizzazione per funzionalita
+ *
+ * Il backend usa vertical slice: ogni cartella in `features/` raccoglie
+ * contratto, persistenza ed endpoint della stessa funzionalita.
+ *
+ * @code{.txt}
+ * main.py
+ *   |
+ *   +-- core/
+ *   |     +-- database.py
+ *   |
+ *   +-- features/
+ *         +-- zones/
+ *         |     +-- models.py
+ *         |     +-- repository.py
+ *         |     +-- routes.py
+ *         +-- telemetry/
+ *         +-- actuators/
+ *         +-- events/
+ *         +-- commands/
+ *         +-- recipes/
+ *         +-- system/
+ * @endcode
+ *
+ * `main.py` e il composition root: crea l'applicazione, inizializza lo schema
+ * e registra un router per feature, ma non contiene logica di dominio. Dentro
+ * una feature, `models.py` definisce i contratti Pydantic, `repository.py`
+ * contiene query e transazioni SQLite e `routes.py` traduce il dominio in API
+ * HTTP. La feature `recipes` possiede anche `export.py`.
+ *
+ * Le feature dipendono dall'infrastruttura condivisa in `core/`. Telemetria e
+ * attuatori dipendono inoltre soltanto dal repository `zones` per verificare
+ * che il settore esista. `models/`, `database.py`, `db.py` e
+ * `recipe_export.py` sono facciate compatibili: mantengono validi gli import
+ * precedenti, ma non contengono la logica applicativa.
+ *
+ * @section backend_data_flow Flusso dei dati dall'Edge
+ *
+ * L'Edge invia i sensori al router `telemetry`, gli attuatori al router
+ * `actuators` e gli eventi al router `events`; tutti verificano la zona e
+ * delegano il salvataggio al relativo repository. Un worker HTTP nell'Edge
+ * usa timeout brevi, outbox persistente e retry con backoff. In senso opposto
+ * interroga `commands`, esegue il comando fra due cicli e pubblica l'esito.
+ * Le transazioni portano il settore nello stato `online` e aggiornano
+ * `last_edge_contact`.
+ *
+ * @code{.txt}
+ * Edge -> features/telemetry/routes.py
+ *      -> features/telemetry/repository.py -> SQLite
+ * Dashboard <- features/telemetry/routes.py <- repository.py <- SQLite
+ *
+ * Edge -> features/actuators/routes.py
+ *      -> features/actuators/repository.py -> SQLite
+ *
+ * Backend -> features/commands/routes.py <- Edge polling asincrono
+ * Backend <- risultato comando <- Edge runtime
+ * Dashboard <- features/actuators/routes.py <- repository.py <- SQLite
+ * @endcode
+ *
+ * @section backend_actuator_contract Contratto degli attuatori
+ *
+ * Ogni snapshot contiene due oggetti separati:
+ *
+ * - `command`, equivalente ad `ActuatorCommand`, descrive volume d'acqua,
+ *   elettrovalvole e percentuale luce richiesti dal controllore;
+ * - `output`, equivalente ad `ActuatorOutput`, descrive pompa, volumi, portate,
+ *   valvole e potenza luminosa realmente prodotti dal simulatore.
+ *
+ * La separazione impedisce di interpretare un comando come gia eseguito. I
+ * cinque concentrati usano gli identificatori stabili del C++: `nitrogen`,
+ * `phosphorus`, `potassium`, `ph-up` e `ph-down`. Comando e uscita sono
+ * conservati come JSON validato, mentre zona, progressivo e date restano
+ * colonne indicizzate per recuperare ultimo stato e storico.
  *
  * @section backend_components Componenti
  *
- * - backend/app/main.py: applicazione ASGI ed endpoint HTTP;
- * - backend/app/models.py: contratto Pydantic condiviso con l'Edge Controller;
- * - backend/app/database.py: persistenza SQLite delle ricette;
- * - backend/app/recipe_export.py: esportazione JSON sicura per l'Edge.
+ * - backend/app/main.py: composizione e ciclo di vita dell'applicazione ASGI;
+ * - backend/app/core/database.py: connessioni, dipendenza FastAPI e schema;
+ * - backend/app/features/system/: identificazione e health check;
+ * - backend/app/features/zones/: reparti, settori e specie vegetali;
+ * - backend/app/features/telemetry/: acquisizione e storico dei sensori;
+ * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
+ * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;
+ * - backend/app/features/commands/: coda ed esiti dei comandi runtime;
+ * - backend/app/features/recipes/: ricette, persistenza ed esportazione;
+ * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */
