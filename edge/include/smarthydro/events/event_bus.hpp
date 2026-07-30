@@ -66,6 +66,30 @@ struct SimulationSpeedChanged {
     double current_time_scale = 1.0;
 };
 
+/** @brief Configurazione o rimozione del limite temporale di una zona. */
+struct SimulationDurationChanged {
+    /** Zona interessata dalla configurazione. */
+    std::string zone_id;
+    /** Timestamp simulato dal quale decorre la nuova durata. */
+    double timestamp_seconds = 0.0;
+    /** True quando la simulazione ha un limite temporale. */
+    bool limited = false;
+    /** Durata richiesta; zero quando il limite viene rimosso. */
+    double duration_seconds = 0.0;
+    /** Timestamp simulato di arrivo; zero in modalita continua. */
+    double target_timestamp_seconds = 0.0;
+};
+
+/** @brief Raggiungimento del limite temporale configurato per una zona. */
+struct SimulationDurationCompleted {
+    /** Zona che ha completato la finestra simulativa. */
+    std::string zone_id;
+    /** Timestamp simulato esatto di completamento. */
+    double timestamp_seconds = 0.0;
+    /** Durata della finestra appena completata. */
+    double duration_seconds = 0.0;
+};
+
 /**
  * @brief Ingresso o uscita dallo stato di ritardo dello scheduler.
  *
@@ -196,6 +220,8 @@ using EdgeDomainEvent = std::variant<
     TelemetrySample,
     ZoneLifecycleChanged,
     SimulationSpeedChanged,
+    SimulationDurationChanged,
+    SimulationDurationCompleted,
     SchedulerLagStateChanged,
     StateChanged,
     FaultDetected,

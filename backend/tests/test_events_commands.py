@@ -112,6 +112,7 @@ def test_can_enqueue_cultivation_activation(client: TestClient) -> None:
         "ResumeCultivation",
         "StopCultivation",
         "SetSimulationSpeed",
+        "SetSimulationDuration",
     ],
 )
 def test_can_enqueue_zone_lifecycle_commands(

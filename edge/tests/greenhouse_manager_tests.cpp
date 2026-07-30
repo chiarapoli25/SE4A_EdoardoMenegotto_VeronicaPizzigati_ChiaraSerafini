@@ -347,6 +347,138 @@ TEST(GreenhouseManagerTest, SimulationSpeedIsValidatedIdempotentAndObservable) {
     EXPECT_DOUBLE_EQ(zone.time_scale(), 1.0);
 }
 
+TEST(GreenhouseManagerTest, SimulationDurationIsOptionalValidatedAndIdempotent) {
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    smarthydro::GreenhouseManager manager(event_bus);
+    auto& zone = manager.add_inactive_zone("zone-1");
+
+    EXPECT_FALSE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "duration-inactive",
+                smarthydro::SetSimulationDurationCommand{3600.0},
+            })
+            .success());
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "activate-1",
+                smarthydro::ActivateCultivationCommand{
+                    "cultivation-1",
+                    load_demo_recipe(),
+                },
+            })
+            .success());
+    EXPECT_FALSE(zone.simulation_duration_seconds().has_value());
+
+    for (const auto& [command_id, value] :
+         std::vector<std::pair<std::string, double>>{
+             {"duration-zero", 0.0},
+             {"duration-negative", -1.0},
+             {"duration-nan",
+              std::numeric_limits<double>::quiet_NaN()},
+             {"duration-infinity",
+              std::numeric_limits<double>::infinity()},
+         }) {
+        const auto invalid = manager.execute_command(
+            "zone-1",
+            {
+                command_id,
+                smarthydro::SetSimulationDurationCommand{value},
+            });
+        EXPECT_FALSE(invalid.success()) << command_id;
+        EXPECT_EQ(
+            invalid.message,
+            "duration_seconds must be positive and finite");
+    }
+
+    const smarthydro::RuntimeCommandEnvelope duration{
+        "duration-1h",
+        smarthydro::SetSimulationDurationCommand{3600.0},
+    };
+    const auto applied =
+        manager.execute_command("zone-1", duration);
+    ASSERT_TRUE(applied.success());
+    EXPECT_EQ(
+        applied.message,
+        "simulation duration set to 3600s");
+    ASSERT_TRUE(zone.simulation_duration_seconds().has_value());
+    EXPECT_DOUBLE_EQ(*zone.simulation_duration_seconds(), 3600.0);
+    ASSERT_TRUE(
+        zone.simulation_target_timestamp_seconds().has_value());
+    EXPECT_DOUBLE_EQ(
+        *zone.simulation_target_timestamp_seconds(),
+        3600.0);
+
+    manager.step_zone("zone-1", 900.0);
+    const auto replay =
+        manager.execute_command("zone-1", duration);
+    EXPECT_TRUE(replay.success());
+    EXPECT_TRUE(replay.replayed);
+    EXPECT_DOUBLE_EQ(
+        *zone.simulation_target_timestamp_seconds(),
+        3600.0);
+    EXPECT_DOUBLE_EQ(
+        *zone.remaining_simulation_seconds(),
+        2700.0);
+
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {"pause-1", smarthydro::PauseCultivationCommand{}})
+            .success());
+    const auto cleared = manager.execute_command(
+        "zone-1",
+        {
+            "duration-clear",
+            smarthydro::SetSimulationDurationCommand{std::nullopt},
+        });
+    EXPECT_TRUE(cleared.success());
+    EXPECT_EQ(
+        cleared.message,
+        "simulation duration cleared");
+    EXPECT_FALSE(zone.simulation_duration_seconds().has_value());
+    EXPECT_FALSE(
+        zone.simulation_target_timestamp_seconds().has_value());
+    EXPECT_FALSE(zone.remaining_simulation_seconds().has_value());
+
+    std::vector<smarthydro::SimulationDurationChanged>
+        duration_events;
+    for (const auto& event : observer->events) {
+        if (const auto* duration_event =
+                std::get_if<
+                    smarthydro::SimulationDurationChanged>(
+                    &event)) {
+            duration_events.push_back(*duration_event);
+        }
+    }
+    ASSERT_EQ(duration_events.size(), 2U);
+    EXPECT_TRUE(duration_events[0].limited);
+    EXPECT_DOUBLE_EQ(
+        duration_events[0].duration_seconds,
+        3600.0);
+    EXPECT_DOUBLE_EQ(
+        duration_events[0].target_timestamp_seconds,
+        3600.0);
+    EXPECT_FALSE(duration_events[1].limited);
+
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {"resume-1", smarthydro::ResumeCultivationCommand{}})
+            .success());
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {"stop-1", smarthydro::StopCultivationCommand{}})
+            .success());
+    EXPECT_FALSE(zone.simulation_duration_seconds().has_value());
+}
+
 TEST(GreenhouseManagerTest, StopReleasesRuntimeAndReturnsZoneToIdle) {
     smarthydro::GreenhouseManager manager;
     auto& zone = manager.add_inactive_zone("zone-1");

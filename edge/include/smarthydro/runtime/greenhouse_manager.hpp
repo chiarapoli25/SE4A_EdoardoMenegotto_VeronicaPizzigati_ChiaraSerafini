@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -132,6 +133,27 @@ public:
      * Il valore zero deve essere rappresentato con PauseCultivation.
      */
     void set_time_scale(double time_scale);
+    /** @brief Durata simulata configurata, oppure modalita continua. */
+    std::optional<double> simulation_duration_seconds() const noexcept;
+    /** @brief Timestamp simulato di arrivo, oppure nessun limite. */
+    std::optional<double> simulation_target_timestamp_seconds()
+        const noexcept;
+    /** @brief Secondi simulati ancora da eseguire, oppure nessun limite. */
+    std::optional<double> remaining_simulation_seconds() const noexcept;
+    /**
+     * @brief Imposta una durata positiva e finita, o rimuove il limite.
+     *
+     * La finestra parte dal timestamp gia applicato al runtime. La modifica e
+     * consentita in Running e Paused.
+     */
+    void set_simulation_duration(
+        std::optional<double> duration_seconds);
+    /**
+     * @brief Completa la finestra corrente e mette in pausa la zona.
+     *
+     * Metodo destinato allo scheduler dopo l'applicazione dell'ultimo passo.
+     */
+    void complete_simulation_duration();
     /**
      * @brief Runtime della zona per ispezione o configurazione locale.
      * @throws std::logic_error Quando la zona e ancora inattiva.
@@ -165,12 +187,17 @@ private:
     void publish_time_scale_changed(
         double previous_time_scale,
         double current_time_scale) noexcept;
+    void publish_simulation_duration_changed() noexcept;
+    void publish_simulation_duration_completed(
+        double duration_seconds) noexcept;
 
     std::string zone_id_;
     std::string cultivation_id_;
     std::string last_error_;
     ZoneLifecycleState lifecycle_state_ = ZoneLifecycleState::IDLE;
     double time_scale_ = 1.0;
+    std::optional<double> simulation_duration_seconds_;
+    std::optional<double> simulation_target_timestamp_seconds_;
     std::unique_ptr<EdgeRuntime> runtime_;
     std::unique_ptr<RuntimeCommandProcessor> command_processor_;
     std::shared_ptr<EventBus> event_bus_;

@@ -14,6 +14,7 @@ class CommandType(str, Enum):
     RESUME_CULTIVATION = "ResumeCultivation"
     STOP_CULTIVATION = "StopCultivation"
     SET_SIMULATION_SPEED = "SetSimulationSpeed"
+    SET_SIMULATION_DURATION = "SetSimulationDuration"
     CONFIRM_CONFIGURATION = "ConfirmConfiguration"
     REJECT_CONFIGURATION = "RejectConfiguration"
     INJECT_FAULT = "InjectFault"

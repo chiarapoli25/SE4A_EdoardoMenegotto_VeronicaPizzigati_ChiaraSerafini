@@ -327,6 +327,18 @@ TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
             "command_type": "SetSimulationSpeed",
             "payload": {"time_scale": 10.0}
         })json");
+    const auto duration = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "duration-1",
+            "command_type": "SetSimulationDuration",
+            "payload": {"duration_seconds": 86400.0}
+        })json");
+    const auto continuous = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "duration-clear",
+            "command_type": "SetSimulationDuration",
+            "payload": {"duration_seconds": null}
+        })json");
 
     EXPECT_TRUE(
         std::holds_alternative<
@@ -349,6 +361,24 @@ TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
             speed.command)
             .time_scale,
         10.0);
+    ASSERT_TRUE(
+        std::holds_alternative<
+            smarthydro::SetSimulationDurationCommand>(
+            duration.command));
+    EXPECT_DOUBLE_EQ(
+        *std::get<smarthydro::SetSimulationDurationCommand>(
+             duration.command)
+             .duration_seconds,
+        86400.0);
+    ASSERT_TRUE(
+        std::holds_alternative<
+            smarthydro::SetSimulationDurationCommand>(
+            continuous.command));
+    EXPECT_FALSE(
+        std::get<smarthydro::SetSimulationDurationCommand>(
+            continuous.command)
+            .duration_seconds
+            .has_value());
 }
 
 TEST(HttpBackendClientTest, SerializesZoneLifecycleEvents) {
@@ -422,6 +452,20 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
             10.0,
         });
     bus.publish(
+        smarthydro::SimulationDurationChanged{
+            "zone-1",
+            60.0,
+            true,
+            3600.0,
+            3660.0,
+        });
+    bus.publish(
+        smarthydro::SimulationDurationCompleted{
+            "zone-1",
+            3660.0,
+            3600.0,
+        });
+    bus.publish(
         smarthydro::SchedulerLagStateChanged{
             "zone-1",
             900.0,
@@ -432,11 +476,11 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
         });
 
     ASSERT_TRUE(wait_until([&] {
-        return transport->post_count() >= 2;
+        return transport->post_count() >= 4;
     }));
     client->stop();
     const auto posts = transport->post_snapshot();
-    ASSERT_EQ(posts.size(), 2U);
+    ASSERT_EQ(posts.size(), 4U);
 
     const auto speed = nlohmann::json::parse(posts[0].second);
     EXPECT_EQ(speed.at("event_type"), "SimulationSpeedChanged");
@@ -447,7 +491,27 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
         speed.at("payload").at("current_time_scale"),
         10.0);
 
-    const auto lag = nlohmann::json::parse(posts[1].second);
+    const auto duration = nlohmann::json::parse(posts[1].second);
+    EXPECT_EQ(
+        duration.at("event_type"),
+        "SimulationDurationChanged");
+    EXPECT_TRUE(duration.at("payload").at("limited"));
+    EXPECT_EQ(
+        duration.at("payload").at("duration_seconds"),
+        3600.0);
+    EXPECT_EQ(
+        duration.at("payload").at("target_timestamp_seconds"),
+        3660.0);
+
+    const auto completed = nlohmann::json::parse(posts[2].second);
+    EXPECT_EQ(
+        completed.at("event_type"),
+        "SimulationDurationCompleted");
+    EXPECT_EQ(
+        completed.at("payload").at("duration_seconds"),
+        3600.0);
+
+    const auto lag = nlohmann::json::parse(posts[3].second);
     EXPECT_EQ(lag.at("event_type"), "SchedulerLagStateChanged");
     EXPECT_TRUE(lag.at("payload").at("lagging"));
     EXPECT_EQ(lag.at("payload").at("pending_steps"), 2);

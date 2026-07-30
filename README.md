@@ -163,7 +163,16 @@ finito fra `1x` e `60x`. `0x` viene rappresentato dal comando
 `PauseCultivation`: la pausa conserva il residuo temporale senza accumulare
 altro tempo, mentre stop, errore e nuova attivazione azzerano lo stato dello
 scheduler. La velocita cambia la frequenza dei passi, non la durata passata a
-`runtime.step()`.
+`runtime.step()`, salvo l'ultimo passo ridotto necessario a rispettare
+esattamente un limite temporale.
+
+`SetSimulationDuration` permette di configurare una finestra futura espressa
+in secondi simulati. La durata deve essere positiva e finita e decorre dal
+timestamp simulato gia applicato alla zona; `duration_seconds: null` rimuove
+il limite e mantiene la simulazione continua. Al raggiungimento del target lo
+scheduler azzera il tempo eccedente, spegne gli attuatori e porta la zona in
+`Paused`. Per ripartire occorre impostare una nuova durata oppure rimuovere il
+limite prima di inviare `ResumeCultivation`.
 
 Il recupero del tempo arretrato esegue piccoli passi in round-robin fra le
 zone. Il limite globale predefinito e 8 passi per iterazione, configurabile con
@@ -190,7 +199,8 @@ dipendente da console, file o rete. Il runtime pubblica automaticamente:
 - `TelemetrySample`;
 - `StateChanged` e `EmergencyTriggered`;
 - `RecipePhaseChanged`;
-- `SimulationSpeedChanged` e `SchedulerLagStateChanged`;
+- `SimulationSpeedChanged`, `SimulationDurationChanged`,
+  `SimulationDurationCompleted` e `SchedulerLagStateChanged`;
 - `CommandExecuted` e `CommandFailed`.
 
 Il contratto include anche `FaultDetected`, `StrategyChanged` e

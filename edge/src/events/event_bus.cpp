@@ -81,6 +81,21 @@ std::string event_detail(const EdgeDomainEvent& event) {
                        std::to_string(value.current_time_scale) +
                        "x";
             } else if constexpr (
+                std::is_same_v<Event, SimulationDurationChanged>) {
+                return value.limited
+                           ? "duration=" +
+                                 std::to_string(
+                                     value.duration_seconds) +
+                                 "s target=" +
+                                 std::to_string(
+                                     value.target_timestamp_seconds)
+                           : "continuous simulation";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationCompleted>) {
+                return "completed duration=" +
+                       std::to_string(value.duration_seconds) +
+                       "s";
+            } else if constexpr (
                 std::is_same_v<Event, SchedulerLagStateChanged>) {
                 return std::string(
                            value.lagging ? "lagging" : "recovered") +
@@ -134,6 +149,12 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             } else if constexpr (
                 std::is_same_v<Event, SimulationSpeedChanged>) {
                 return "SimulationSpeedChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationChanged>) {
+                return "SimulationDurationChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationCompleted>) {
+                return "SimulationDurationCompleted";
             } else if constexpr (
                 std::is_same_v<Event, SchedulerLagStateChanged>) {
                 return "SchedulerLagStateChanged";

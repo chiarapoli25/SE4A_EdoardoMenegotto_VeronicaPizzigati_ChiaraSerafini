@@ -114,19 +114,38 @@ ScheduledStepResults SimulationScheduler::run_due_steps() {
             }
 
             auto& schedule = schedules_.at(zone_id);
+            const double step_seconds =
+                next_step_seconds(zone_id);
             results[zone_id].push_back(
                 greenhouse_.step_zone(
                     zone_id,
-                    config_.step_seconds));
+                    step_seconds));
             schedule.accumulated_simulation_seconds =
                 std::max(
                     0.0,
                     schedule.accumulated_simulation_seconds -
-                        config_.step_seconds);
+                        step_seconds);
             round_robin_cursor_ =
                 (index + 1) % zone_ids.size();
             ++executed_steps;
             found_due_zone = true;
+
+            const auto remaining =
+                greenhouse_.zone(zone_id)
+                    .remaining_simulation_seconds();
+            const double tolerance =
+                config_.step_seconds * 1.0e-12;
+            if (remaining && *remaining <= tolerance) {
+                schedule.accumulated_simulation_seconds = 0.0;
+                if (schedule.lagging) {
+                    publish_lag_transition(
+                        zone_id,
+                        schedule,
+                        false);
+                }
+                greenhouse_.zone(zone_id)
+                    .complete_simulation_duration();
+            }
             break;
         }
         if (!found_due_zone) {
@@ -138,7 +157,8 @@ ScheduledStepResults SimulationScheduler::run_due_steps() {
         if (!greenhouse_.zone(zone_id).is_running()) {
             continue;
         }
-        const bool lagging = pending_steps(schedule) > 0;
+        const bool lagging =
+            pending_steps(zone_id, schedule) > 0;
         if (lagging != schedule.lagging) {
             publish_lag_transition(
                 zone_id,
@@ -163,7 +183,7 @@ std::size_t SimulationScheduler::pending_step_count(
     const auto schedule = schedules_.find(zone_id);
     return schedule == schedules_.end()
                ? 0
-               : pending_steps(schedule->second);
+               : pending_steps(zone_id, schedule->second);
 }
 
 const SimulationSchedulerConfig&
@@ -180,19 +200,64 @@ bool SimulationScheduler::zone_has_due_step(
     }
     const double tolerance =
         config_.step_seconds * 1.0e-12;
+    const double required_seconds =
+        next_step_seconds(zone_id);
     return schedule->second.accumulated_simulation_seconds +
                tolerance >=
-           config_.step_seconds;
+           required_seconds;
+}
+
+double SimulationScheduler::next_step_seconds(
+    const std::string& zone_id) const {
+    const auto remaining =
+        greenhouse_.zone(zone_id)
+            .remaining_simulation_seconds();
+    return remaining
+               ? std::min(config_.step_seconds, *remaining)
+               : config_.step_seconds;
+}
+
+double SimulationScheduler::pending_simulation_seconds(
+    const std::string& zone_id,
+    const ZoneSchedule& schedule) const noexcept {
+    const auto remaining =
+        greenhouse_.zone(zone_id)
+            .remaining_simulation_seconds();
+    return remaining
+               ? std::min(
+                     schedule.accumulated_simulation_seconds,
+                     *remaining)
+               : schedule.accumulated_simulation_seconds;
 }
 
 std::size_t SimulationScheduler::pending_steps(
+    const std::string& zone_id,
     const ZoneSchedule& schedule) const noexcept {
     const double tolerance =
         config_.step_seconds * 1.0e-12;
-    if (schedule.accumulated_simulation_seconds +
-            tolerance <
-        config_.step_seconds) {
+    const auto remaining =
+        greenhouse_.zone(zone_id)
+            .remaining_simulation_seconds();
+    const double required_seconds =
+        remaining
+            ? std::min(config_.step_seconds, *remaining)
+            : config_.step_seconds;
+    if (
+        required_seconds <= tolerance ||
+        schedule.accumulated_simulation_seconds +
+                tolerance <
+            required_seconds) {
         return 0;
+    }
+    if (
+        remaining &&
+        schedule.accumulated_simulation_seconds +
+                tolerance >=
+            *remaining) {
+        return static_cast<std::size_t>(
+            std::ceil(
+                std::max(0.0, *remaining - tolerance) /
+                config_.step_seconds));
     }
     return static_cast<std::size_t>(
         std::floor(
@@ -215,8 +280,8 @@ void SimulationScheduler::publish_lag_transition(
                     .environment_state()
                     .simulation_time_seconds,
                 lagging,
-                schedule.accumulated_simulation_seconds,
-                pending_steps(schedule),
+                pending_simulation_seconds(zone_id, schedule),
+                pending_steps(zone_id, schedule),
                 zone.time_scale(),
             });
     } catch (...) {

@@ -8,6 +8,7 @@
 #include <smarthydro/runtime/edge_runtime.hpp>
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -64,6 +65,18 @@ struct SetSimulationSpeedCommand {
     double time_scale = 1.0;
 };
 
+/**
+ * @brief Imposta una finestra temporale simulata opzionale per la zona.
+ *
+ * La durata viene calcolata a partire dal timestamp simulato applicato al
+ * momento del comando. `std::nullopt` rimuove il limite e ripristina
+ * l'esecuzione continua.
+ */
+struct SetSimulationDurationCommand {
+    /** Durata simulata richiesta in secondi, oppure nessun limite. */
+    std::optional<double> duration_seconds;
+};
+
 /** @brief Conferma una configurazione agronomica pendente. */
 struct ConfirmConfigurationCommand {
     /** Variabile la cui configurazione deve essere confermata. */
@@ -113,6 +126,7 @@ using RuntimeCommand = std::variant<
     ResumeCultivationCommand,
     StopCultivationCommand,
     SetSimulationSpeedCommand,
+    SetSimulationDurationCommand,
     ConfirmConfigurationCommand,
     RejectConfigurationCommand,
     InjectFaultCommand,

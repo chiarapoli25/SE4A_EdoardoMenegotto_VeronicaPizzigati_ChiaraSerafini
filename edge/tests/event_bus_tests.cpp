@@ -139,6 +139,20 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
             2,
             10.0,
         };
+    const smarthydro::EdgeDomainEvent duration =
+        smarthydro::SimulationDurationChanged{
+            "zone-time",
+            300.0,
+            true,
+            3600.0,
+            3900.0,
+        };
+    const smarthydro::EdgeDomainEvent completed =
+        smarthydro::SimulationDurationCompleted{
+            "zone-time",
+            3900.0,
+            3600.0,
+        };
 
     EXPECT_STREQ(
         smarthydro::event_type_name(speed),
@@ -146,10 +160,18 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
     EXPECT_STREQ(
         smarthydro::event_type_name(lag),
         "SchedulerLagStateChanged");
+    EXPECT_STREQ(
+        smarthydro::event_type_name(duration),
+        "SimulationDurationChanged");
+    EXPECT_STREQ(
+        smarthydro::event_type_name(completed),
+        "SimulationDurationCompleted");
 
     std::ostringstream console_output;
     smarthydro::ConsoleLogger console(console_output);
     console.on_event(speed);
+    console.on_event(duration);
+    console.on_event(completed);
     console.on_event(lag);
     EXPECT_NE(
         console_output.str().find("1.000000x -> 10.000000x"),
@@ -157,16 +179,30 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
     EXPECT_NE(
         console_output.str().find("pending_steps=2"),
         std::string::npos);
+    EXPECT_NE(
+        console_output.str().find("duration=3600.000000s"),
+        std::string::npos);
+    EXPECT_NE(
+        console_output.str().find("completed duration=3600.000000s"),
+        std::string::npos);
 
     std::ostringstream csv_output;
     smarthydro::CsvLogger csv(csv_output);
     csv.on_event(speed);
+    csv.on_event(duration);
+    csv.on_event(completed);
     csv.on_event(lag);
     EXPECT_NE(
         csv_output.str().find("SimulationSpeedChanged"),
         std::string::npos);
     EXPECT_NE(
         csv_output.str().find("SchedulerLagStateChanged"),
+        std::string::npos);
+    EXPECT_NE(
+        csv_output.str().find("SimulationDurationChanged"),
+        std::string::npos);
+    EXPECT_NE(
+        csv_output.str().find("SimulationDurationCompleted"),
         std::string::npos);
 }
 

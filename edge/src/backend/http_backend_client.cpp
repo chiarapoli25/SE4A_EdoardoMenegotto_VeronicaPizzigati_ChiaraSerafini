@@ -224,6 +224,19 @@ std::vector<PendingUpload> uploads_from_event(
                          value.current_time_scale},
                     };
                 } else if constexpr (
+                    std::is_same_v<Event, SimulationDurationChanged>) {
+                    payload = {
+                        {"limited", value.limited},
+                        {"duration_seconds", value.duration_seconds},
+                        {"target_timestamp_seconds",
+                         value.target_timestamp_seconds},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, SimulationDurationCompleted>) {
+                    payload = {
+                        {"duration_seconds", value.duration_seconds},
+                    };
+                } else if constexpr (
                     std::is_same_v<Event, SchedulerLagStateChanged>) {
                     payload = {
                         {"lagging", value.lagging},
@@ -523,6 +536,21 @@ RuntimeCommandEnvelope runtime_command_from_json(
                 command_id,
                 SetSimulationSpeedCommand{
                     payload.at("time_scale").get<double>(),
+                },
+            };
+        }
+        if (command_type == "SetSimulationDuration") {
+            const auto& duration_value =
+                payload.at("duration_seconds");
+            std::optional<double> duration_seconds;
+            if (!duration_value.is_null()) {
+                duration_seconds =
+                    duration_value.get<double>();
+            }
+            return {
+                command_id,
+                SetSimulationDurationCommand{
+                    duration_seconds,
                 },
             };
         }

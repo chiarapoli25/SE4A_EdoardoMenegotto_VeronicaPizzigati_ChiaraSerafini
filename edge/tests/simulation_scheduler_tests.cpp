@@ -271,6 +271,160 @@ TEST(SimulationSchedulerTest, SpeedChangeIsNotAppliedRetroactively) {
         900.0);
 }
 
+TEST(SimulationSchedulerTest, DurationCompletesExactlyWithFinalPartialStep) {
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    smarthydro::GreenhouseManager manager(event_bus);
+    auto& zone = add_running_zone(manager, "zone-1");
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "duration-1000",
+                smarthydro::SetSimulationDurationCommand{1000.0},
+            })
+            .success());
+    smarthydro::SimulationScheduler scheduler(
+        manager,
+        {900.0, 8});
+    scheduler.synchronize(at_seconds(0.0));
+
+    scheduler.accrue(at_seconds(999.0));
+    const auto first = scheduler.run_due_steps();
+    ASSERT_EQ(first.at("zone-1").size(), 1U);
+    EXPECT_DOUBLE_EQ(
+        first.at("zone-1").front().duration_seconds,
+        900.0);
+    EXPECT_TRUE(zone.is_running());
+    EXPECT_DOUBLE_EQ(
+        *zone.remaining_simulation_seconds(),
+        100.0);
+
+    scheduler.accrue(at_seconds(1000.0));
+    const auto completed = scheduler.run_due_steps();
+    ASSERT_EQ(completed.at("zone-1").size(), 1U);
+    EXPECT_DOUBLE_EQ(
+        completed.at("zone-1").front().duration_seconds,
+        100.0);
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::PAUSED);
+    EXPECT_DOUBLE_EQ(
+        zone.runtime().environment_state().simulation_time_seconds,
+        1000.0);
+    EXPECT_DOUBLE_EQ(
+        scheduler.accumulated_simulation_seconds("zone-1"),
+        0.0);
+
+    const auto completion_events =
+        events_of_type<smarthydro::SimulationDurationCompleted>(
+            observer->events);
+    ASSERT_EQ(completion_events.size(), 1U);
+    EXPECT_DOUBLE_EQ(
+        completion_events[0].timestamp_seconds,
+        1000.0);
+    EXPECT_DOUBLE_EQ(
+        completion_events[0].duration_seconds,
+        1000.0);
+
+    const auto premature_resume = manager.execute_command(
+        "zone-1",
+        {"resume-before-reset",
+         smarthydro::ResumeCultivationCommand{}});
+    EXPECT_FALSE(premature_resume.success());
+    EXPECT_EQ(
+        premature_resume.message,
+        "simulation duration is complete; set a new duration or clear the limit");
+
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "new-duration",
+                smarthydro::SetSimulationDurationCommand{900.0},
+            })
+            .success());
+    EXPECT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {"resume-new-duration",
+             smarthydro::ResumeCultivationCommand{}})
+            .success());
+}
+
+TEST(SimulationSchedulerTest, DurationAndTimeScaleComposePerZone) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = add_running_zone(manager, "zone-1");
+    zone.set_time_scale(10.0);
+    zone.set_simulation_duration(900.0);
+    smarthydro::SimulationScheduler scheduler(
+        manager,
+        {900.0, 8});
+    scheduler.synchronize(at_seconds(0.0));
+
+    scheduler.accrue(at_seconds(89.0));
+    EXPECT_TRUE(scheduler.run_due_steps().empty());
+    scheduler.accrue(at_seconds(90.0));
+    const auto completed = scheduler.run_due_steps();
+
+    ASSERT_EQ(completed.at("zone-1").size(), 1U);
+    EXPECT_DOUBLE_EQ(
+        completed.at("zone-1").front().duration_seconds,
+        900.0);
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::PAUSED);
+    EXPECT_DOUBLE_EQ(
+        zone.runtime().environment_state().simulation_time_seconds,
+        900.0);
+}
+
+TEST(SimulationSchedulerTest, DurationBacklogRespectsBudgetAndThenCompletes) {
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    smarthydro::GreenhouseManager manager(event_bus);
+    auto& zone = add_running_zone(manager, "zone-1");
+    zone.set_simulation_duration(1900.0);
+    smarthydro::SimulationScheduler scheduler(
+        manager,
+        {900.0, 2});
+    scheduler.synchronize(at_seconds(0.0));
+    scheduler.accrue(at_seconds(5000.0));
+
+    const auto first = scheduler.run_due_steps();
+    ASSERT_EQ(first.at("zone-1").size(), 2U);
+    EXPECT_TRUE(zone.is_running());
+    EXPECT_EQ(scheduler.pending_step_count("zone-1"), 1U);
+    auto lag_events =
+        events_of_type<smarthydro::SchedulerLagStateChanged>(
+            observer->events);
+    ASSERT_EQ(lag_events.size(), 1U);
+    EXPECT_TRUE(lag_events[0].lagging);
+    EXPECT_EQ(lag_events[0].pending_steps, 1U);
+    EXPECT_DOUBLE_EQ(
+        lag_events[0].pending_simulation_seconds,
+        100.0);
+
+    const auto completed = scheduler.run_due_steps();
+    ASSERT_EQ(completed.at("zone-1").size(), 1U);
+    EXPECT_DOUBLE_EQ(
+        completed.at("zone-1").front().duration_seconds,
+        100.0);
+    EXPECT_EQ(
+        zone.lifecycle_state(),
+        smarthydro::ZoneLifecycleState::PAUSED);
+    EXPECT_DOUBLE_EQ(
+        zone.runtime().environment_state().simulation_time_seconds,
+        1900.0);
+    lag_events =
+        events_of_type<smarthydro::SchedulerLagStateChanged>(
+            observer->events);
+    ASSERT_EQ(lag_events.size(), 2U);
+    EXPECT_FALSE(lag_events[1].lagging);
+}
+
 TEST(SimulationSchedulerTest, GlobalBudgetIsRoundRobinAndLagIsReportedOnce) {
     auto event_bus = std::make_shared<smarthydro::EventBus>();
     auto observer = std::make_shared<RecordingObserver>();

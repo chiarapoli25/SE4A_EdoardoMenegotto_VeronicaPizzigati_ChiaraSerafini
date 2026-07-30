@@ -17,7 +17,12 @@ namespace smarthydro {
 
 /** @brief Parametri stabili del ciclo temporale del servizio Edge. */
 struct SimulationSchedulerConfig {
-    /** Durata simulata di ogni chiamata a EdgeRuntime::step(). */
+    /**
+     * Durata simulata normale di ogni step.
+     *
+     * L'ultimo passo di una finestra temporale puo essere piu breve per
+     * raggiungere il target senza superarlo.
+     */
     double step_seconds = 900.0;
     /** Numero massimo globale di passi eseguiti in una iterazione. */
     std::size_t max_catch_up_steps = 8;
@@ -69,7 +74,8 @@ public:
      * @brief Esegue al massimo il budget globale di passi con round-robin.
      *
      * Il residuo rimane accumulato e produce eventi soltanto quando una zona
-     * entra o esce dallo stato di ritardo.
+     * entra o esce dallo stato di ritardo. Una zona con durata configurata
+     * viene portata in Paused quando raggiunge esattamente il proprio target.
      */
     ScheduledStepResults run_due_steps();
 
@@ -90,7 +96,13 @@ private:
     };
 
     bool zone_has_due_step(const std::string& zone_id) const;
-    std::size_t pending_steps(const ZoneSchedule& schedule) const noexcept;
+    double next_step_seconds(const std::string& zone_id) const;
+    double pending_simulation_seconds(
+        const std::string& zone_id,
+        const ZoneSchedule& schedule) const noexcept;
+    std::size_t pending_steps(
+        const std::string& zone_id,
+        const ZoneSchedule& schedule) const noexcept;
     void publish_lag_transition(
         const std::string& zone_id,
         ZoneSchedule& schedule,

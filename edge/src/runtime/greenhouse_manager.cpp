@@ -1,5 +1,6 @@
 #include <smarthydro/runtime/greenhouse_manager.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <sstream>
@@ -170,6 +171,90 @@ void ZoneController::set_time_scale(double time_scale) {
     }
 }
 
+std::optional<double>
+ZoneController::simulation_duration_seconds() const noexcept {
+    return simulation_duration_seconds_;
+}
+
+std::optional<double>
+ZoneController::simulation_target_timestamp_seconds() const noexcept {
+    return simulation_target_timestamp_seconds_;
+}
+
+std::optional<double>
+ZoneController::remaining_simulation_seconds() const noexcept {
+    if (!simulation_target_timestamp_seconds_ || !runtime_) {
+        return std::nullopt;
+    }
+    return std::max(
+        0.0,
+        *simulation_target_timestamp_seconds_ -
+            runtime_->environment_state().simulation_time_seconds);
+}
+
+void ZoneController::set_simulation_duration(
+    std::optional<double> duration_seconds) {
+    if (
+        lifecycle_state_ != ZoneLifecycleState::RUNNING &&
+        lifecycle_state_ != ZoneLifecycleState::PAUSED) {
+        throw std::logic_error(
+            "zone cannot change simulation duration while lifecycle is " +
+            std::string(to_string(lifecycle_state_)));
+    }
+    if (
+        duration_seconds &&
+        (!std::isfinite(*duration_seconds) ||
+         *duration_seconds <= 0.0)) {
+        throw std::invalid_argument(
+            "duration_seconds must be positive and finite");
+    }
+
+    const double timestamp_seconds =
+        runtime().environment_state().simulation_time_seconds;
+    if (duration_seconds) {
+        const double target =
+            timestamp_seconds + *duration_seconds;
+        if (!std::isfinite(target)) {
+            throw std::invalid_argument(
+                "simulation duration target must be finite");
+        }
+        simulation_duration_seconds_ = duration_seconds;
+        simulation_target_timestamp_seconds_ = target;
+    } else {
+        simulation_duration_seconds_.reset();
+        simulation_target_timestamp_seconds_.reset();
+    }
+    publish_simulation_duration_changed();
+}
+
+void ZoneController::complete_simulation_duration() {
+    if (!is_running() ||
+        !simulation_duration_seconds_ ||
+        !simulation_target_timestamp_seconds_) {
+        throw std::logic_error(
+            "zone has no running simulation duration to complete");
+    }
+    const double timestamp_seconds =
+        runtime().environment_state().simulation_time_seconds;
+    const double tolerance =
+        std::max(
+            1.0,
+            std::abs(*simulation_target_timestamp_seconds_)) *
+        1.0e-12;
+    if (timestamp_seconds + tolerance <
+        *simulation_target_timestamp_seconds_) {
+        throw std::logic_error(
+            "simulation duration target has not been reached");
+    }
+
+    runtime().stop_all_actuators();
+    publish_simulation_duration_completed(
+        *simulation_duration_seconds_);
+    transition_lifecycle(
+        ZoneLifecycleState::PAUSED,
+        "configured simulation duration completed");
+}
+
 EdgeRuntime& ZoneController::runtime() {
     if (!runtime_) {
         throw std::logic_error(
@@ -289,6 +374,25 @@ RuntimeCommandResult ZoneController::execute_command_once(
                 message.str(),
             };
         }
+        if (const auto* duration =
+                std::get_if<SetSimulationDurationCommand>(
+                    &envelope.command)) {
+            set_simulation_duration(duration->duration_seconds);
+            std::ostringstream message;
+            if (duration->duration_seconds) {
+                message << "simulation duration set to "
+                        << *duration->duration_seconds << 's';
+            } else {
+                message << "simulation duration cleared";
+            }
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::SUCCEEDED,
+                false,
+                message.str(),
+            };
+        }
         if (!runtime_ || !command_processor_) {
             return {
                 envelope.command_id,
@@ -346,6 +450,8 @@ void ZoneController::activate_cultivation(
 
     last_error_.clear();
     time_scale_ = 1.0;
+    simulation_duration_seconds_.reset();
+    simulation_target_timestamp_seconds_.reset();
     cultivation_id_ = std::move(cultivation_id);
     transition_lifecycle(
         ZoneLifecycleState::STARTING,
@@ -401,6 +507,12 @@ void ZoneController::resume_cultivation() {
             "zone cannot resume while lifecycle is " +
             std::string(to_string(lifecycle_state_)));
     }
+    if (
+        simulation_target_timestamp_seconds_ &&
+        remaining_simulation_seconds().value_or(0.0) <= 0.0) {
+        throw std::logic_error(
+            "simulation duration is complete; set a new duration or clear the limit");
+    }
     transition_lifecycle(
         ZoneLifecycleState::RUNNING,
         "cultivation resumed by command");
@@ -429,6 +541,8 @@ void ZoneController::stop_cultivation() {
     cultivation_id_.clear();
     last_error_.clear();
     time_scale_ = 1.0;
+    simulation_duration_seconds_.reset();
+    simulation_target_timestamp_seconds_.reset();
     transition_lifecycle(
         ZoneLifecycleState::IDLE,
         "cultivation runtime released");
@@ -453,6 +567,43 @@ void ZoneController::publish_time_scale_changed(
             });
     } catch (...) {
         // La velocita locale non dipende dagli observer esterni.
+    }
+}
+
+void ZoneController::publish_simulation_duration_changed() noexcept {
+    if (!event_bus_ || !runtime_) {
+        return;
+    }
+    try {
+        event_bus_->publish(
+            SimulationDurationChanged{
+                zone_id_,
+                runtime_->environment_state()
+                    .simulation_time_seconds,
+                simulation_duration_seconds_.has_value(),
+                simulation_duration_seconds_.value_or(0.0),
+                simulation_target_timestamp_seconds_.value_or(0.0),
+            });
+    } catch (...) {
+        // La configurazione locale non dipende dagli observer esterni.
+    }
+}
+
+void ZoneController::publish_simulation_duration_completed(
+    double duration_seconds) noexcept {
+    if (!event_bus_ || !runtime_) {
+        return;
+    }
+    try {
+        event_bus_->publish(
+            SimulationDurationCompleted{
+                zone_id_,
+                runtime_->environment_state()
+                    .simulation_time_seconds,
+                duration_seconds,
+            });
+    } catch (...) {
+        // Il completamento locale non dipende dagli observer esterni.
     }
 }
 

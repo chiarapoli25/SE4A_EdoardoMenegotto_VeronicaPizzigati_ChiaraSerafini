@@ -58,6 +58,9 @@ const char* runtime_command_type(const RuntimeCommand& command) noexcept {
                 std::is_same_v<Command, SetSimulationSpeedCommand>) {
                 return "SetSimulationSpeed";
             } else if constexpr (
+                std::is_same_v<Command, SetSimulationDurationCommand>) {
+                return "SetSimulationDuration";
+            } else if constexpr (
                 std::is_same_v<Command, ConfirmConfigurationCommand>) {
                 return "ConfirmConfiguration";
             } else if constexpr (
@@ -143,7 +146,8 @@ RuntimeCommandResult RuntimeCommandProcessor::execute_once(
                     std::is_same_v<Command, PauseCultivationCommand> ||
                     std::is_same_v<Command, ResumeCultivationCommand> ||
                     std::is_same_v<Command, StopCultivationCommand> ||
-                    std::is_same_v<Command, SetSimulationSpeedCommand>) {
+                    std::is_same_v<Command, SetSimulationSpeedCommand> ||
+                    std::is_same_v<Command, SetSimulationDurationCommand>) {
                     return rejected(
                         envelope,
                         std::string(runtime_command_type(envelope.command)) +
