@@ -173,6 +173,28 @@ target_compile_definitions(greenhouse_manager_tests
 set_target_properties(greenhouse_manager_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(greenhouse_manager_tests)
 
+# Test deterministici del clock, time scale e catch-up multi-zona.
+add_executable(
+    simulation_scheduler_tests
+    simulation_scheduler_tests.cpp
+)
+target_link_libraries(simulation_scheduler_tests
+    PRIVATE
+        greenhouse_manager
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(simulation_scheduler_tests PRIVATE cxx_std_17)
+target_compile_definitions(simulation_scheduler_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(
+    simulation_scheduler_tests
+    PROPERTIES CXX_EXTENSIONS OFF
+)
+gtest_discover_tests(simulation_scheduler_tests)
+
 # Il main non richiede piu una ricetta locale e documenta l'avvio come servizio
 # continuo in attesa di ActivateCultivation.
 add_test(

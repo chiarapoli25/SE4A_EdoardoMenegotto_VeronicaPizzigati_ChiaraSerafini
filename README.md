@@ -93,10 +93,12 @@ stato e causa. L'ingresso in emergenza produce anche
 il comando interessato.
 
 Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
-fase produce `RecipePhaseChanged`. `--step-seconds` definisce sia l'intervallo
-reale sia la durata simulata del ciclo; il valore predefinito e 900 secondi.
-Il polling dei comandi resta indipendente e continua anche mentre tutte le
-zone sono inattive.
+fase produce `RecipePhaseChanged`. `--step-seconds` definisce il quantum fisso
+del controllo simulato; il valore predefinito e 900 secondi. Lo scheduler
+misura il tempo reale con `std::chrono::steady_clock` e, per ogni zona, accumula
+il tempo simulato moltiplicandolo per la velocita configurata. Il polling dei
+comandi resta indipendente e continua anche mentre tutte le zone sono
+inattive.
 
 ### Adapter e hardware
 
@@ -156,6 +158,18 @@ La FSM `Nominal`, `Degraded`, `EmergencyLockdown` rimane interna a
 `EdgeRuntime` e descrive la sicurezza operativa soltanto mentre il lifecycle e
 `Running`. `step_all()` ignora sia le zone inattive sia quelle in pausa.
 
+Ogni zona attiva parte a `1x` e puo ricevere `SetSimulationSpeed` con un valore
+finito fra `1x` e `60x`. `0x` viene rappresentato dal comando
+`PauseCultivation`: la pausa conserva il residuo temporale senza accumulare
+altro tempo, mentre stop, errore e nuova attivazione azzerano lo stato dello
+scheduler. La velocita cambia la frequenza dei passi, non la durata passata a
+`runtime.step()`.
+
+Il recupero del tempo arretrato esegue piccoli passi in round-robin fra le
+zone. Il limite globale predefinito e 8 passi per iterazione, configurabile con
+`--max-catch-up-steps`; il residuo non viene scartato e l'ingresso e l'uscita
+dallo stato di ritardo producono eventi diagnostici.
+
 `GreenhouseManager` registra piu zone e permette di avanzarne una con
 `step_zone()` oppure tutte con `step_all()`. Soltanto l'`EventBus` viene
 condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
@@ -176,6 +190,7 @@ dipendente da console, file o rete. Il runtime pubblica automaticamente:
 - `TelemetrySample`;
 - `StateChanged` e `EmergencyTriggered`;
 - `RecipePhaseChanged`;
+- `SimulationSpeedChanged` e `SchedulerLagStateChanged`;
 - `CommandExecuted` e `CommandFailed`.
 
 Il contratto include anche `FaultDetected`, `StrategyChanged` e

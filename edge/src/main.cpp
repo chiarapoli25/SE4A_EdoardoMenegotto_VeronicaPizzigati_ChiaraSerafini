@@ -1,6 +1,7 @@
 #include <smarthydro/backend/http_backend_client.hpp>
 #include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/runtime/greenhouse_manager.hpp>
+#include <smarthydro/runtime/simulation_scheduler.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -10,7 +11,6 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
-#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -22,6 +22,7 @@ namespace {
 
 constexpr double kDefaultStepSeconds = 900.0;
 constexpr std::size_t kDefaultServiceLoopMilliseconds = 100;
+constexpr std::size_t kDefaultMaximumCatchUpSteps = 8;
 
 volatile std::sig_atomic_t stop_requested = 0;
 
@@ -39,6 +40,8 @@ struct CommandLineOptions {
     std::size_t command_poll_milliseconds = 1000;
     std::size_t service_loop_milliseconds =
         kDefaultServiceLoopMilliseconds;
+    std::size_t max_catch_up_steps =
+        kDefaultMaximumCatchUpSteps;
     bool zones_option_used = false;
     bool show_help = false;
 };
@@ -155,6 +158,17 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
                     "--service-loop-ms");
             continue;
         }
+        if (argument == "--max-catch-up-steps") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--max-catch-up-steps requires a value");
+            }
+            options.max_catch_up_steps =
+                parse_positive_size(
+                    argv[index],
+                    "--max-catch-up-steps");
+            continue;
+        }
         throw std::invalid_argument(
             "unknown argument: " + argument);
     }
@@ -188,7 +202,7 @@ void print_help(const char* executable) {
         << "Options:\n"
         << "  --zones N           Generate zone-1..zone-N (default: 1)\n"
         << "  --zone-id ID        Register an explicit zone; repeatable\n"
-        << "  --step-seconds SEC  Real and simulated control interval"
+        << "  --step-seconds SEC  Simulation control quantum"
         << " (default: 900)\n"
         << "  --backend-url URL   Backend URL"
         << " (default: http://127.0.0.1:8000)\n"
@@ -198,6 +212,8 @@ void print_help(const char* executable) {
         << " (default: 1000)\n"
         << "  --service-loop-ms N Inactive service-loop delay"
         << " (default: 100)\n"
+        << "  --max-catch-up-steps N Maximum global steps per loop"
+        << " (default: 8)\n"
         << "  -h, --help          Show this help\n";
 }
 
@@ -315,19 +331,24 @@ int main(int argc, char* argv[]) {
             << "Backend: " << options.backend_url << '\n'
             << "Zones: " << greenhouse.size()
             << " (inactive)\n"
-            << "Control interval: " << options.step_seconds
-            << " real/simulated seconds\n"
+            << "Simulation control quantum: "
+            << options.step_seconds << " seconds\n"
+            << "Maximum catch-up steps per loop: "
+            << options.max_catch_up_steps << '\n'
             << "Press Ctrl+C to stop.\n"
             << std::fixed << std::setprecision(2);
 
-        using Clock = std::chrono::steady_clock;
-        const auto step_interval =
-            std::chrono::duration_cast<Clock::duration>(
-                std::chrono::duration<double>(
-                    options.step_seconds));
-        std::map<std::string, Clock::time_point> next_steps;
+        smarthydro::SimulationScheduler scheduler(
+            greenhouse,
+            {
+                options.step_seconds,
+                options.max_catch_up_steps,
+            });
+        using Clock = smarthydro::SimulationScheduler::Clock;
 
         while (!stop_requested) {
+            const auto now = Clock::now();
+            scheduler.accrue(now);
             for (auto& remote : backend_client->take_commands()) {
                 const auto result = greenhouse.execute_command(
                     remote.zone_id,
@@ -341,28 +362,13 @@ int main(int argc, char* argv[]) {
                     << smarthydro::to_string(result.status)
                     << " - " << result.message << '\n';
             }
-
-            auto now = Clock::now();
-            for (const auto& zone_id : greenhouse.zone_ids()) {
-                auto& zone = greenhouse.zone(zone_id);
-                if (!zone.is_running()) {
-                    next_steps.erase(zone_id);
-                    continue;
-                }
-                auto [deadline, inserted] = next_steps.emplace(
-                    zone_id,
-                    now + step_interval);
-                static_cast<void>(inserted);
-                while (
-                    !stop_requested &&
-                    now >= deadline->second) {
-                    print_step(
-                        zone_id,
-                        greenhouse.step_zone(
-                            zone_id,
-                            options.step_seconds));
-                    deadline->second += step_interval;
-                    now = Clock::now();
+            scheduler.synchronize(now);
+            const auto scheduled_results =
+                scheduler.run_due_steps();
+            for (const auto& [zone_id, results] :
+                 scheduled_results) {
+                for (const auto& result : results) {
+                    print_step(zone_id, result);
                 }
             }
 

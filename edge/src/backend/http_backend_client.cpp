@@ -215,6 +215,23 @@ std::vector<PendingUpload> uploads_from_event(
                         {"current_state", value.current_state},
                         {"reason", value.reason},
                     };
+                } else if constexpr (
+                    std::is_same_v<Event, SimulationSpeedChanged>) {
+                    payload = {
+                        {"previous_time_scale",
+                         value.previous_time_scale},
+                        {"current_time_scale",
+                         value.current_time_scale},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, SchedulerLagStateChanged>) {
+                    payload = {
+                        {"lagging", value.lagging},
+                        {"pending_simulation_seconds",
+                         value.pending_simulation_seconds},
+                        {"pending_steps", value.pending_steps},
+                        {"time_scale", value.time_scale},
+                    };
                 } else if constexpr (std::is_same_v<Event, StateChanged>) {
                     payload = {
                         {"previous_state", to_string(value.previous_state)},
@@ -500,6 +517,14 @@ RuntimeCommandEnvelope runtime_command_from_json(
         }
         if (command_type == "StopCultivation") {
             return {command_id, StopCultivationCommand{}};
+        }
+        if (command_type == "SetSimulationSpeed") {
+            return {
+                command_id,
+                SetSimulationSpeedCommand{
+                    payload.at("time_scale").get<double>(),
+                },
+            };
         }
         if (command_type == "ConfirmConfiguration") {
             return {

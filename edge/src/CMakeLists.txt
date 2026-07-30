@@ -174,6 +174,7 @@ set_target_properties(http_backend_client PROPERTIES CXX_EXTENSIONS OFF)
 add_library(
     greenhouse_manager
     runtime/greenhouse_manager.cpp
+    runtime/simulation_scheduler.cpp
 )
 target_include_directories(greenhouse_manager
     PUBLIC ${PROJECT_SOURCE_DIR}/include

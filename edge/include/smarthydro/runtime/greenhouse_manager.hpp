@@ -19,6 +19,11 @@
 
 namespace smarthydro {
 
+/** Velocita temporale minima ammessa per una zona in simulazione. */
+inline constexpr double kMinimumSimulationTimeScale = 1.0;
+/** Velocita temporale massima ammessa per una zona in simulazione. */
+inline constexpr double kMaximumSimulationTimeScale = 60.0;
+
 /**
  * @brief Lifecycle applicativo di una zona, esterno alla FSM di sicurezza.
  *
@@ -118,6 +123,15 @@ public:
     const std::string& cultivation_id() const noexcept;
     /** @brief Ultimo errore di lifecycle, oppure stringa vuota. */
     const std::string& last_error() const noexcept;
+    /** @brief Rapporto corrente fra tempo simulato e tempo reale. */
+    double time_scale() const noexcept;
+    /**
+     * @brief Imposta una velocita finita nell'intervallo [1, 60].
+     *
+     * La modifica e consentita soltanto a una coltivazione Running o Paused.
+     * Il valore zero deve essere rappresentato con PauseCultivation.
+     */
+    void set_time_scale(double time_scale);
     /**
      * @brief Runtime della zona per ispezione o configurazione locale.
      * @throws std::logic_error Quando la zona e ancora inattiva.
@@ -148,11 +162,15 @@ private:
     void pause_cultivation();
     void resume_cultivation();
     void stop_cultivation();
+    void publish_time_scale_changed(
+        double previous_time_scale,
+        double current_time_scale) noexcept;
 
     std::string zone_id_;
     std::string cultivation_id_;
     std::string last_error_;
     ZoneLifecycleState lifecycle_state_ = ZoneLifecycleState::IDLE;
+    double time_scale_ = 1.0;
     std::unique_ptr<EdgeRuntime> runtime_;
     std::unique_ptr<RuntimeCommandProcessor> command_processor_;
     std::shared_ptr<EventBus> event_bus_;

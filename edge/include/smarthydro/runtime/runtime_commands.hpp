@@ -53,6 +53,17 @@ struct ResumeCultivationCommand {};
 /** @brief Arresta la coltivazione e riporta la zona nello stato Idle. */
 struct StopCultivationCommand {};
 
+/**
+ * @brief Cambia il rapporto fra tempo simulato e tempo reale della zona.
+ *
+ * Il valore zero non rappresenta una velocita: la pausa resta un comando di
+ * lifecycle esplicito. I limiti numerici sono applicati da ZoneController.
+ */
+struct SetSimulationSpeedCommand {
+    /** Secondi simulati prodotti da ogni secondo reale. */
+    double time_scale = 1.0;
+};
+
 /** @brief Conferma una configurazione agronomica pendente. */
 struct ConfirmConfigurationCommand {
     /** Variabile la cui configurazione deve essere confermata. */
@@ -101,6 +112,7 @@ using RuntimeCommand = std::variant<
     PauseCultivationCommand,
     ResumeCultivationCommand,
     StopCultivationCommand,
+    SetSimulationSpeedCommand,
     ConfirmConfigurationCommand,
     RejectConfigurationCommand,
     InjectFaultCommand,

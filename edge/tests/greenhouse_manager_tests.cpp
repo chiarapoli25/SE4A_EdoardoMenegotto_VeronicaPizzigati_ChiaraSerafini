@@ -4,8 +4,10 @@
 #include <gtest/gtest.h>
 
 #include <map>
+#include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -231,6 +233,118 @@ TEST(GreenhouseManagerTest, PauseStopsActuatorsAndResumeRestartsCycles) {
     EXPECT_EQ(
         manager.step_zone("zone-1", 60.0).sequence_number,
         1U);
+}
+
+TEST(GreenhouseManagerTest, SimulationSpeedIsValidatedIdempotentAndObservable) {
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    smarthydro::GreenhouseManager manager(event_bus);
+    auto& zone = manager.add_inactive_zone("zone-1");
+
+    EXPECT_FALSE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "speed-inactive",
+                smarthydro::SetSimulationSpeedCommand{2.0},
+            })
+            .success());
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "activate-1",
+                smarthydro::ActivateCultivationCommand{
+                    "cultivation-1",
+                    load_demo_recipe(),
+                },
+            })
+            .success());
+    EXPECT_DOUBLE_EQ(zone.time_scale(), 1.0);
+
+    const smarthydro::RuntimeCommandEnvelope maximum_speed{
+        "speed-60",
+        smarthydro::SetSimulationSpeedCommand{60.0},
+    };
+    const auto applied =
+        manager.execute_command("zone-1", maximum_speed);
+    const auto replay =
+        manager.execute_command("zone-1", maximum_speed);
+    EXPECT_TRUE(applied.success());
+    EXPECT_EQ(
+        applied.message,
+        "simulation speed set to 60x");
+    EXPECT_TRUE(replay.success());
+    EXPECT_TRUE(replay.replayed);
+    EXPECT_DOUBLE_EQ(zone.time_scale(), 60.0);
+
+    for (const auto& [command_id, value] :
+         std::vector<std::pair<std::string, double>>{
+             {"speed-zero", 0.0},
+             {"speed-negative", -1.0},
+             {"speed-too-high", 60.1},
+             {"speed-nan",
+              std::numeric_limits<double>::quiet_NaN()},
+             {"speed-infinity",
+              std::numeric_limits<double>::infinity()},
+         }) {
+        const auto invalid = manager.execute_command(
+            "zone-1",
+            {
+                command_id,
+                smarthydro::SetSimulationSpeedCommand{value},
+            });
+        EXPECT_FALSE(invalid.success()) << command_id;
+        EXPECT_EQ(
+            invalid.message,
+            "time_scale must be finite and in [1, 60]");
+    }
+    EXPECT_DOUBLE_EQ(zone.time_scale(), 60.0);
+
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {"pause-1", smarthydro::PauseCultivationCommand{}})
+            .success());
+    EXPECT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "speed-paused",
+                smarthydro::SetSimulationSpeedCommand{5.0},
+            })
+            .success());
+    EXPECT_DOUBLE_EQ(zone.time_scale(), 5.0);
+
+    std::vector<smarthydro::SimulationSpeedChanged> speed_events;
+    for (const auto& event : observer->events) {
+        if (const auto* speed =
+                std::get_if<smarthydro::SimulationSpeedChanged>(
+                    &event)) {
+            speed_events.push_back(*speed);
+        }
+    }
+    ASSERT_EQ(speed_events.size(), 2U);
+    EXPECT_DOUBLE_EQ(
+        speed_events[0].previous_time_scale,
+        1.0);
+    EXPECT_DOUBLE_EQ(
+        speed_events[0].current_time_scale,
+        60.0);
+    EXPECT_DOUBLE_EQ(
+        speed_events[1].previous_time_scale,
+        60.0);
+    EXPECT_DOUBLE_EQ(
+        speed_events[1].current_time_scale,
+        5.0);
+
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {"stop-1", smarthydro::StopCultivationCommand{}})
+            .success());
+    EXPECT_DOUBLE_EQ(zone.time_scale(), 1.0);
 }
 
 TEST(GreenhouseManagerTest, StopReleasesRuntimeAndReturnsZoneToIdle) {

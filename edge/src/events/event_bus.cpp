@@ -74,6 +74,21 @@ std::string event_detail(const EdgeDomainEvent& event) {
                 std::is_same_v<Event, ZoneLifecycleChanged>) {
                 return value.previous_state + " -> " +
                        value.current_state + ": " + value.reason;
+            } else if constexpr (
+                std::is_same_v<Event, SimulationSpeedChanged>) {
+                return std::to_string(value.previous_time_scale) +
+                       "x -> " +
+                       std::to_string(value.current_time_scale) +
+                       "x";
+            } else if constexpr (
+                std::is_same_v<Event, SchedulerLagStateChanged>) {
+                return std::string(
+                           value.lagging ? "lagging" : "recovered") +
+                       " pending_steps=" +
+                       std::to_string(value.pending_steps) +
+                       " pending_seconds=" +
+                       std::to_string(
+                           value.pending_simulation_seconds);
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return std::string(state_name(value.previous_state)) +
                        " -> " + state_name(value.current_state) +
@@ -116,6 +131,12 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             } else if constexpr (
                 std::is_same_v<Event, ZoneLifecycleChanged>) {
                 return "ZoneLifecycleChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationSpeedChanged>) {
+                return "SimulationSpeedChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SchedulerLagStateChanged>) {
+                return "SchedulerLagStateChanged";
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return "StateChanged";
             } else if constexpr (std::is_same_v<Event, FaultDetected>) {

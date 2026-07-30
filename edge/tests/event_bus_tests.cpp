@@ -122,6 +122,54 @@ TEST(EventBusTest, ConsoleAndCsvLoggersRenderTelemetry) {
         std::string::npos);
 }
 
+TEST(EventBusTest, LoggersRenderTemporalEvents) {
+    const smarthydro::EdgeDomainEvent speed =
+        smarthydro::SimulationSpeedChanged{
+            "zone-time",
+            300.0,
+            1.0,
+            10.0,
+        };
+    const smarthydro::EdgeDomainEvent lag =
+        smarthydro::SchedulerLagStateChanged{
+            "zone-time",
+            900.0,
+            true,
+            1800.0,
+            2,
+            10.0,
+        };
+
+    EXPECT_STREQ(
+        smarthydro::event_type_name(speed),
+        "SimulationSpeedChanged");
+    EXPECT_STREQ(
+        smarthydro::event_type_name(lag),
+        "SchedulerLagStateChanged");
+
+    std::ostringstream console_output;
+    smarthydro::ConsoleLogger console(console_output);
+    console.on_event(speed);
+    console.on_event(lag);
+    EXPECT_NE(
+        console_output.str().find("1.000000x -> 10.000000x"),
+        std::string::npos);
+    EXPECT_NE(
+        console_output.str().find("pending_steps=2"),
+        std::string::npos);
+
+    std::ostringstream csv_output;
+    smarthydro::CsvLogger csv(csv_output);
+    csv.on_event(speed);
+    csv.on_event(lag);
+    EXPECT_NE(
+        csv_output.str().find("SimulationSpeedChanged"),
+        std::string::npos);
+    EXPECT_NE(
+        csv_output.str().find("SchedulerLagStateChanged"),
+        std::string::npos);
+}
+
 TEST(EventBusTest, BackendClientReportsUnavailableTransport) {
     smarthydro::EventBus event_bus;
     auto recorder = std::make_shared<RecordingObserver>();

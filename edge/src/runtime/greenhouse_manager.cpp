@@ -1,6 +1,8 @@
 #include <smarthydro/runtime/greenhouse_manager.hpp>
 
+#include <cmath>
 #include <exception>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -141,6 +143,33 @@ const std::string& ZoneController::last_error() const noexcept {
     return last_error_;
 }
 
+double ZoneController::time_scale() const noexcept {
+    return time_scale_;
+}
+
+void ZoneController::set_time_scale(double time_scale) {
+    if (!std::isfinite(time_scale) ||
+        time_scale < kMinimumSimulationTimeScale ||
+        time_scale > kMaximumSimulationTimeScale) {
+        throw std::invalid_argument(
+            "time_scale must be finite and in [1, 60]");
+    }
+    if (
+        lifecycle_state_ != ZoneLifecycleState::RUNNING &&
+        lifecycle_state_ != ZoneLifecycleState::PAUSED) {
+        throw std::logic_error(
+            "zone cannot change simulation speed while lifecycle is " +
+            std::string(to_string(lifecycle_state_)));
+    }
+    const double previous_time_scale = time_scale_;
+    time_scale_ = time_scale;
+    if (previous_time_scale != time_scale_) {
+        publish_time_scale_changed(
+            previous_time_scale,
+            time_scale_);
+    }
+}
+
 EdgeRuntime& ZoneController::runtime() {
     if (!runtime_) {
         throw std::logic_error(
@@ -245,6 +274,21 @@ RuntimeCommandResult ZoneController::execute_command_once(
                 "cultivation stopped",
             };
         }
+        if (const auto* speed =
+                std::get_if<SetSimulationSpeedCommand>(
+                    &envelope.command)) {
+            set_time_scale(speed->time_scale);
+            std::ostringstream message;
+            message << "simulation speed set to "
+                    << time_scale_ << 'x';
+            return {
+                envelope.command_id,
+                runtime_command_type(envelope.command),
+                RuntimeCommandStatus::SUCCEEDED,
+                false,
+                message.str(),
+            };
+        }
         if (!runtime_ || !command_processor_) {
             return {
                 envelope.command_id,
@@ -301,6 +345,7 @@ void ZoneController::activate_cultivation(
     }
 
     last_error_.clear();
+    time_scale_ = 1.0;
     cultivation_id_ = std::move(cultivation_id);
     transition_lifecycle(
         ZoneLifecycleState::STARTING,
@@ -383,9 +428,32 @@ void ZoneController::stop_cultivation() {
     runtime_.reset();
     cultivation_id_.clear();
     last_error_.clear();
+    time_scale_ = 1.0;
     transition_lifecycle(
         ZoneLifecycleState::IDLE,
         "cultivation runtime released");
+}
+
+void ZoneController::publish_time_scale_changed(
+    double previous_time_scale,
+    double current_time_scale) noexcept {
+    if (!event_bus_) {
+        return;
+    }
+    try {
+        event_bus_->publish(
+            SimulationSpeedChanged{
+                zone_id_,
+                runtime_
+                    ? runtime_->environment_state()
+                          .simulation_time_seconds
+                    : 0.0,
+                previous_time_scale,
+                current_time_scale,
+            });
+    } catch (...) {
+        // La velocita locale non dipende dagli observer esterni.
+    }
 }
 
 void ZoneController::attach_event_bus(

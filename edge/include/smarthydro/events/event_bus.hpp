@@ -7,6 +7,7 @@
 
 #include <smarthydro/runtime/edge_runtime_types.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -51,6 +52,39 @@ struct ZoneLifecycleChanged {
     std::string current_state;
     /** Causa della transizione. */
     std::string reason;
+};
+
+/** @brief Cambio del rapporto fra tempo simulato e tempo reale di una zona. */
+struct SimulationSpeedChanged {
+    /** Zona interessata dalla modifica. */
+    std::string zone_id;
+    /** Timestamp simulato disponibile al momento del cambio. */
+    double timestamp_seconds = 0.0;
+    /** Velocita temporale precedente. */
+    double previous_time_scale = 1.0;
+    /** Nuova velocita temporale applicata. */
+    double current_time_scale = 1.0;
+};
+
+/**
+ * @brief Ingresso o uscita dallo stato di ritardo dello scheduler.
+ *
+ * L'evento viene emesso soltanto quando cambia il valore di `lagging`, non a
+ * ogni iterazione nella quale rimane del lavoro arretrato.
+ */
+struct SchedulerLagStateChanged {
+    /** Zona interessata dal ritardo. */
+    std::string zone_id;
+    /** Timestamp simulato dell'ultimo stato applicato. */
+    double timestamp_seconds = 0.0;
+    /** True quando rimangono passi completi non ancora eseguiti. */
+    bool lagging = false;
+    /** Secondi simulati ancora accumulati. */
+    double pending_simulation_seconds = 0.0;
+    /** Numero di passi completi ancora pendenti. */
+    std::size_t pending_steps = 0;
+    /** Velocita temporale applicata alla zona. */
+    double time_scale = 1.0;
 };
 
 /** @brief Transizione osservabile della macchina a stati operativa. */
@@ -161,6 +195,8 @@ struct CommandFailed {
 using EdgeDomainEvent = std::variant<
     TelemetrySample,
     ZoneLifecycleChanged,
+    SimulationSpeedChanged,
+    SchedulerLagStateChanged,
     StateChanged,
     FaultDetected,
     StrategyChanged,

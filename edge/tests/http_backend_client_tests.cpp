@@ -321,6 +321,12 @@ TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
             "command_type": "StopCultivation",
             "payload": {}
         })json");
+    const auto speed = smarthydro::runtime_command_from_json(
+        R"json({
+            "command_id": "speed-1",
+            "command_type": "SetSimulationSpeed",
+            "payload": {"time_scale": 10.0}
+        })json");
 
     EXPECT_TRUE(
         std::holds_alternative<
@@ -334,6 +340,15 @@ TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
         std::holds_alternative<
             smarthydro::StopCultivationCommand>(
             stop.command));
+    ASSERT_TRUE(
+        std::holds_alternative<
+            smarthydro::SetSimulationSpeedCommand>(
+            speed.command));
+    EXPECT_DOUBLE_EQ(
+        std::get<smarthydro::SetSimulationSpeedCommand>(
+            speed.command)
+            .time_scale,
+        10.0);
 }
 
 TEST(HttpBackendClientTest, SerializesZoneLifecycleEvents) {
@@ -379,6 +394,67 @@ TEST(HttpBackendClientTest, SerializesZoneLifecycleEvents) {
     EXPECT_EQ(
         event.at("payload").at("current_state"),
         "Paused");
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, SerializesTemporalEvents) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("temporal-events");
+    auto transport = std::make_shared<RecordingTransport>();
+    smarthydro::HttpBackendConfig config;
+    config.boot_id = "boot-test";
+    config.edge_id = "edge-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::hours(1);
+    auto client = std::make_shared<smarthydro::HttpBackendClient>(
+        bus,
+        std::vector<std::string>{"zone-1"},
+        config,
+        transport);
+    bus.subscribe(client);
+    client->start();
+
+    bus.publish(
+        smarthydro::SimulationSpeedChanged{
+            "zone-1",
+            60.0,
+            1.0,
+            10.0,
+        });
+    bus.publish(
+        smarthydro::SchedulerLagStateChanged{
+            "zone-1",
+            900.0,
+            true,
+            1800.0,
+            2,
+            10.0,
+        });
+
+    ASSERT_TRUE(wait_until([&] {
+        return transport->post_count() >= 2;
+    }));
+    client->stop();
+    const auto posts = transport->post_snapshot();
+    ASSERT_EQ(posts.size(), 2U);
+
+    const auto speed = nlohmann::json::parse(posts[0].second);
+    EXPECT_EQ(speed.at("event_type"), "SimulationSpeedChanged");
+    EXPECT_EQ(
+        speed.at("payload").at("previous_time_scale"),
+        1.0);
+    EXPECT_EQ(
+        speed.at("payload").at("current_time_scale"),
+        10.0);
+
+    const auto lag = nlohmann::json::parse(posts[1].second);
+    EXPECT_EQ(lag.at("event_type"), "SchedulerLagStateChanged");
+    EXPECT_TRUE(lag.at("payload").at("lagging"));
+    EXPECT_EQ(lag.at("payload").at("pending_steps"), 2);
+    EXPECT_EQ(
+        lag.at("payload").at("pending_simulation_seconds"),
+        1800.0);
+    EXPECT_EQ(lag.at("payload").at("time_scale"), 10.0);
     std::filesystem::remove_all(outbox);
 }
 
