@@ -72,3 +72,48 @@ def test_get_connection_creates_parent_directory(tmp_path: Path) -> None:
         assert database_path.exists()
     finally:
         new_connection.close()
+
+
+def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
+    legacy = sqlite3.connect(":memory:")
+    legacy.execute(
+        """
+        CREATE TABLE zones (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            department_number INTEGER NOT NULL,
+            sector_number INTEGER NOT NULL,
+            plant_species TEXT NOT NULL,
+            status TEXT NOT NULL,
+            active_recipe_id TEXT,
+            last_edge_contact TEXT,
+            current_phase TEXT,
+            UNIQUE (department_number, sector_number)
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO zones (
+            id, name, department_number, sector_number, plant_species,
+            status, active_recipe_id, last_edge_contact, current_phase
+        )
+        VALUES ('legacy-zone', 'Legacy', 1, 1, 'Pomodoro',
+                'offline', NULL, NULL, NULL)
+        """
+    )
+
+    try:
+        init_db(legacy)
+        columns = {
+            row[1]
+            for row in legacy.execute("PRAGMA table_info(zones)").fetchall()
+        }
+        assignment = legacy.execute(
+            "SELECT assigned_edge_id FROM zones WHERE id = 'legacy-zone'"
+        ).fetchone()
+    finally:
+        legacy.close()
+
+    assert "assigned_edge_id" in columns
+    assert assignment == (None,)

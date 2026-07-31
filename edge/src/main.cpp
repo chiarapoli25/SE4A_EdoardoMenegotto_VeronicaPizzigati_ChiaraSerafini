@@ -31,7 +31,7 @@ void request_stop(int) {
 }
 
 struct CommandLineOptions {
-    std::size_t zones = 1;
+    std::size_t zones = 0;
     std::vector<std::string> zone_ids;
     double step_seconds = kDefaultStepSeconds;
     std::string backend_url = "http://127.0.0.1:8000";
@@ -200,7 +200,7 @@ void print_help(const char* executable) {
         << "Registered zones remain inactive until the backend sends an\n"
         << "ActivateCultivation command.\n\n"
         << "Options:\n"
-        << "  --zones N           Generate zone-1..zone-N (default: 1)\n"
+        << "  --zones N           Generate local zone-1..zone-N\n"
         << "  --zone-id ID        Register an explicit zone; repeatable\n"
         << "  --step-seconds SEC  Simulation control quantum"
         << " (default: 900)\n"
@@ -349,6 +349,16 @@ int main(int argc, char* argv[]) {
         while (!stop_requested) {
             const auto now = Clock::now();
             scheduler.accrue(now);
+            for (auto& zone_id :
+                 backend_client->take_discovered_zone_ids()) {
+                if (greenhouse.contains(zone_id)) {
+                    continue;
+                }
+                greenhouse.add_inactive_zone(zone_id);
+                std::cout
+                    << "Provisioned backend zone " << zone_id
+                    << " on Edge " << options.edge_id << '\n';
+            }
             for (auto& remote : backend_client->take_commands()) {
                 const auto result = greenhouse.execute_command(
                     remote.zone_id,

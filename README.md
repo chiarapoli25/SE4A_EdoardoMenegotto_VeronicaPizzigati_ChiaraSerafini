@@ -46,19 +46,21 @@ ctest --test-dir edge/build --output-on-failure
 ./edge/build/bin/edge
 ```
 
-L'eseguibile principale non carica una ricetta locale. Si collega al backend,
-registra le zone indicate come inattive e rimane in esecuzione fino a
-`Ctrl+C` o `SIGTERM`. Una zona inattiva non possiede ancora un `EdgeRuntime`:
-sensori, ambiente e attuatori vengono creati soltanto dopo un comando
+L'eseguibile principale non carica una ricetta locale. Si collega al backend
+usando `--edge-id` e puo avviarsi senza conoscere in anticipo il numero delle
+zone. Il backend assegna i settori all'Edge; il servizio sincronizza
+`GET /api/v1/edges/{edge_id}/zones` e registra dinamicamente ogni nuova zona
+come inattiva. Una zona inattiva non possiede ancora un `EdgeRuntime`: sensori,
+ambiente e attuatori vengono creati soltanto dopo un comando
 `ActivateCultivation` valido.
 
-Per avviare il servizio con le zone predefinite `zone-1..zone-N`:
+Avvio normale, con provisioning gestito dal backend:
 
 ```bash
-./edge/build/bin/edge --zones 2
+./edge/build/bin/edge --edge-id edge-serra-1
 ```
 
-Per usare gli identificativi gia registrati nel backend:
+`--zones` e `--zone-id` restano disponibili per demo e fallback locali:
 
 ```bash
 ./edge/build/bin/edge \
@@ -76,10 +78,10 @@ Quando una coltivazione e attiva, ogni ciclo:
 5. produce un campione progressivo con stato operativo ed eventuali eventi.
 
 Lo stato iniziale e `Nominal`. Un errore transitorio di sensore o modello porta
-il runtime in `Degraded`: tutti gli attuatori vengono fermati, mentre l'ambiente
-continua a evolvere passivamente. Tre cicli sani consecutivi riportano
-automaticamente il sistema in `Nominal`; tre guasti recuperabili consecutivi
-lo portano invece in `EmergencyLockdown`.
+il runtime in `Degraded`: viene isolato il solo controllo dipendente dal canale
+guasto e i controlli indipendenti continuano a operare. Tre cicli sani
+consecutivi riportano automaticamente il sistema in `Nominal`; tre guasti
+recuperabili consecutivi lo portano invece in `EmergencyLockdown`.
 
 Valori fuori dai limiti di sicurezza, errori interni del controllore e comandi
 fisici rifiutati causano immediatamente `EmergencyLockdown`. Per uscirne occorre
@@ -184,8 +186,8 @@ dallo stato di ritardo producono eventi diagnostici.
 condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
 possono descrivere reparti e settori, ad esempio `reparto-a/settore-nord`.
 
-L'eseguibile accetta `--zones N` oppure piu opzioni `--zone-id`; per registrare
-due zone inattive:
+L'eseguibile accetta comunque `--zones N` oppure piu opzioni `--zone-id`; per
+registrare localmente due zone inattive:
 
 ```bash
 ./edge/build/bin/edge --zones 2
@@ -225,14 +227,32 @@ altro endpoint:
 ```
 
 Il client esegue `POST` di telemetria, snapshot degli attuatori ed eventi,
-interroga la coda comandi con `GET` e invia l'esito di ogni comando. I
-progressivi sono idempotenti per `(zone_id, boot_id, sequence_number)`; gli
-eventi e i comandi hanno un identificativo idempotente proprio. I file
-dell'outbox vengono riletti al riavvio e rimossi soltanto dopo una risposta
-HTTP 2xx. I comandi `LoadRecipe` e `ActivateCultivation` possono includere
-soltanto `recipe_id`: il worker scarica la ricetta validata con
+sincronizza le zone assegnate, interroga la coda comandi con `GET` e invia
+l'esito di ogni comando. Le assegnazioni apprese vengono salvate in
+`assigned-zones.json` nella directory dell'outbox: un riavvio con backend
+offline ripristina quindi le zone gia note. I progressivi sono idempotenti per
+`(zone_id, boot_id, sequence_number)`; gli eventi e i comandi hanno un
+identificativo idempotente proprio. I file dell'outbox vengono riletti al
+riavvio e rimossi soltanto dopo una risposta HTTP 2xx. I comandi `LoadRecipe` e
+`ActivateCultivation` possono includere soltanto `recipe_id`: il worker scarica
+la ricetta validata con
 `GET /api/v1/recipes/{recipe_id}` prima dell'esecuzione. Per l'attivazione il
 payload deve includere anche `cultivation_id`.
+
+Per creare dal backend un settore assegnato all'Edge:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/zones \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "r1-s1",
+    "name": "Reparto 1 - Settore 1",
+    "department_number": 1,
+    "sector_number": 1,
+    "plant_species": "Pomodoro",
+    "assigned_edge_id": "edge-serra-1"
+  }'
+```
 
 Per proteggere le API versionate, impostare lo stesso token nei processi
 backend ed Edge:

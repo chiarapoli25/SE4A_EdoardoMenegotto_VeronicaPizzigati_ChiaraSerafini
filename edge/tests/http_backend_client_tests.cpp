@@ -20,6 +20,9 @@ public:
     smarthydro::HttpResponse get(const std::string& path) override {
         std::lock_guard<std::mutex> lock(mutex_);
         get_paths.push_back(path);
+        if (path.rfind("/api/v1/edges/", 0) == 0) {
+            return zone_assignment_response;
+        }
         if (path.rfind("/api/v1/recipes/", 0) == 0) {
             return {200, recipe_response};
         }
@@ -46,6 +49,7 @@ public:
 
     smarthydro::HttpResponse post_response{201, "{}"};
     std::string command_response = "[]";
+    smarthydro::HttpResponse zone_assignment_response{200, "[]"};
     std::string recipe_response = "{}";
     std::vector<std::string> get_paths;
 
@@ -195,6 +199,90 @@ TEST(HttpBackendClientTest, PollsAndDeserializesRuntimeCommands) {
             commands[0].envelope.command)
             .reason,
         "remote test");
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, DiscoversZonesWithNoLocalConfiguration) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("zone-discovery");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->zone_assignment_response = {
+        200,
+        R"json([
+            {
+                "id": "backend-zone-1",
+                "assigned_edge_id": "edge-test"
+            }
+        ])json",
+    };
+    smarthydro::HttpBackendConfig config;
+    config.edge_id = "edge-test";
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    auto client = std::make_shared<smarthydro::HttpBackendClient>(
+        bus,
+        std::vector<std::string>{},
+        config,
+        transport);
+    client->start();
+
+    std::vector<std::string> discovered;
+    ASSERT_TRUE(wait_until([&] {
+        discovered = client->take_discovered_zone_ids();
+        return !discovered.empty();
+    }));
+    client->stop();
+
+    ASSERT_EQ(discovered.size(), 1U);
+    EXPECT_EQ(discovered.front(), "backend-zone-1");
+    EXPECT_TRUE(std::filesystem::exists(
+        outbox / "assigned-zones.json"));
+    EXPECT_NE(
+        std::find(
+            transport->get_paths.begin(),
+            transport->get_paths.end(),
+            "/api/v1/edges/edge-test/zones"),
+        transport->get_paths.end());
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, RestoresDiscoveredZonesWhileBackendIsOffline) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("cached-zone-discovery");
+    smarthydro::HttpBackendConfig config;
+    config.edge_id = "edge-test";
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+
+    {
+        auto online_transport = std::make_shared<RecordingTransport>();
+        online_transport->zone_assignment_response = {
+            200,
+            R"json([{"id": "cached-zone"}])json",
+        };
+        smarthydro::HttpBackendClient online_client(
+            bus, {}, config, online_transport);
+        online_client.start();
+        ASSERT_TRUE(wait_until([&] {
+            return !online_client
+                        .take_discovered_zone_ids()
+                        .empty();
+        }));
+        online_client.stop();
+    }
+
+    auto offline_transport = std::make_shared<RecordingTransport>();
+    offline_transport->zone_assignment_response = {503, "offline"};
+    smarthydro::HttpBackendClient offline_client(
+        bus, {}, config, offline_transport);
+
+    const auto restored =
+        offline_client.take_discovered_zone_ids();
+
+    ASSERT_EQ(restored.size(), 1U);
+    EXPECT_EQ(restored.front(), "cached-zone");
     std::filesystem::remove_all(outbox);
 }
 

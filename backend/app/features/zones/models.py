@@ -38,6 +38,13 @@ class ZoneCreate(BaseModel):
     sector_number: int = Field(ge=1, le=2)
     ## @brief Unica specie vegetale ospitata nel settore.
     plant_species: str = Field(min_length=1, max_length=100)
+    ## @brief Edge incaricato di gestire fisicamente il settore.
+    assigned_edge_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
     ## @brief Ricetta assegnata al settore, se presente.
     active_recipe_id: str | None = Field(default=None, max_length=64)
     ## @brief Nome della fase di coltivazione corrente, se presente.

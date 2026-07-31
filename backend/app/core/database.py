@@ -137,6 +137,17 @@ def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
         connection.execute("DROP TABLE actuator_snapshots_legacy")
 
 
+def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
+    """Aggiunge l'assegnazione Edge agli schemi creati da versioni precedenti."""
+    if (
+        _table_columns(connection, "zones")
+        and "assigned_edge_id" not in _table_columns(connection, "zones")
+    ):
+        connection.execute(
+            "ALTER TABLE zones ADD COLUMN assigned_edge_id TEXT"
+        )
+
+
 def init_db(connection: sqlite3.Connection) -> None:
     """@brief Crea lo schema applicativo se non esiste.
 
@@ -164,6 +175,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             sector_number INTEGER NOT NULL
                 CHECK (sector_number BETWEEN 1 AND 2),
             plant_species TEXT NOT NULL,
+            assigned_edge_id TEXT,
             status TEXT NOT NULL CHECK (status IN ('online', 'offline')),
             active_recipe_id TEXT,
             last_edge_contact TEXT,
@@ -172,6 +184,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    _migrate_zone_assignment_column(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS telemetry_samples (
