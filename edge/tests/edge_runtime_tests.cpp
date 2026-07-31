@@ -277,10 +277,12 @@ TEST(EdgeRuntimeTest, ReportsRecipePhaseTransition) {
 }
 
 TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
+    auto recipe = load_demo_recipe();
+    recipe.phases.front().photoperiod = {0.0, 24.0};
     auto sensor_config = deterministic_sensors();
     sensor_config.soil_moisture.dropout_probability = 1.0;
     smarthydro::EdgeRuntime runtime(
-        load_demo_recipe(),
+        std::move(recipe),
         {},
         {},
         sensor_config);
@@ -296,6 +298,15 @@ TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
         smarthydro::OperationalState::DEGRADED);
     EXPECT_DOUBLE_EQ(first_failure.delivered_water_liters, 0.0);
     EXPECT_FALSE(first_failure.actuator_output.water_pump_on);
+    const auto light_index =
+        smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::LIGHT);
+    EXPECT_NE(
+        first_failure.decisions[light_index].status,
+        smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_GT(
+        first_failure.actuator_output.lighting_power_watts,
+        0.0);
     const auto* degraded_event = transition_event(
         first_failure, smarthydro::OperationalState::DEGRADED);
     ASSERT_NE(degraded_event, nullptr);

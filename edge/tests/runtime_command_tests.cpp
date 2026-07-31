@@ -295,6 +295,23 @@ TEST(RuntimeCommandProcessorTest, TimedSensorOffsetExpiresAndRecovers) {
     EXPECT_EQ(
         affected.operational_state,
         smarthydro::OperationalState::DEGRADED);
+    const auto ph_index =
+        smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::PH);
+    const auto soil_index =
+        smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::SOIL_MOISTURE);
+    EXPECT_EQ(
+        affected.decisions[ph_index].status,
+        smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_DOUBLE_EQ(affected.decisions[ph_index].command, 0.0);
+    EXPECT_NE(
+        affected.decisions[ph_index].message.find(
+            "temporary-ph-offset"),
+        std::string::npos);
+    EXPECT_NE(
+        affected.decisions[soil_index].status,
+        smarthydro::ControlDecisionStatus::BLOCKED);
     EXPECT_EQ(
         recovered.operational_state,
         smarthydro::OperationalState::NOMINAL);
@@ -347,6 +364,80 @@ TEST(RuntimeCommandProcessorTest, StuckSensorNeedsRepeatedObservation) {
     EXPECT_DOUBLE_EQ(
         *first.readings.soil_moisture_percent,
         *second.readings.soil_moisture_percent);
+}
+
+TEST(RuntimeCommandProcessorTest, DegradedIsolatesSharedPumpOnly) {
+    auto recipe = load_demo_recipe();
+    recipe.phases.front().photoperiod = {0.0, 24.0};
+    auto& soil_target =
+        recipe.phases.front().targets[
+            smarthydro::controlled_variable_index(
+                smarthydro::ControlledVariable::SOIL_MOISTURE)];
+    soil_target.setpoint = 85.0;
+    soil_target.allowed_range = {80.0, 90.0};
+    soil_target.safety_range = {0.0, 100.0};
+
+    smarthydro::EdgeRuntime runtime(
+        std::move(recipe), {}, {}, deterministic_sensors());
+    runtime.confirm_all_configurations();
+    smarthydro::RuntimeCommandProcessor processor(runtime);
+
+    ASSERT_TRUE(
+        processor
+            .execute(
+                {
+                    "pump-fault-inject",
+                    smarthydro::InjectFaultCommand{
+                        smarthydro::FaultSpecification{
+                            "pump-stuck-off",
+                            smarthydro::FaultTargetKind::ACTUATOR,
+                            "water_pump",
+                            smarthydro::FaultMode::ACTUATOR_STUCK_OFF,
+                            std::nullopt,
+                            std::nullopt,
+                        },
+                    },
+                })
+            .success());
+
+    const auto detected = runtime.step(60.0);
+    const auto isolated = runtime.step(60.0);
+
+    EXPECT_EQ(
+        detected.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    EXPECT_EQ(
+        isolated.operational_state,
+        smarthydro::OperationalState::DEGRADED);
+    for (const auto variable : {
+             smarthydro::ControlledVariable::SOIL_MOISTURE,
+             smarthydro::ControlledVariable::PH,
+             smarthydro::ControlledVariable::NITROGEN,
+             smarthydro::ControlledVariable::PHOSPHORUS,
+             smarthydro::ControlledVariable::POTASSIUM}) {
+        const auto& decision =
+            isolated.decisions[
+                smarthydro::controlled_variable_index(variable)];
+        EXPECT_EQ(
+            decision.status,
+            smarthydro::ControlDecisionStatus::BLOCKED);
+        EXPECT_DOUBLE_EQ(decision.command, 0.0);
+        EXPECT_NE(
+            decision.message.find("pump-stuck-off"),
+            std::string::npos);
+    }
+    const auto& light_decision =
+        isolated.decisions[
+            smarthydro::controlled_variable_index(
+                smarthydro::ControlledVariable::LIGHT)];
+    EXPECT_NE(
+        light_decision.status,
+        smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_GT(isolated.actuator_output.lighting_power_watts, 0.0);
+    EXPECT_DOUBLE_EQ(isolated.delivered_water_liters, 0.0);
+    EXPECT_DOUBLE_EQ(
+        isolated.actuator_command.requested_irrigation_volume_liters,
+        0.0);
 }
 
 TEST(RuntimeCommandProcessorTest, StuckOnActuatorTriggersImmediateEmergency) {

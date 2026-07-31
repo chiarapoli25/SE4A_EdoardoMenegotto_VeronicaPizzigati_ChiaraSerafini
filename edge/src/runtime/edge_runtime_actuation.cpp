@@ -58,7 +58,11 @@ void EdgeRuntime::apply_decisions(
 
     const double water_command =
         result.decisions[water_index].command;
-    if (water_command > 0.0 && !water_pump_.active()) {
+    if (result.decisions[water_index].status ==
+            ControlDecisionStatus::BLOCKED &&
+        result.decisions[water_index].safety_critical) {
+        water_pump_.cancel();
+    } else if (water_command > 0.0 && !water_pump_.active()) {
         water_pump_.request_volume_liters(water_command);
     }
 

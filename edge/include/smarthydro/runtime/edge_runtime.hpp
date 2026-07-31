@@ -217,6 +217,7 @@ private:
         InjectedFault& fault,
         ControlFaultSeverity severity,
         std::string diagnostic);
+    void apply_degraded_isolation(EdgeStepResult& result);
     void apply_post_actuation_fault_state(EdgeStepResult& result);
     bool update_operational_state(EdgeStepResult& result);
     void transition_operational_state(

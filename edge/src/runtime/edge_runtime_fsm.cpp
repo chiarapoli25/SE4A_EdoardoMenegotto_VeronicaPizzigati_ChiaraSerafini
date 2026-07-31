@@ -440,6 +440,86 @@ void EdgeRuntime::apply_post_actuation_fault_state(
     }
 }
 
+void EdgeRuntime::apply_degraded_isolation(EdgeStepResult& result) {
+    ControlledValues<bool> isolated{};
+    ControlledValues<std::string> reasons{};
+
+    const auto isolate = [&isolated, &reasons](
+                             ControlledVariable variable,
+                             const std::string& reason) {
+        const auto index = controlled_variable_index(variable);
+        isolated[index] = true;
+        if (reasons[index].empty()) {
+            reasons[index] = reason;
+        }
+    };
+
+    for (const auto& [identifier, fault] : injected_faults_) {
+        if (!fault.detected ||
+            fault.detected_severity !=
+                ControlFaultSeverity::RECOVERABLE) {
+            continue;
+        }
+
+        const auto& target = fault.specification.target;
+        const std::string reason =
+            "control isolated in Degraded mode: " + identifier +
+            " (" + target + ")";
+        if (fault.specification.target_kind ==
+            FaultTargetKind::SENSOR) {
+            if (target == "soil_moisture") {
+                isolate(ControlledVariable::SOIL_MOISTURE, reason);
+            } else if (target == "light") {
+                isolate(ControlledVariable::LIGHT, reason);
+            } else if (target == "ph") {
+                isolate(ControlledVariable::PH, reason);
+            }
+            continue;
+        }
+
+        if (target == "lighting") {
+            isolate(ControlledVariable::LIGHT, reason);
+        } else if (target == "water_pump") {
+            for (const auto variable : {
+                     ControlledVariable::SOIL_MOISTURE,
+                     ControlledVariable::PH,
+                     ControlledVariable::NITROGEN,
+                     ControlledVariable::PHOSPHORUS,
+                     ControlledVariable::POTASSIUM}) {
+                isolate(variable, reason);
+            }
+        } else if (target == "nitrogen_valve") {
+            isolate(ControlledVariable::NITROGEN, reason);
+        } else if (target == "phosphorus_valve") {
+            isolate(ControlledVariable::PHOSPHORUS, reason);
+        } else if (target == "potassium_valve") {
+            isolate(ControlledVariable::POTASSIUM, reason);
+        } else if (
+            target == "ph_up_valve" ||
+            target == "ph_down_valve") {
+            isolate(ControlledVariable::PH, reason);
+        }
+    }
+
+    for (std::size_t index = 0;
+         index < kControlledVariableCount;
+         ++index) {
+        if (!isolated[index]) {
+            continue;
+        }
+        auto& decision = result.decisions[index];
+        decision.status = ControlDecisionStatus::BLOCKED;
+        decision.safety_critical = true;
+        decision.fault_severity =
+            ControlFaultSeverity::RECOVERABLE;
+        decision.command = 0.0;
+        decision.actuator =
+            control_system_.recipe().controllers[index].actuator;
+        decision.message = reasons[index];
+        decision.predicted_value.reset();
+    }
+}
+
 bool EdgeRuntime::trigger_emergency_stop(const std::string& reason) {
     if (reason.empty()) {
         throw std::invalid_argument(

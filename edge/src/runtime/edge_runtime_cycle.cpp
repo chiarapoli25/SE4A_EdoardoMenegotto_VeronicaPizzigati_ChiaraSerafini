@@ -235,6 +235,8 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             control_system_.execute(variable, request);
     }
 
+    apply_degraded_isolation(result);
+
     bool command_executed = false;
     if (!update_operational_state(result)) {
         apply_safe_fallback(delta_time_seconds, result, false);
