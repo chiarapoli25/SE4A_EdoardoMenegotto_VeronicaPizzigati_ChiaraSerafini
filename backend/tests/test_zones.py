@@ -44,6 +44,7 @@ def test_create_and_read_zone(client: TestClient) -> None:
     assert created.status_code == 201
     assert created.json() == {
         **zone_payload(),
+        "assigned_edge_id": None,
         "active_recipe_id": None,
         "current_phase": None,
         "status": "offline",
@@ -68,6 +69,24 @@ def test_list_zones_orders_departments_and_sectors(client: TestClient) -> None:
         "r1-s2",
         "r2-s2",
     ]
+
+
+def test_edge_lists_only_its_assigned_zones(client: TestClient) -> None:
+    client.post(
+        "/zones",
+        json={**zone_payload("edge-a-zone", 1, 1), "assigned_edge_id": "edge-a"},
+    )
+    client.post(
+        "/zones",
+        json={**zone_payload("edge-b-zone", 1, 2), "assigned_edge_id": "edge-b"},
+    )
+    client.post("/zones", json=zone_payload("unassigned", 2, 1))
+
+    response = client.get("/api/v1/edges/edge-a/zones")
+
+    assert response.status_code == 200
+    assert [zone["id"] for zone in response.json()] == ["edge-a-zone"]
+    assert response.json()[0]["assigned_edge_id"] == "edge-a"
 
 
 def test_each_department_accepts_at_most_two_sector_numbers(

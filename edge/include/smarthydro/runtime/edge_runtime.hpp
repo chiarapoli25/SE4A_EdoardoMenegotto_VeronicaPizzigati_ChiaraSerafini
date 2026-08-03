@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace smarthydro {
 
@@ -133,18 +134,12 @@ public:
      */
     bool advance_recipe_phase();
     /**
-     * @brief Registra un guasto sintetico persistente per la simulazione.
+     * @brief Applica un'anomalia tipizzata a sensore o attuatore simulato.
      *
-     * @param fault_id Identificatore non vuoto usato dal successivo reset.
-     * @param severity Severita Recoverable o Critical.
-     * @param diagnostic Descrizione non vuota del guasto simulato.
-     * @throws std::invalid_argument Se i parametri non sono validi o il fault
-     * e gia attivo.
+     * La FSM non viene modificata immediatamente: reagisce soltanto quando il
+     * detector osserva il sintomo prodotto dal fault.
      */
-    void inject_fault(
-        std::string fault_id,
-        ControlFaultSeverity severity,
-        std::string diagnostic);
+    void inject_fault(FaultSpecification specification);
     /**
      * @brief Rimuove un guasto sintetico precedentemente iniettato.
      * @return true se il fault era attivo.
@@ -169,6 +164,13 @@ public:
      */
     bool request_manual_reset() noexcept;
     /**
+     * @brief Porta immediatamente tutti gli attuatori nello stato sicuro.
+     *
+     * Non modifica la FSM operativa: serve al lifecycle esterno della zona
+     * per sospendere o terminare una coltivazione senza simulare un guasto.
+     */
+    void stop_all_actuators() noexcept;
+    /**
      * @brief Collega un EventBus alla pubblicazione automatica del runtime.
      * @param event_bus Bus non nullo, condiviso con gli observer.
      * @param zone_id Identificatore non vuoto della zona.
@@ -189,7 +191,14 @@ public:
 
 private:
     struct InjectedFault {
-        ControlFaultSeverity severity = ControlFaultSeverity::NONE;
+        FaultSpecification specification;
+        double injected_at_seconds = 0.0;
+        std::optional<double> expires_at_seconds;
+        std::optional<double> latched_sensor_value;
+        std::size_t observation_count = 0;
+        bool detected = false;
+        ControlFaultSeverity detected_severity =
+            ControlFaultSeverity::NONE;
         std::string diagnostic;
     };
 
@@ -198,6 +207,18 @@ private:
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
     void reset_histories_if_needed();
     SensorReadings read_sensors();
+    void expire_injected_faults(double timestamp_seconds);
+    void apply_sensor_faults(SensorReadings& readings);
+    ActuatorOutput apply_actuator_faults(
+        const ActuatorCommand& command,
+        const ActuatorOutput& raw_output,
+        double delta_time_seconds);
+    void mark_fault_detected(
+        InjectedFault& fault,
+        ControlFaultSeverity severity,
+        std::string diagnostic);
+    void apply_degraded_isolation(EdgeStepResult& result);
+    void apply_post_actuation_fault_state(EdgeStepResult& result);
     bool update_operational_state(EdgeStepResult& result);
     void transition_operational_state(
         OperationalState next_state,
@@ -246,6 +267,8 @@ private:
     double recipe_time_offset_seconds_ = 0.0;
     SoilType active_substrate_ = SoilType::AERATED_UNIVERSAL;
     std::unordered_map<std::string, InjectedFault> injected_faults_;
+    std::unordered_set<std::string> reported_runtime_faults_;
+    ActuatorOutput effective_actuator_output_;
     std::shared_ptr<EventBus> event_bus_;
     std::string zone_id_ = "zone-1";
 };

@@ -1,17 +1,16 @@
 # SmartHydro
 
 SmartHydro e un progetto per il monitoraggio e il controllo di una coltivazione
-in terriccio. La demo locale collega un Edge Controller C++17, un backend HTTP
-Python, una dashboard web e ricette versionate per il pomodoro.
+in terriccio. Questa Fase 0 prepara una base di lavoro avviabile composta da un
+Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
+una ricetta di coltivazione di esempio.
 
 L'area Edge include un simulatore dinamico della serra, sensori con errori
 strumentali, attuatori e un sistema di controllo configurabile basato su
-ricette versionate e pattern Strategy. Il backend salva le ricette in SQLite,
-le esporta nel formato condiviso e avvia l'Edge per le simulazioni richieste
-dalla dashboard. Edge e backend comunicano inoltre tramite API HTTP versionate,
-con consegna asincrona, outbox persistente, retry, comandi remoti e
-autenticazione Bearer opzionale. Non sono ancora presenti dispositivi reali o
-Docker.
+ricette versionate e pattern Strategy. Edge e backend comunicano tramite API
+HTTP versionate, con consegna asincrona, outbox persistente, retry, comandi
+remoti e autenticazione Bearer opzionale. Non sono ancora presenti dispositivi
+reali o Docker.
 
 ## Struttura del progetto
 
@@ -47,8 +46,46 @@ ctest --test-dir edge/build --output-on-failure
 ./edge/build/bin/edge
 ```
 
-L'eseguibile principale carica `config/example_recipe.json`, valida e conferma
-localmente le sei configurazioni, quindi esegue un ciclo completo:
+L'eseguibile principale non carica una ricetta locale. Si collega al backend
+usando `--edge-id` e puo avviarsi senza conoscere in anticipo il numero delle
+zone. Il backend assegna i settori all'Edge; il servizio sincronizza
+`GET /api/v1/edges/{edge_id}/zones` e registra dinamicamente ogni nuova zona
+come inattiva. Una zona inattiva non possiede ancora un `EdgeRuntime`: sensori,
+ambiente e attuatori vengono creati soltanto dopo un comando
+`ActivateCultivation` valido.
+
+Avvio normale, con provisioning gestito dal backend:
+
+```bash
+./edge/build/bin/edge --edge-id edge-serra-1
+```
+
+La dashboard usa invece `edge_simulator`, un eseguibile batch separato che
+carica una ricetta locale e restituisce un numero finito di cicli. In questo
+modo l'entry point `edge` conserva il modello autorevole di servizio continuo:
+
+```bash
+./edge/build/bin/edge_simulator \
+  --recipe config/example_recipe.json \
+  --steps 4 \
+  --step-seconds 900 \
+  --output json
+```
+
+Il percorso puo essere configurato nel backend tramite
+`SMARTHYDRO_EDGE_SIMULATOR_EXECUTABLE`; per compatibilita viene ancora letto
+anche `SMARTHYDRO_EDGE_EXECUTABLE`.
+
+`--zones` e `--zone-id` restano disponibili per demo e fallback locali:
+
+```bash
+./edge/build/bin/edge \
+  --zone-id r1-s1 \
+  --zone-id r1-s2 \
+  --backend-url http://127.0.0.1:8000
+```
+
+Quando una coltivazione e attiva, ogni ciclo:
 
 1. legge sensori e modelli N/P/K;
 2. calcola i comandi tramite `RecipeControlSystem`;
@@ -57,10 +94,10 @@ localmente le sei configurazioni, quindi esegue un ciclo completo:
 5. produce un campione progressivo con stato operativo ed eventuali eventi.
 
 Lo stato iniziale e `Nominal`. Un errore transitorio di sensore o modello porta
-il runtime in `Degraded`: tutti gli attuatori vengono fermati, mentre l'ambiente
-continua a evolvere passivamente. Tre cicli sani consecutivi riportano
-automaticamente il sistema in `Nominal`; tre guasti recuperabili consecutivi
-lo portano invece in `EmergencyLockdown`.
+il runtime in `Degraded`: viene isolato il solo controllo dipendente dal canale
+guasto e i controlli indipendenti continuano a operare. Tre cicli sani
+consecutivi riportano automaticamente il sistema in `Nominal`; tre guasti
+recuperabili consecutivi lo portano invece in `EmergencyLockdown`.
 
 Valori fuori dai limiti di sicurezza, errori interni del controllore e comandi
 fisici rifiutati causano immediatamente `EmergencyLockdown`. Per uscirne occorre
@@ -74,32 +111,12 @@ stato e causa. L'ingresso in emergenza produce anche
 il comando interessato.
 
 Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
-fase produce `RecipePhaseChanged`.
-
-Per usare una ricetta diversa o simulare piu cicli:
-
-```bash
-./edge/build/bin/edge --recipe backend/data/recipes/tomato_demo_v1.json
-./edge/build/bin/edge --steps 96 --step-seconds 900
-```
-
-Per ottenere il contratto machine-readable usato dal backend:
-
-```bash
-./edge/build/bin/edge \
-  --recipe config/example_recipe.json \
-  --steps 4 \
-  --step-seconds 900 \
-  --output json
-```
-
-Il formato `human` resta quello predefinito. Il formato `json` contiene
-metadati della ricetta e, per ogni ciclo, sensori, modelli N/P/K, decisioni,
-comandi e uscite degli attuatori, dosi erogate e stato ambientale.
-
-`--steps` indica il numero di cicli e `--step-seconds` la durata simulata di
-ciascun ciclo. L'Edge usa esclusivamente il JSON locale durante l'esecuzione e
-non richiede che il backend sia raggiungibile.
+fase produce `RecipePhaseChanged`. `--step-seconds` definisce il quantum fisso
+del controllo simulato; il valore predefinito e 900 secondi. Lo scheduler
+misura il tempo reale con `std::chrono::steady_clock` e, per ogni zona, accumula
+il tempo simulato moltiplicandolo per la velocita configurata. Il polling dei
+comandi resta indipendente e continua anche mentre tutte le zone sono
+inattive.
 
 ### Adapter e hardware
 
@@ -140,20 +157,56 @@ includono indicando il dominio, per esempio
 
 ### Multi-zona
 
-`ZoneController` racchiude tutto lo stato di una zona: ambiente, sensori,
-attuatori, ricetta, controllori, FSM, fault, storico e sequenze. Ogni zona ha
-anche il proprio `RuntimeCommandProcessor`, quindi comandi e chiavi di
-idempotenza non interferiscono con le altre.
+`ZoneController` puo essere registrato senza ricetta. In stato inattivo non
+possiede runtime o attuatori e viene ignorato da `step_all()`. Il comando
+`ActivateCultivation` crea atomicamente ambiente, sensori, attuatori, ricetta,
+controllori, FSM, storico e sequenze, quindi conferma le sei configurazioni
+validate. Ogni zona mantiene una cache dei comandi indipendente dalle altre.
+
+Il lifecycle applicativo di ogni zona e indipendente:
+
+- `Idle`: nessuna coltivazione e nessun runtime;
+- `Starting`: ricetta in validazione e runtime in costruzione;
+- `Running`: controllo e simulazione attivi;
+- `Paused`: runtime conservato, tempo fermo e attuatori spenti;
+- `Stopping`: arresto sicuro e rilascio del runtime;
+- `Error`: attivazione fallita, con diagnostica disponibile.
+
+La FSM `Nominal`, `Degraded`, `EmergencyLockdown` rimane interna a
+`EdgeRuntime` e descrive la sicurezza operativa soltanto mentre il lifecycle e
+`Running`. `step_all()` ignora sia le zone inattive sia quelle in pausa.
+
+Ogni zona attiva parte a `1x` e puo ricevere `SetSimulationSpeed` con un valore
+finito fra `1x` e `60x`. `0x` viene rappresentato dal comando
+`PauseCultivation`: la pausa conserva il residuo temporale senza accumulare
+altro tempo, mentre stop, errore e nuova attivazione azzerano lo stato dello
+scheduler. La velocita cambia la frequenza dei passi, non la durata passata a
+`runtime.step()`, salvo l'ultimo passo ridotto necessario a rispettare
+esattamente un limite temporale.
+
+`SetSimulationDuration` permette di configurare una finestra futura espressa
+in secondi simulati. La durata deve essere positiva e finita e decorre dal
+timestamp simulato gia applicato alla zona; `duration_seconds: null` rimuove
+il limite e mantiene la simulazione continua. Al raggiungimento del target lo
+scheduler azzera il tempo eccedente, spegne gli attuatori e porta la zona in
+`Paused`. Per ripartire occorre impostare una nuova durata oppure rimuovere il
+limite prima di inviare `ResumeCultivation`.
+
+Il recupero del tempo arretrato esegue piccoli passi in round-robin fra le
+zone. Il limite globale predefinito e 8 passi per iterazione, configurabile con
+`--max-catch-up-steps`; il residuo non viene scartato e l'ingresso e l'uscita
+dallo stato di ritardo producono eventi diagnostici.
 
 `GreenhouseManager` registra piu zone e permette di avanzarne una con
 `step_zone()` oppure tutte con `step_all()`. Soltanto l'`EventBus` viene
 condiviso; ogni evento mantiene il relativo `zone_id`. Gli identificatori
 possono descrivere reparti e settori, ad esempio `reparto-a/settore-nord`.
 
-L'eseguibile accetta `--zones N`; per avviare due zone:
+L'eseguibile accetta comunque `--zones N` oppure piu opzioni `--zone-id`; per
+registrare localmente due zone inattive:
 
 ```bash
-./edge/build/bin/edge --zones 2 --steps 4 --step-seconds 60
+./edge/build/bin/edge --zones 2
 ```
 
 ### Observer ed EventBus
@@ -164,6 +217,8 @@ dipendente da console, file o rete. Il runtime pubblica automaticamente:
 - `TelemetrySample`;
 - `StateChanged` e `EmergencyTriggered`;
 - `RecipePhaseChanged`;
+- `SimulationSpeedChanged`, `SimulationDurationChanged`,
+  `SimulationDurationCompleted` e `SchedulerLagStateChanged`;
 - `CommandExecuted` e `CommandFailed`.
 
 Il contratto include anche `FaultDetected`, `StrategyChanged` e
@@ -176,7 +231,8 @@ interrompere il controllo locale.
 
 ### Collegamento HTTP al backend
 
-L'Edge resta offline per default. Per attivare il collegamento:
+L'Edge usa `http://127.0.0.1:8000` come backend predefinito. Per scegliere un
+altro endpoint:
 
 ```bash
 ./edge/build/bin/edge \
@@ -187,13 +243,32 @@ L'Edge resta offline per default. Per attivare il collegamento:
 ```
 
 Il client esegue `POST` di telemetria, snapshot degli attuatori ed eventi,
-interroga la coda comandi con `GET` e invia l'esito di ogni comando. I
-progressivi sono idempotenti per `(zone_id, boot_id, sequence_number)`; gli
-eventi e i comandi hanno un identificativo idempotente proprio. I file
-dell'outbox vengono riletti al riavvio e rimossi soltanto dopo una risposta
-HTTP 2xx. Un comando `LoadRecipe` puo includere soltanto `recipe_id`: il worker
-scarica la versione validata con `GET /api/v1/recipes/{recipe_id}` prima
-dell'esecuzione.
+sincronizza le zone assegnate, interroga la coda comandi con `GET` e invia
+l'esito di ogni comando. Le assegnazioni apprese vengono salvate in
+`assigned-zones.json` nella directory dell'outbox: un riavvio con backend
+offline ripristina quindi le zone gia note. I progressivi sono idempotenti per
+`(zone_id, boot_id, sequence_number)`; gli eventi e i comandi hanno un
+identificativo idempotente proprio. I file dell'outbox vengono riletti al
+riavvio e rimossi soltanto dopo una risposta HTTP 2xx. I comandi `LoadRecipe` e
+`ActivateCultivation` possono includere soltanto `recipe_id`: il worker scarica
+la ricetta validata con
+`GET /api/v1/recipes/{recipe_id}` prima dell'esecuzione. Per l'attivazione il
+payload deve includere anche `cultivation_id`.
+
+Per creare dal backend un settore assegnato all'Edge:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/zones \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "r1-s1",
+    "name": "Reparto 1 - Settore 1",
+    "department_number": 1,
+    "sector_number": 1,
+    "plant_species": "Pomodoro",
+    "assigned_edge_id": "edge-serra-1"
+  }'
+```
 
 Per proteggere le API versionate, impostare lo stesso token nei processi
 backend ed Edge:
@@ -205,9 +280,8 @@ uvicorn backend.app.main:app
 
 L'Edge legge il token dalla variabile e invia
 `Authorization: Bearer <token>`. Se la variabile non e impostata,
-l'autenticazione resta disattivata. `--cycle-delay-ms` aggiunge una pausa reale
-fra i cicli ed e utile nelle demo accelerate per lasciare tempo al polling dei
-comandi.
+l'autenticazione resta disattivata. Il polling viene eseguito dal worker HTTP
+e rimane attivo indipendentemente dall'intervallo dei cicli agronomici.
 
 ### Comandi runtime
 
@@ -216,8 +290,10 @@ operativi. Ogni richiesta contiene un `command_id` e un payload tipizzato:
 
 - cambio della Strategy;
 - caricamento di una nuova versione della ricetta;
+- attivazione di una coltivazione in una zona inattiva;
+- pausa, ripresa e arresto di una coltivazione;
 - conferma o rifiuto di una configurazione;
-- fault injection e reset del fault sintetico;
+- simulazione tipizzata e reset delle anomalie di sensori e attuatori;
 - avanzamento forzato della fase;
 - arresto di emergenza e richiesta di reset da `EmergencyLockdown`.
 
@@ -227,12 +303,86 @@ Il primo esito, positivo o negativo, viene memorizzato. Un retry con lo stesso
 `RuntimeCommandResult` rifiutato, evitando di propagare eccezioni al futuro
 trasporto HTTP o MQTT.
 
+### Simulazione e gestione delle anomalie
+
+L'utente non sceglie direttamente la gravita o lo stato della FSM. Invia invece
+un comando `InjectFault` che descrive un componente e un comportamento fisico
+anomalo. L'Edge altera letture o uscite, rileva il sintomo osservabile, pubblica
+`FaultDetected` e decide autonomamente la reazione operativa.
+
+Esempio: offset di pH attivo per 30 minuti simulati:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/zones/zone-1/commands \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "command_id": "fault-ph-offset-1",
+    "command_type": "InjectFault",
+    "payload": {
+      "fault_id": "temporary-ph-offset",
+      "target_type": "sensor",
+      "target": "ph",
+      "mode": "sensor_offset",
+      "value": 0.4,
+      "duration_seconds": 1800
+    }
+  }'
+```
+
+Esempio: illuminazione bloccata accesa fino al reset esplicito:
+
+```json
+{
+  "command_id": "fault-lighting-1",
+  "command_type": "InjectFault",
+  "payload": {
+    "fault_id": "lighting-stuck-on",
+    "target_type": "actuator",
+    "target": "lighting",
+    "mode": "actuator_stuck_on"
+  }
+}
+```
+
+I target sensore sono `temperature`, `air_humidity`, `soil_moisture`, `ph` e
+`light`. I target attuatore sono `water_pump`, `lighting`,
+`nitrogen_valve`, `phosphorus_valve`, `potassium_valve`, `ph_up_valve` e
+`ph_down_valve`. Le modalita supportate sono:
+
+| Componente | Modalita | Uso di `value` |
+| --- | --- | --- |
+| Sensore | `sensor_dropout` | nessuno |
+| Sensore | `sensor_stuck` | valore congelato opzionale; senza valore usa la prima lettura |
+| Sensore | `sensor_offset` | offset additivo obbligatorio |
+| Attuatore | `actuator_stuck_off` | nessuno |
+| Attuatore | `actuator_stuck_on` | nessuno |
+| Attuatore | `actuator_slow_response` | fattore obbligatorio strettamente fra 0 e 1 |
+
+`duration_seconds` e opzionale ed e espresso in tempo simulato. Alla scadenza
+il fault viene rimosso automaticamente. In alternativa l'utente invia:
+
+```json
+{
+  "command_id": "fault-reset-1",
+  "command_type": "ResetFault",
+  "payload": {"fault_id": "lighting-stuck-on"}
+}
+```
+
+Un fault recuperabile porta a `Degraded`: la sola variabile non affidabile
+rimane senza comando, mentre gli altri controlli continuano a funzionare. Se
+persiste per il numero di cicli configurato, passa a `EmergencyLockdown`.
+Un attuatore rilevato attivo senza comando e invece critico e causa il lockdown
+immediato. Dopo un fault temporaneo la zona recupera automaticamente da
+`Degraded` dopo campioni sani; dopo un lockdown servono sia `ResetFault` sia
+`ResetEmergency`, seguiti dal periodo di verifica gia previsto dalla FSM.
+
 Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
 della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla
-prima fase e invalida le conferme. Il fault sintetico rimane attivo fino al
-relativo reset. Dopo un `EmergencyStop`, `ResetEmergency` abilita soltanto il
-recovery controllato: gli attuatori restano fermi finche la FSM non verifica
-campioni sani.
+prima fase e invalida le conferme. Un fault persistente rimane attivo fino al
+relativo reset, mentre un fault temporaneo scade sul tempo simulato. Dopo un
+`EmergencyStop`, `ResetEmergency` abilita soltanto il recovery controllato: gli
+attuatori restano fermi finche la FSM non verifica campioni sani.
 
 L'eseguibile principale collega un `ConsoleLogger` alla zona `zone-1`. Altri
 observer possono essere registrati con `EventBus::subscribe()` e rimossi con
@@ -564,34 +714,7 @@ I dropout dei sensori vengono salvati come celle CSV vuote e visualizzati come
 interruzioni delle curve. Il CSV dei sensori viene salvato in
 `experiment_results` relativa alla directory di avvio.
 
-## Avvio della demo completa
-
-Da macOS o Linux, il comando seguente prepara l'ambiente Python quando manca,
-compila l'Edge e avvia backend e dashboard:
-
-```bash
-./scripts/run_demo.sh
-```
-
-Aprire quindi:
-
-```text
-http://127.0.0.1:8000/dashboard/
-```
-
-Il flusso dimostrativo e:
-
-1. aprire **Ricetta** e partire dal modello del pomodoro;
-2. modificare fasi, target, Strategy o limiti e premere **Salva ricetta**;
-3. aprire **Simulazione Edge**, scegliere numero di cicli e durata del passo;
-4. premere **Esegui simulazione** e usare Avvia, Pausa, Passo e Reset;
-5. osservare sensori, modelli, decisioni e attuatori anche in **Panoramica**.
-
-Le ricette sono persistite in `backend/data/smarthydro.db`; bozze non salvate e
-riproduzione della simulazione restano invece nello stato temporaneo della
-pagina.
-
-## Preparazione manuale del backend Python
+## Preparazione del backend Python
 
 Creare e attivare un virtual environment:
 
@@ -644,32 +767,9 @@ python -m pytest backend/tests
 
 ## Dashboard
 
-La dashboard e servita dal backend allo stesso indirizzo delle API. Non va
-aperto direttamente `dashboard/index.html`, perche creazione delle ricette,
-stato del sistema e simulazione dipendono dagli endpoint FastAPI.
-
-Le API aggiunte per la dashboard sono:
-
-| Metodo | Percorso | Descrizione |
-| --- | --- | --- |
-| GET | `/system/status` | Stato di dashboard, backend, database ed Edge |
-| GET | `/recipes` | Elenco sintetico delle ricette del pomodoro |
-| GET | `/recipes/template` | Modello iniziale non ancora salvato |
-| POST | `/simulations` | Esecuzione Edge con ricetta, cicli e durata del passo |
-
-## Test della demo
-
-Con l'ambiente virtuale preparato:
-
-```bash
-.venv/bin/python -m pytest backend/tests -q
-cmake --build edge/build
-ctest --test-dir edge/build --output-on-failure
-```
-
-I test backend includono un percorso integrato che salva la ricetta, esporta
-il JSON, avvia il vero eseguibile Edge e verifica sensori, sei decisioni e
-attuatori nella risposta.
+Aprire direttamente il file `dashboard/index.html` con un browser. Non e
+necessario avviare un server web. Il pulsante **Check local status** aggiorna
+lo stato visualizzato a `Dashboard ready`.
 
 ## Ricetta JSON
 

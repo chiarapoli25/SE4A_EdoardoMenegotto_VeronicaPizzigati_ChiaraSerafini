@@ -95,6 +95,7 @@ void EdgeRuntime::reset_histories_if_needed() {
 
 SensorReadings EdgeRuntime::read_sensors() {
     const auto& state = environment_->state();
+    expire_injected_faults(state.simulation_time_seconds);
     SensorReadings readings;
     readings.timestamp_seconds = state.simulation_time_seconds;
     readings.temperature_c =
@@ -112,6 +113,7 @@ SensorReadings EdgeRuntime::read_sensors() {
     readings.light_ppfd_umol_m2_s =
         sensors_[sensor_channel_index(SensorChannel::LIGHT)]
             ->read(state);
+    apply_sensor_faults(readings);
     return readings;
 }
 
@@ -233,6 +235,8 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             control_system_.execute(variable, request);
     }
 
+    apply_degraded_isolation(result);
+
     bool command_executed = false;
     if (!update_operational_state(result)) {
         apply_safe_fallback(delta_time_seconds, result, false);
@@ -240,6 +244,7 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         try {
             apply_decisions(delta_time_seconds, result);
             command_executed = true;
+            apply_post_actuation_fault_state(result);
         } catch (const std::exception& error) {
             const std::string diagnostic =
                 "actuator command failed: " +
@@ -254,11 +259,11 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             apply_safe_fallback(delta_time_seconds, result, false);
         }
     }
-    if (operational_state_ == OperationalState::NOMINAL) {
+    if (command_executed) {
         update_dose_histories(delta_time_seconds, result);
     }
     result.actuator_command = actuators_->command();
-    result.actuator_output = actuators_->output();
+    result.actuator_output = effective_actuator_output_;
     result.environment_state = environment_->state();
     if (command_executed) {
         publish_command_executed(result);

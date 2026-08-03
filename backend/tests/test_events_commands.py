@@ -144,3 +144,48 @@ def test_command_round_trip_is_idempotent(client: TestClient) -> None:
     assert result.json()["status"] == "succeeded"
     assert replay.json() == result.json()
     assert client.get("/api/v1/zones/zone-1/commands").json() == []
+
+
+def test_can_enqueue_cultivation_activation(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": "activate-1",
+            "command_type": "ActivateCultivation",
+            "payload": {
+                "cultivation_id": "cultivation-1",
+                "recipe_id": "tomato_demo_v1",
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "pending"
+    assert response.json()["command_type"] == "ActivateCultivation"
+
+
+@pytest.mark.parametrize(
+    "command_type",
+    [
+        "PauseCultivation",
+        "ResumeCultivation",
+        "StopCultivation",
+        "SetSimulationSpeed",
+        "SetSimulationDuration",
+    ],
+)
+def test_can_enqueue_zone_lifecycle_commands(
+    client: TestClient,
+    command_type: str,
+) -> None:
+    response = client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": f"{command_type}-1",
+            "command_type": command_type,
+            "payload": {},
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["command_type"] == command_type

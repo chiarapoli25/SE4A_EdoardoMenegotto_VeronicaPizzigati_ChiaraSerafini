@@ -208,7 +208,44 @@ std::vector<PendingUpload> uploads_from_event(
                 };
             } else {
                 Json payload = Json::object();
-                if constexpr (std::is_same_v<Event, StateChanged>) {
+                if constexpr (
+                    std::is_same_v<Event, ZoneLifecycleChanged>) {
+                    payload = {
+                        {"previous_state", value.previous_state},
+                        {"current_state", value.current_state},
+                        {"reason", value.reason},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, SimulationSpeedChanged>) {
+                    payload = {
+                        {"previous_time_scale",
+                         value.previous_time_scale},
+                        {"current_time_scale",
+                         value.current_time_scale},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, SimulationDurationChanged>) {
+                    payload = {
+                        {"limited", value.limited},
+                        {"duration_seconds", value.duration_seconds},
+                        {"target_timestamp_seconds",
+                         value.target_timestamp_seconds},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, SimulationDurationCompleted>) {
+                    payload = {
+                        {"duration_seconds", value.duration_seconds},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, SchedulerLagStateChanged>) {
+                    payload = {
+                        {"lagging", value.lagging},
+                        {"pending_simulation_seconds",
+                         value.pending_simulation_seconds},
+                        {"pending_steps", value.pending_steps},
+                        {"time_scale", value.time_scale},
+                    };
+                } else if constexpr (std::is_same_v<Event, StateChanged>) {
                     payload = {
                         {"previous_state", to_string(value.previous_state)},
                         {"current_state", to_string(value.current_state)},
@@ -300,6 +337,39 @@ ControlDirection direction_from_string(const std::string& value) {
         return ControlDirection::DECREASES_PROCESS_VALUE;
     }
     throw std::invalid_argument("unknown control direction: " + value);
+}
+
+FaultTargetKind fault_target_kind_from_string(
+    const std::string& value) {
+    if (value == "sensor") {
+        return FaultTargetKind::SENSOR;
+    }
+    if (value == "actuator") {
+        return FaultTargetKind::ACTUATOR;
+    }
+    throw std::invalid_argument("unknown fault target kind: " + value);
+}
+
+FaultMode fault_mode_from_string(const std::string& value) {
+    if (value == "sensor_dropout") {
+        return FaultMode::SENSOR_DROPOUT;
+    }
+    if (value == "sensor_stuck") {
+        return FaultMode::SENSOR_STUCK;
+    }
+    if (value == "sensor_offset") {
+        return FaultMode::SENSOR_OFFSET;
+    }
+    if (value == "actuator_stuck_off") {
+        return FaultMode::ACTUATOR_STUCK_OFF;
+    }
+    if (value == "actuator_stuck_on") {
+        return FaultMode::ACTUATOR_STUCK_ON;
+    }
+    if (value == "actuator_slow_response") {
+        return FaultMode::ACTUATOR_SLOW_RESPONSE;
+    }
+    throw std::invalid_argument("unknown fault mode: " + value);
 }
 
 ControllerParameters controller_parameters_from_json(
@@ -474,6 +544,49 @@ RuntimeCommandEnvelope runtime_command_from_json(
                 LoadRecipeCommand{recipe_from_json(recipe_json.dump())},
             };
         }
+        if (command_type == "ActivateCultivation") {
+            const auto& recipe_json =
+                payload.contains("recipe") ? payload.at("recipe") : payload;
+            return {
+                command_id,
+                ActivateCultivationCommand{
+                    payload.at("cultivation_id").get<std::string>(),
+                    recipe_from_json(recipe_json.dump()),
+                },
+            };
+        }
+        if (command_type == "PauseCultivation") {
+            return {command_id, PauseCultivationCommand{}};
+        }
+        if (command_type == "ResumeCultivation") {
+            return {command_id, ResumeCultivationCommand{}};
+        }
+        if (command_type == "StopCultivation") {
+            return {command_id, StopCultivationCommand{}};
+        }
+        if (command_type == "SetSimulationSpeed") {
+            return {
+                command_id,
+                SetSimulationSpeedCommand{
+                    payload.at("time_scale").get<double>(),
+                },
+            };
+        }
+        if (command_type == "SetSimulationDuration") {
+            const auto& duration_value =
+                payload.at("duration_seconds");
+            std::optional<double> duration_seconds;
+            if (!duration_value.is_null()) {
+                duration_seconds =
+                    duration_value.get<double>();
+            }
+            return {
+                command_id,
+                SetSimulationDurationCommand{
+                    duration_seconds,
+                },
+            };
+        }
         if (command_type == "ConfirmConfiguration") {
             return {
                 command_id,
@@ -493,18 +606,31 @@ RuntimeCommandEnvelope runtime_command_from_json(
             };
         }
         if (command_type == "InjectFault") {
-            const auto severity_text =
-                payload.at("severity").get<std::string>();
-            const auto severity =
-                severity_text == "Critical"
-                    ? ControlFaultSeverity::CRITICAL
-                    : ControlFaultSeverity::RECOVERABLE;
+            std::optional<double> value;
+            if (payload.contains("value") &&
+                !payload.at("value").is_null()) {
+                value = payload.at("value").get<double>();
+            }
+            std::optional<double> duration_seconds;
+            if (payload.contains("duration_seconds") &&
+                !payload.at("duration_seconds").is_null()) {
+                duration_seconds =
+                    payload.at("duration_seconds").get<double>();
+            }
             return {
                 command_id,
                 InjectFaultCommand{
-                    payload.at("fault_id").get<std::string>(),
-                    severity,
-                    payload.at("diagnostic").get<std::string>(),
+                    FaultSpecification{
+                        payload.at("fault_id").get<std::string>(),
+                        fault_target_kind_from_string(
+                            payload.at("target_type")
+                                .get<std::string>()),
+                        payload.at("target").get<std::string>(),
+                        fault_mode_from_string(
+                            payload.at("mode").get<std::string>()),
+                        value,
+                        duration_seconds,
+                    },
                 },
             };
         }
@@ -559,15 +685,23 @@ public:
                         config_.connect_timeout,
                         config_.request_timeout,
                         config_.bearer_token)) {
-        if (zone_ids_.empty() || config_.edge_id.empty()) {
+        if (config_.edge_id.empty()) {
             throw std::invalid_argument(
-                "HTTP backend client requires edge and zone identifiers");
+                "HTTP backend client requires an edge identifier");
+        }
+        for (const auto& zone_id : zone_ids_) {
+            if (zone_id.empty()) {
+                throw std::invalid_argument(
+                    "HTTP backend client requires non-empty zone identifiers");
+            }
+            known_zone_ids_.insert(zone_id);
         }
         if (config_.boot_id.empty()) {
             config_.boot_id = generated_identifier();
         }
         std::filesystem::create_directories(config_.outbox_directory);
         load_outbox();
+        load_zone_assignments();
     }
 
     ~Impl() {
@@ -625,6 +759,17 @@ public:
         return result;
     }
 
+    std::vector<std::string> take_discovered_zone_ids() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result;
+        result.reserve(discovered_zone_ids_.size());
+        while (!discovered_zone_ids_.empty()) {
+            result.push_back(std::move(discovered_zone_ids_.front()));
+            discovered_zone_ids_.pop_front();
+        }
+        return result;
+    }
+
     void submit_result(
         const std::string& zone_id,
         const RuntimeCommandResult& result) {
@@ -656,6 +801,54 @@ public:
     }
 
 private:
+    std::filesystem::path zone_assignments_path() const {
+        return config_.outbox_directory / "assigned-zones.json";
+    }
+
+    void load_zone_assignments() {
+        const auto path = zone_assignments_path();
+        if (!std::filesystem::exists(path)) {
+            return;
+        }
+        std::ifstream input(path);
+        if (!input) {
+            throw std::runtime_error(
+                "cannot read cached backend zone assignments");
+        }
+        const auto identifiers = Json::parse(input);
+        if (!identifiers.is_array()) {
+            throw std::runtime_error(
+                "cached backend zone assignments must be an array");
+        }
+        for (const auto& value : identifiers) {
+            const auto zone_id = value.get<std::string>();
+            if (zone_id.empty()) {
+                throw std::runtime_error(
+                    "cached backend zone assignment is empty");
+            }
+            if (known_zone_ids_.insert(zone_id).second) {
+                zone_ids_.push_back(zone_id);
+                discovered_zone_ids_.push_back(zone_id);
+            }
+        }
+    }
+
+    void persist_zone_assignments() const {
+        const auto final_path = zone_assignments_path();
+        const auto temporary_path =
+            final_path.string() + ".tmp";
+        std::ofstream output(
+            temporary_path,
+            std::ios::out | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error(
+                "cannot persist backend zone assignments");
+        }
+        output << Json(zone_ids_).dump(2) << '\n';
+        output.close();
+        std::filesystem::rename(temporary_path, final_path);
+    }
+
     std::filesystem::path outbox_path(
         const PendingUpload& upload) const {
         return config_.outbox_directory /
@@ -694,6 +887,7 @@ private:
              std::filesystem::directory_iterator(
                  config_.outbox_directory)) {
             if (!entry.is_regular_file() ||
+                entry.path() == zone_assignments_path() ||
                 entry.path().extension() != ".json") {
                 continue;
             }
@@ -776,8 +970,12 @@ private:
                 }
                 try {
                     auto prepared_command = command;
+                    const auto prepared_type =
+                        prepared_command.at("command_type")
+                            .get<std::string>();
                     if (
-                        prepared_command.at("command_type") == "LoadRecipe" &&
+                        (prepared_type == "LoadRecipe" ||
+                         prepared_type == "ActivateCultivation") &&
                         prepared_command.at("payload").contains("recipe_id") &&
                         !prepared_command.at("payload").contains("recipe")) {
                         const auto recipe_id =
@@ -839,6 +1037,53 @@ private:
                 }
             }
         }
+    }
+
+    void poll_zone_assignments() {
+        const std::string path =
+            "/api/v1/edges/" + config_.edge_id + "/zones";
+        const auto response = transport_->get(path);
+        if (!response.successful()) {
+            PendingUpload diagnostic{
+                "zone-discovery",
+                path,
+                {},
+            };
+            report_unavailable(
+                diagnostic,
+                response.body.empty()
+                    ? "zone assignment discovery failed"
+                    : response.body);
+            return;
+        }
+
+        const auto assignments = Json::parse(response.body);
+        if (!assignments.is_array()) {
+            throw std::invalid_argument(
+                "backend zone assignment response must be an array");
+        }
+        bool changed = false;
+        for (const auto& assignment : assignments) {
+            const auto zone_id =
+                assignment.at("id").get<std::string>();
+            if (zone_id.empty()) {
+                throw std::invalid_argument(
+                    "backend returned an empty zone identifier");
+            }
+            if (!known_zone_ids_.insert(zone_id).second) {
+                continue;
+            }
+            zone_ids_.push_back(zone_id);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                discovered_zone_ids_.push_back(zone_id);
+            }
+            changed = true;
+        }
+        if (changed) {
+            persist_zone_assignments();
+        }
+        outage_reported_ = false;
     }
 
     void persist_remaining() noexcept {
@@ -930,6 +1175,16 @@ private:
             const auto now = std::chrono::steady_clock::now();
             if (now >= next_poll) {
                 try {
+                    poll_zone_assignments();
+                } catch (const std::exception& error) {
+                    PendingUpload diagnostic{
+                        "zone-discovery",
+                        "/api/v1/edges/" + config_.edge_id + "/zones",
+                        {},
+                    };
+                    report_unavailable(diagnostic, error.what());
+                }
+                try {
                     poll_commands();
                 } catch (const std::exception& error) {
                     PendingUpload diagnostic{
@@ -947,6 +1202,7 @@ private:
 
     EventBus& event_bus_;
     std::vector<std::string> zone_ids_;
+    std::set<std::string> known_zone_ids_;
     HttpBackendConfig config_;
     std::shared_ptr<IHttpTransport> transport_;
     mutable std::mutex mutex_;
@@ -954,6 +1210,7 @@ private:
     std::deque<PendingUpload> uploads_;
     std::size_t in_flight_uploads_ = 0;
     std::deque<RemoteRuntimeCommand> commands_;
+    std::deque<std::string> discovered_zone_ids_;
     std::set<std::string> known_command_ids_;
     std::thread worker_;
     bool running_ = false;
@@ -989,6 +1246,11 @@ void HttpBackendClient::on_event(const EdgeDomainEvent& event) {
 std::vector<RemoteRuntimeCommand>
 HttpBackendClient::take_commands() {
     return impl_->take_commands();
+}
+
+std::vector<std::string>
+HttpBackendClient::take_discovered_zone_ids() {
+    return impl_->take_discovered_zone_ids();
 }
 
 void HttpBackendClient::submit_command_result(

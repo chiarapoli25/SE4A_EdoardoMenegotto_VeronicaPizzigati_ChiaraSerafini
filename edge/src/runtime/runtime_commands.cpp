@@ -43,6 +43,24 @@ const char* runtime_command_type(const RuntimeCommand& command) noexcept {
             } else if constexpr (std::is_same_v<Command, LoadRecipeCommand>) {
                 return "LoadRecipe";
             } else if constexpr (
+                std::is_same_v<Command, ActivateCultivationCommand>) {
+                return "ActivateCultivation";
+            } else if constexpr (
+                std::is_same_v<Command, PauseCultivationCommand>) {
+                return "PauseCultivation";
+            } else if constexpr (
+                std::is_same_v<Command, ResumeCultivationCommand>) {
+                return "ResumeCultivation";
+            } else if constexpr (
+                std::is_same_v<Command, StopCultivationCommand>) {
+                return "StopCultivation";
+            } else if constexpr (
+                std::is_same_v<Command, SetSimulationSpeedCommand>) {
+                return "SetSimulationSpeed";
+            } else if constexpr (
+                std::is_same_v<Command, SetSimulationDurationCommand>) {
+                return "SetSimulationDuration";
+            } else if constexpr (
                 std::is_same_v<Command, ConfirmConfigurationCommand>) {
                 return "ConfirmConfiguration";
             } else if constexpr (
@@ -120,6 +138,21 @@ RuntimeCommandResult RuntimeCommandProcessor::execute_once(
                     runtime_.replace_recipe(command.recipe);
                     return succeeded(envelope, "recipe loaded");
                 } else if constexpr (
+                    std::is_same_v<Command, ActivateCultivationCommand>) {
+                    return rejected(
+                        envelope,
+                        "ActivateCultivation must be handled by the zone controller");
+                } else if constexpr (
+                    std::is_same_v<Command, PauseCultivationCommand> ||
+                    std::is_same_v<Command, ResumeCultivationCommand> ||
+                    std::is_same_v<Command, StopCultivationCommand> ||
+                    std::is_same_v<Command, SetSimulationSpeedCommand> ||
+                    std::is_same_v<Command, SetSimulationDurationCommand>) {
+                    return rejected(
+                        envelope,
+                        std::string(runtime_command_type(envelope.command)) +
+                            " must be handled by the zone controller");
+                } else if constexpr (
                     std::is_same_v<Command, ConfirmConfigurationCommand>) {
                     const auto confirmation =
                         runtime_.confirm_configuration(command.variable);
@@ -133,10 +166,7 @@ RuntimeCommandResult RuntimeCommandProcessor::execute_once(
                     return succeeded(envelope, "configuration rejected");
                 } else if constexpr (
                     std::is_same_v<Command, InjectFaultCommand>) {
-                    runtime_.inject_fault(
-                        command.fault_id,
-                        command.severity,
-                        command.diagnostic);
+                    runtime_.inject_fault(command.specification);
                     return succeeded(envelope, "fault injected");
                 } else if constexpr (
                     std::is_same_v<Command, ResetFaultCommand>) {

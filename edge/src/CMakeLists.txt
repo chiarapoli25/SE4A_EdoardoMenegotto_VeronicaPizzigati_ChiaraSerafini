@@ -174,6 +174,7 @@ set_target_properties(http_backend_client PROPERTIES CXX_EXTENSIONS OFF)
 add_library(
     greenhouse_manager
     runtime/greenhouse_manager.cpp
+    runtime/simulation_scheduler.cpp
 )
 target_include_directories(greenhouse_manager
     PUBLIC ${PROJECT_SOURCE_DIR}/include
@@ -200,11 +201,25 @@ target_link_libraries(edge
         recipe_json
         nlohmann_json::nlohmann_json
 )
-target_compile_definitions(edge
+set_target_properties(edge PROPERTIES CXX_EXTENSIONS OFF)
+
+# Simulatore batch separato usato dalla dashboard per produrre un numero
+# finito di cicli in formato JSON. L'eseguibile principale `edge` resta il
+# servizio continuo e non carica ricette locali.
+add_executable(edge_simulator simulation_main.cpp)
+target_compile_features(edge_simulator PRIVATE cxx_std_17)
+target_link_libraries(edge_simulator
+    PRIVATE
+        greenhouse_manager
+        http_backend_client
+        recipe_json
+        nlohmann_json::nlohmann_json
+)
+target_compile_definitions(edge_simulator
     PRIVATE
         SMARTHYDRO_DEFAULT_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
 )
-set_target_properties(edge PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties(edge_simulator PROPERTIES CXX_EXTENSIONS OFF)
 
 # Se si vuole cambiare solo il nome del file, lasciando invariato il target:
 # set_target_properties(edge PROPERTIES OUTPUT_NAME "nuovo_nome")

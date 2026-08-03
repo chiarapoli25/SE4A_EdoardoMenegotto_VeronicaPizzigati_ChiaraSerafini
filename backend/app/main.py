@@ -50,7 +50,10 @@ from .features.recipes.routes import (
 )
 from .features.system.routes import router as system_router
 from .features.telemetry.routes import router as telemetry_router
-from .features.zones.routes import router as zone_router
+from .features.zones.routes import (
+    edge_router,
+    router as zone_router,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DASHBOARD_DIRECTORY = PROJECT_ROOT / "dashboard"
@@ -74,6 +77,7 @@ app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 
 app.include_router(system_router)
 app.include_router(zone_router)
+app.include_router(edge_router)
 app.include_router(telemetry_router)
 app.include_router(actuator_router)
 app.include_router(event_router)
@@ -83,6 +87,7 @@ app.include_router(command_router)
 # restano disponibili per la dashboard e per i test precedenti.
 for versioned_router in (
     zone_router,
+    edge_router,
     telemetry_router,
     actuator_router,
     recipe_router,

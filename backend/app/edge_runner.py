@@ -10,7 +10,9 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_EDGE_EXECUTABLE = PROJECT_ROOT / "edge" / "build" / "bin" / "edge"
+DEFAULT_EDGE_EXECUTABLE = (
+    PROJECT_ROOT / "edge" / "build" / "bin" / "edge_simulator"
+)
 EDGE_TIMEOUT_SECONDS = 20
 
 
@@ -31,8 +33,10 @@ class EdgeOutputInvalid(RuntimeError):
 
 
 def configured_edge_executable() -> Path:
-    """Legge il percorso Edge dall'ambiente, con fallback locale."""
-    configured = os.environ.get("SMARTHYDRO_EDGE_EXECUTABLE")
+    """Legge il percorso del simulatore batch, con fallback locale."""
+    configured = os.environ.get(
+        "SMARTHYDRO_EDGE_SIMULATOR_EXECUTABLE"
+    ) or os.environ.get("SMARTHYDRO_EDGE_EXECUTABLE")
     return Path(configured).expanduser() if configured else DEFAULT_EDGE_EXECUTABLE
 
 

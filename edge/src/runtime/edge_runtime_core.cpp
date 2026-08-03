@@ -70,6 +70,34 @@ const char* to_string(OperationalState state) noexcept {
     return "Unknown";
 }
 
+const char* to_string(FaultTargetKind kind) noexcept {
+    switch (kind) {
+        case FaultTargetKind::SENSOR:
+            return "sensor";
+        case FaultTargetKind::ACTUATOR:
+            return "actuator";
+    }
+    return "unknown";
+}
+
+const char* to_string(FaultMode mode) noexcept {
+    switch (mode) {
+        case FaultMode::SENSOR_DROPOUT:
+            return "sensor_dropout";
+        case FaultMode::SENSOR_STUCK:
+            return "sensor_stuck";
+        case FaultMode::SENSOR_OFFSET:
+            return "sensor_offset";
+        case FaultMode::ACTUATOR_STUCK_OFF:
+            return "actuator_stuck_off";
+        case FaultMode::ACTUATOR_STUCK_ON:
+            return "actuator_stuck_on";
+        case FaultMode::ACTUATOR_SLOW_RESPONSE:
+            return "actuator_slow_response";
+    }
+    return "unknown";
+}
+
 const char* to_string(EdgeEventType type) noexcept {
     switch (type) {
         case EdgeEventType::RUNTIME_STARTED:
@@ -172,7 +200,7 @@ const EnvironmentState& EdgeRuntime::environment_state() const noexcept {
 }
 
 const ActuatorOutput& EdgeRuntime::actuator_output() const noexcept {
-    return actuators_->output();
+    return effective_actuator_output_;
 }
 
 OperationalState EdgeRuntime::operational_state() const noexcept {

@@ -173,44 +173,48 @@ target_compile_definitions(greenhouse_manager_tests
 set_target_properties(greenhouse_manager_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(greenhouse_manager_tests)
 
-# Il main deve caricare la ricetta e completare almeno un ciclo senza servizi
-# esterni o interazione utente.
+# Test deterministici del clock, time scale e catch-up multi-zona.
+add_executable(
+    simulation_scheduler_tests
+    simulation_scheduler_tests.cpp
+)
+target_link_libraries(simulation_scheduler_tests
+    PRIVATE
+        greenhouse_manager
+        recipe_json
+        GTest::gtest_main
+)
+target_compile_features(simulation_scheduler_tests PRIVATE cxx_std_17)
+target_compile_definitions(simulation_scheduler_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(
+    simulation_scheduler_tests
+    PROPERTIES CXX_EXTENSIONS OFF
+)
+gtest_discover_tests(simulation_scheduler_tests)
+
+# Il main non richiede piu una ricetta locale e documenta l'avvio come servizio
+# continuo in attesa di ActivateCultivation.
 add_test(
-    NAME edge_main_recipe_smoke
-    COMMAND $<TARGET_FILE:edge>
-        --recipe "${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
-        --steps 1
-        --step-seconds 900
+    NAME edge_main_service_help
+    COMMAND $<TARGET_FILE:edge> --help
 )
 set_tests_properties(
-    edge_main_recipe_smoke
+    edge_main_service_help
     PROPERTIES
-        PASS_REGULAR_EXPRESSION "Status: recipe runtime ready"
+        PASS_REGULAR_EXPRESSION "without a local recipe"
 )
 
-# Il formato machine-readable deve contenere due cicli completi senza mescolare
-# il banner testuale usato dall'interfaccia a riga di comando.
+# La simulazione finita richiesta dalla dashboard usa un entry point separato,
+# senza reintrodurre la vecchia modalita batch nel servizio Edge principale.
 add_test(
-    NAME edge_main_json_smoke
+    NAME edge_simulator_json_smoke
     COMMAND ${CMAKE_COMMAND}
-        -DEDGE_EXECUTABLE=$<TARGET_FILE:edge>
+        -DEDGE_EXECUTABLE=$<TARGET_FILE:edge_simulator>
         -DRECIPE_PATH=${PROJECT_SOURCE_DIR}/../config/example_recipe.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/edge_json_smoke.cmake
-)
-
-# Verifica che l'eseguibile componga e avanzi almeno due zone indipendenti.
-add_test(
-    NAME edge_main_multizone_smoke
-    COMMAND $<TARGET_FILE:edge>
-        --recipe "${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
-        --zones 2
-        --steps 1
-        --step-seconds 60
-)
-set_tests_properties(
-    edge_main_multizone_smoke
-    PROPERTIES
-        PASS_REGULAR_EXPRESSION "Zones: 2"
 )
 
 # Smoke test dei programmi dimostrativi. Sensori e ricette creano un solo CSV

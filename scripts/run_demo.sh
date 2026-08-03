@@ -19,7 +19,7 @@ fi
 
 echo "Compilazione dell'Edge Controller..."
 cmake -S edge -B edge/build
-cmake --build edge/build --target edge --parallel
+cmake --build edge/build --target edge edge_simulator --parallel
 
 echo
 echo "SmartHydro è disponibile su http://127.0.0.1:8000/dashboard/"
