@@ -254,6 +254,52 @@ curl -X POST http://127.0.0.1:8000/api/v1/zones \
   }'
 ```
 
+La serra comprende quattro reparti produttivi e un quinto reparto nel quale
+vengono spostate le piante in quarantena. I reparti da 1 a 4 dichiarano una
+sola `plant_species`; il reparto 5 usa `plant_species: null`, perche puo
+accogliere contemporaneamente esemplari di specie diverse:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/zones \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "quarantena-1",
+    "name": "Quarantena - Settore 1",
+    "department_number": 5,
+    "sector_number": 1,
+    "plant_species": null
+  }'
+```
+
+La quarantena e una proprieta della singola pianta, non del settore. Ogni
+esemplare conserva specie, settore di origine, settore corrente e il flag
+`is_quarantined`. Prima si registra la pianta nel reparto produttivo:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/plants \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "pomodoro-001",
+    "species": "Pomodoro",
+    "home_zone_id": "r1-s1"
+  }'
+```
+
+Impostando il flag, il backend sposta la pianta nel reparto 5 e registra il
+movimento. Impostandolo nuovamente a `false`, la pianta torna nel settore di
+origine:
+
+```bash
+curl -X PATCH \
+  http://127.0.0.1:8000/api/v1/plants/pomodoro-001/quarantine \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "is_quarantined": true,
+    "quarantine_zone_id": "quarantena-1",
+    "reason": "foglie con sintomi sospetti"
+  }'
+```
+
 Per proteggere le API versionate, impostare lo stesso token nei processi
 backend ed Edge:
 
@@ -739,6 +785,7 @@ Le API Edge sono disponibili anche con prefisso `/api/v1`. Comprendono:
 - telemetria e snapshot degli attuatori per zona;
 - eventi Edge;
 - elenco e distribuzione delle ricette;
+- anagrafica delle piante, flag di quarantena e storico degli spostamenti;
 - accodamento, polling e conferma dei comandi runtime.
 
 Gli endpoint senza prefisso rimangono disponibili per compatibilita.

@@ -148,6 +148,69 @@ def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
+    """Estende i reparti a 1-5 e rende mista la composizione del quinto."""
+    columns = _table_columns(connection, "zones")
+    if not columns:
+        return
+    schema_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'zones'"
+    ).fetchone()
+    schema = "" if schema_row is None else (schema_row[0] or "")
+    if (
+        "zone_type" not in columns
+        and "BETWEEN 1 AND 5" in schema.upper()
+    ):
+        return
+
+    connection.execute("DROP TABLE IF EXISTS zones_department_migration")
+    connection.execute(
+        """
+        CREATE TABLE zones_department_migration (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            department_number INTEGER NOT NULL
+                CHECK (department_number BETWEEN 1 AND 5),
+            sector_number INTEGER NOT NULL
+                CHECK (sector_number BETWEEN 1 AND 2),
+            plant_species TEXT,
+            assigned_edge_id TEXT,
+            status TEXT NOT NULL CHECK (status IN ('online', 'offline')),
+            active_recipe_id TEXT,
+            last_edge_contact TEXT,
+            current_phase TEXT,
+            CHECK (
+                (department_number BETWEEN 1 AND 4
+                 AND plant_species IS NOT NULL)
+                OR
+                (department_number = 5
+                 AND plant_species IS NULL)
+            ),
+            UNIQUE (department_number, sector_number)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO zones_department_migration (
+            id, name, department_number, sector_number, plant_species,
+            assigned_edge_id, status, active_recipe_id,
+            last_edge_contact, current_phase
+        )
+        SELECT id, name, department_number, sector_number,
+               CASE WHEN department_number = 5
+                    THEN NULL ELSE plant_species END,
+               assigned_edge_id, status, active_recipe_id,
+               last_edge_contact, current_phase
+        FROM zones
+        """
+    )
+    connection.execute("DROP TABLE zones")
+    connection.execute(
+        "ALTER TABLE zones_department_migration RENAME TO zones"
+    )
+
+
 def init_db(connection: sqlite3.Connection) -> None:
     """@brief Crea lo schema applicativo se non esiste.
 
@@ -171,20 +234,84 @@ def init_db(connection: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             department_number INTEGER NOT NULL
-                CHECK (department_number BETWEEN 1 AND 4),
+                CHECK (department_number BETWEEN 1 AND 5),
             sector_number INTEGER NOT NULL
                 CHECK (sector_number BETWEEN 1 AND 2),
-            plant_species TEXT NOT NULL,
+            plant_species TEXT,
             assigned_edge_id TEXT,
             status TEXT NOT NULL CHECK (status IN ('online', 'offline')),
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            CHECK (
+                (department_number BETWEEN 1 AND 4
+                 AND plant_species IS NOT NULL)
+                OR
+                (department_number = 5
+                 AND plant_species IS NULL)
+            ),
             UNIQUE (department_number, sector_number)
         )
         """
     )
     _migrate_zone_assignment_column(connection)
+    _migrate_fifth_department_schema(connection)
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plants (
+            id TEXT PRIMARY KEY,
+            species TEXT NOT NULL,
+            home_zone_id TEXT NOT NULL,
+            current_zone_id TEXT NOT NULL,
+            is_quarantined INTEGER NOT NULL DEFAULT 0
+                CHECK (is_quarantined IN (0, 1)),
+            quarantine_reason TEXT,
+            quarantined_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (home_zone_id) REFERENCES zones(id),
+            FOREIGN KEY (current_zone_id) REFERENCES zones(id),
+            CHECK (
+                (is_quarantined = 0
+                 AND quarantine_reason IS NULL
+                 AND quarantined_at IS NULL)
+                OR
+                (is_quarantined = 1
+                 AND quarantine_reason IS NOT NULL
+                 AND quarantined_at IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plants_current_zone_quarantine
+        ON plants (current_zone_id, is_quarantined, id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plant_movements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plant_id TEXT NOT NULL,
+            from_zone_id TEXT NOT NULL,
+            to_zone_id TEXT NOT NULL,
+            is_quarantined INTEGER NOT NULL
+                CHECK (is_quarantined IN (0, 1)),
+            reason TEXT,
+            moved_at TEXT NOT NULL,
+            FOREIGN KEY (plant_id) REFERENCES plants(id),
+            FOREIGN KEY (from_zone_id) REFERENCES zones(id),
+            FOREIGN KEY (to_zone_id) REFERENCES zones(id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plant_movements_plant_moved_at
+        ON plant_movements (plant_id, moved_at DESC)
+        """
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS telemetry_samples (

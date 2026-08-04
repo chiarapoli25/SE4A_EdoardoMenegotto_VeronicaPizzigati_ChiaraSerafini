@@ -116,4 +116,47 @@ def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
         legacy.close()
 
     assert "assigned_edge_id" in columns
+    assert "zone_type" not in columns
     assert assignment == (None,)
+
+
+def test_init_db_migrates_schema_to_accept_quarantine() -> None:
+    legacy = sqlite3.connect(":memory:")
+    legacy.execute(
+        """
+        CREATE TABLE zones (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            department_number INTEGER NOT NULL
+                CHECK (department_number BETWEEN 1 AND 4),
+            sector_number INTEGER NOT NULL,
+            plant_species TEXT NOT NULL,
+            assigned_edge_id TEXT,
+            status TEXT NOT NULL,
+            active_recipe_id TEXT,
+            last_edge_contact TEXT,
+            current_phase TEXT,
+            UNIQUE (department_number, sector_number)
+        )
+        """
+    )
+
+    try:
+        init_db(legacy)
+        legacy.execute(
+            """
+            INSERT INTO zones (
+                id, name, department_number, sector_number,
+                plant_species, status
+            )
+            VALUES ('quarantine-1', 'Quarantena', 5, 1, NULL, 'offline')
+            """
+        )
+        stored = legacy.execute(
+            "SELECT department_number, plant_species FROM zones WHERE id = ?",
+            ("quarantine-1",),
+        ).fetchone()
+    finally:
+        legacy.close()
+
+    assert stored == (5, None)

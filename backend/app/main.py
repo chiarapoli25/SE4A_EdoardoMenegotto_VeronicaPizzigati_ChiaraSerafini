@@ -14,6 +14,7 @@ from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
 from .features.commands.routes import router as command_router
 from .features.events.routes import router as event_router
+from .features.plants.routes import router as plant_router
 from .features.recipes.routes import (
     get_export_directory,
     router as recipe_router,
@@ -48,6 +49,7 @@ app.include_router(actuator_router)
 app.include_router(recipe_router)
 app.include_router(event_router)
 app.include_router(command_router)
+app.include_router(plant_router)
 
 # Contratto versionato usato dai nuovi client Edge. Gli endpoint storici
 # restano disponibili per la dashboard e per i test precedenti.
@@ -59,6 +61,7 @@ for versioned_router in (
     recipe_router,
     event_router,
     command_router,
+    plant_router,
 ):
     app.include_router(
         versioned_router,

@@ -27,7 +27,7 @@ def zone_payload(
     zone_id: str = "r1-s1",
     department_number: int = 1,
     sector_number: int = 1,
-    plant_species: str = "Pomodoro",
+    plant_species: str | None = "Pomodoro",
 ) -> dict:
     return {
         "id": zone_id,
@@ -102,8 +102,42 @@ def test_each_department_accepts_at_most_two_sector_numbers(
     assert invalid_sector.status_code == 422
 
 
-def test_greenhouse_accepts_only_four_departments(client: TestClient) -> None:
-    response = client.post("/zones", json=zone_payload("r5-s1", 5, 1))
+def test_fifth_department_is_reserved_for_quarantine(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/zones",
+        json=zone_payload(
+            "quarantine-1",
+            5,
+            1,
+            plant_species=None,
+        ),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["department_number"] == 5
+    assert response.json()["plant_species"] is None
+
+
+def test_quarantine_cannot_declare_one_plant_species(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/zones",
+        json=zone_payload(
+            "quarantine-1",
+            5,
+            1,
+            plant_species="Pomodoro",
+        ),
+    )
+
+    assert response.status_code == 422
+
+
+def test_sixth_department_is_rejected(client: TestClient) -> None:
+    response = client.post("/zones", json=zone_payload("r6-s1", 6, 1))
 
     assert response.status_code == 422
 

@@ -173,6 +173,10 @@
  * | POST | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.enqueue_command() | Accodamento di un comando runtime |
  * | GET | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.read_pending_commands() | Polling dei comandi pendenti |
  * | POST | `/zones/{zone_id}/commands/{command_id}/result` | backend.app.features.commands.routes.report_command_result() | Esito idempotente del comando |
+ * | POST | `/plants` | backend.app.features.plants.routes.register_plant() | Registrazione di una singola pianta nel settore di origine |
+ * | GET | `/plants` | backend.app.features.plants.routes.read_plants() | Elenco filtrabile per posizione e flag di quarantena |
+ * | PATCH | `/plants/{plant_id}/quarantine` | backend.app.features.plants.routes.update_plant_quarantine() | Attivazione o rimozione del flag di quarantena e spostamento della pianta |
+ * | GET | `/plants/{plant_id}/movements` | backend.app.features.plants.routes.read_plant_movements() | Storico degli spostamenti della pianta |
  *
  * Gli endpoint applicativi sono esposti anche sotto `/api/v1`, contratto usato
  * dall'Edge. Se `SMARTHYDRO_API_TOKEN` e configurata, questa superficie richiede
@@ -262,6 +266,7 @@
  * - backend/app/core/database.py: connessioni, dipendenza FastAPI e schema;
  * - backend/app/features/system/: identificazione e health check;
  * - backend/app/features/zones/: reparti, settori e specie vegetali;
+ * - backend/app/features/plants/: anagrafica, flag di quarantena e spostamenti delle singole piante;
  * - backend/app/features/telemetry/: acquisizione e storico dei sensori;
  * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
  * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;

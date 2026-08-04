@@ -13,6 +13,12 @@ from ..features.actuators.models import (
     FertilizerQuantities,
     FertilizerValveStates,
 )
+from ..features.plants.models import (
+    Plant,
+    PlantCreate,
+    PlantMovement,
+    PlantQuarantineUpdate,
+)
 from ..features.recipes.models import (
     ActuatorType,
     ConfirmationState,
@@ -56,6 +62,10 @@ __all__ = [
     "GreenhouseTelemetry",
     "OutputSafetyLimits",
     "PhaseVariableTarget",
+    "Plant",
+    "PlantCreate",
+    "PlantMovement",
+    "PlantQuarantineUpdate",
     "Photoperiod",
     "PidConfig",
     "PredictiveConfig",
