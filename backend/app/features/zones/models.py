@@ -4,7 +4,7 @@
 
 from enum import Enum
 
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 class ZoneStatus(str, Enum):
@@ -14,6 +14,17 @@ class ZoneStatus(str, Enum):
     OFFLINE = "offline"
     ## @brief Il settore comunica regolarmente con il backend.
     ONLINE = "online"
+
+
+class ZoneAdministrativeStatus(str, Enum):
+    """@brief Disponibilita amministrativa di un settore."""
+
+    ## @brief Settore disponibile per il normale utilizzo.
+    ACTIVE = "active"
+    ## @brief Settore disabilitato dall'amministratore.
+    INACTIVE = "inactive"
+    ## @brief Settore temporaneamente riservato alla manutenzione.
+    MAINTENANCE = "maintenance"
 
 
 class ZoneCreate(BaseModel):
@@ -51,6 +62,10 @@ class ZoneCreate(BaseModel):
     active_recipe_id: str | None = Field(default=None, max_length=64)
     ## @brief Nome della fase di coltivazione corrente, se presente.
     current_phase: str | None = Field(default=None, max_length=100)
+    ## @brief Disponibilita configurata dall'amministratore.
+    administrative_status: ZoneAdministrativeStatus = (
+        ZoneAdministrativeStatus.ACTIVE
+    )
 
     @model_validator(mode="after")
     def _validate_department_role(self) -> "ZoneCreate":
@@ -75,3 +90,37 @@ class Zone(ZoneCreate):
     status: ZoneStatus = ZoneStatus.OFFLINE
     ## @brief Timestamp UTC dell'ultimo contatto Edge, oppure `None`.
     last_edge_contact: AwareDatetime | None = None
+
+
+class ZoneUpdate(BaseModel):
+    """@brief Modifiche parziali ammesse per un settore esistente.
+
+    @details Posizione fisica e identificativo non sono modificabili. I campi
+    nullable distinguono il valore JSON `null` da un campo omesso tramite
+    `model_fields_set`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    plant_species: str | None = Field(default=None, min_length=1, max_length=100)
+    assigned_edge_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+    )
+    active_recipe_id: str | None = Field(default=None, max_length=64)
+    administrative_status: ZoneAdministrativeStatus | None = None
+
+    @model_validator(mode="after")
+    def _reject_null_required_fields(self) -> "ZoneUpdate":
+        """Impedisce di azzerare campi che devono sempre avere un valore."""
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("name cannot be null")
+        if (
+            "administrative_status" in self.model_fields_set
+            and self.administrative_status is None
+        ):
+            raise ValueError("administrative_status cannot be null")
+        return self

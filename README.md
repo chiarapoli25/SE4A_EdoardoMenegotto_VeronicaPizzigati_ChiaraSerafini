@@ -271,6 +271,25 @@ curl -X POST http://127.0.0.1:8000/api/v1/zones \
   }'
 ```
 
+I dati configurabili di un settore si aggiornano in modo parziale con
+`PATCH /api/v1/zones/{zone_id}`. Sono ammessi soltanto `name`,
+`plant_species`, `assigned_edge_id`, `active_recipe_id` e
+`administrative_status` (`active`, `inactive` oppure `maintenance`):
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/api/v1/zones/r1-s1 \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "assigned_edge_id": "edge-serra-2",
+    "administrative_status": "maintenance"
+  }'
+```
+
+La ricetta deve essere gia presente nel backend; la specie non puo diventare
+incompatibile con le piante registrate; il reparto 5 continua a non avere una
+specie unica. Una zona il cui ultimo evento lifecycle la dichiara `Running`
+deve essere arrestata o messa in pausa prima di cambiare Edge.
+
 La quarantena e una proprieta della singola pianta, non del settore. Ogni
 esemplare conserva specie, settore di origine, settore corrente e il flag
 `is_quarantined`. Prima si registra la pianta nel reparto produttivo:

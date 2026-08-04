@@ -148,6 +148,23 @@ def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_zone_administrative_status_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """Aggiunge lo stato amministrativo senza confonderlo con la connettivita."""
+    if (
+        _table_columns(connection, "zones")
+        and "administrative_status" not in _table_columns(connection, "zones")
+    ):
+        connection.execute(
+            """
+            ALTER TABLE zones
+            ADD COLUMN administrative_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (administrative_status IN ('active', 'inactive', 'maintenance'))
+            """
+        )
+
+
 def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
     """Estende i reparti a 1-5 e rende mista la composizione del quinto."""
     columns = _table_columns(connection, "zones")
@@ -179,6 +196,9 @@ def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            administrative_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (administrative_status IN
+                       ('active', 'inactive', 'maintenance')),
             CHECK (
                 (department_number BETWEEN 1 AND 4
                  AND plant_species IS NOT NULL)
@@ -243,6 +263,9 @@ def init_db(connection: sqlite3.Connection) -> None:
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            administrative_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (administrative_status IN
+                       ('active', 'inactive', 'maintenance')),
             CHECK (
                 (department_number BETWEEN 1 AND 4
                  AND plant_species IS NOT NULL)
@@ -256,6 +279,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     )
     _migrate_zone_assignment_column(connection)
     _migrate_fifth_department_schema(connection)
+    _migrate_zone_administrative_status_column(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plants (

@@ -47,6 +47,7 @@ def test_create_and_read_zone(client: TestClient) -> None:
         "assigned_edge_id": None,
         "active_recipe_id": None,
         "current_phase": None,
+        "administrative_status": "active",
         "status": "offline",
         "last_edge_contact": None,
     }
@@ -165,5 +166,221 @@ def test_zone_contains_one_scalar_plant_species(client: TestClient) -> None:
 
 def test_read_missing_zone_returns_404(client: TestClient) -> None:
     response = client.get("/zones/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_patch_zone_updates_only_supplied_fields(client: TestClient) -> None:
+    created = client.post(
+        "/zones",
+        json={**zone_payload(), "assigned_edge_id": "edge-a"},
+    ).json()
+
+    response = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={
+            "name": "Settore pomodori nord",
+            "administrative_status": "maintenance",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        **created,
+        "name": "Settore pomodori nord",
+        "administrative_status": "maintenance",
+    }
+
+
+def test_patch_zone_can_assign_and_clear_an_existing_recipe(
+    client: TestClient,
+    example_recipe_data: dict,
+) -> None:
+    client.post("/zones", json=zone_payload())
+    assert client.post("/recipes", json=example_recipe_data).status_code == 201
+
+    assigned = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"active_recipe_id": example_recipe_data["id"]},
+    )
+    cleared = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"active_recipe_id": None},
+    )
+
+    assert assigned.status_code == 200
+    assert assigned.json()["active_recipe_id"] == example_recipe_data["id"]
+    assert cleared.status_code == 200
+    assert cleared.json()["active_recipe_id"] is None
+
+
+def test_patch_zone_rejects_missing_recipe(client: TestClient) -> None:
+    client.post("/zones", json=zone_payload())
+
+    response = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"active_recipe_id": "missing-recipe"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_create_zone_rejects_missing_recipe(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/zones",
+        json={**zone_payload(), "active_recipe_id": "missing-recipe"},
+    )
+
+    assert response.status_code == 404
+    assert client.get("/zones/r1-s1").status_code == 404
+
+
+def test_patch_zone_rejects_species_incompatible_with_registered_plants(
+    client: TestClient,
+) -> None:
+    client.post("/zones", json=zone_payload())
+    assert client.post(
+        "/plants",
+        json={
+            "id": "plant-1",
+            "species": "Pomodoro",
+            "home_zone_id": "r1-s1",
+        },
+    ).status_code == 201
+
+    response = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"plant_species": "Basilico"},
+    )
+
+    assert response.status_code == 409
+    assert client.get("/zones/r1-s1").json()["plant_species"] == "Pomodoro"
+
+
+def test_patch_zone_allows_species_change_without_incompatible_plants(
+    client: TestClient,
+) -> None:
+    client.post("/zones", json=zone_payload())
+
+    response = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"plant_species": "Basilico"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["plant_species"] == "Basilico"
+
+
+def test_patch_quarantine_cannot_set_one_species(client: TestClient) -> None:
+    client.post(
+        "/zones",
+        json=zone_payload("quarantine-1", 5, 1, plant_species=None),
+    )
+
+    response = client.patch(
+        "/api/v1/zones/quarantine-1",
+        json={"plant_species": "Pomodoro"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_patch_zone_rejects_edge_reassignment_while_running(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/zones",
+        json={**zone_payload(), "assigned_edge_id": "edge-a"},
+    )
+    event = {
+        "event_id": "lifecycle-running",
+        "edge_id": "edge-a",
+        "boot_id": "boot-1",
+        "event_type": "ZoneLifecycleChanged",
+        "timestamp_seconds": 10,
+        "recorded_at": "2026-08-04T10:00:00Z",
+        "payload": {
+            "previous_state": "Starting",
+            "current_state": "Running",
+            "reason": "cultivation started",
+        },
+    }
+    assert client.post("/api/v1/zones/r1-s1/events", json=event).status_code == 201
+
+    same_assignment = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"assigned_edge_id": "edge-a"},
+    )
+    reassignment = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"assigned_edge_id": "edge-b"},
+    )
+
+    assert same_assignment.status_code == 200
+    assert reassignment.status_code == 409
+    assert client.get("/zones/r1-s1").json()["assigned_edge_id"] == "edge-a"
+
+
+def test_patch_zone_allows_edge_reassignment_after_pause(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/zones",
+        json={**zone_payload(), "assigned_edge_id": "edge-a"},
+    )
+    for event_id, recorded_at, previous_state, current_state in (
+        ("running", "2026-08-04T10:00:00Z", "Starting", "Running"),
+        ("paused", "2026-08-04T10:01:00Z", "Running", "Paused"),
+    ):
+        response = client.post(
+            "/api/v1/zones/r1-s1/events",
+            json={
+                "event_id": event_id,
+                "edge_id": "edge-a",
+                "boot_id": "boot-1",
+                "event_type": "ZoneLifecycleChanged",
+                "timestamp_seconds": 10,
+                "recorded_at": recorded_at,
+                "payload": {
+                    "previous_state": previous_state,
+                    "current_state": current_state,
+                    "reason": "test",
+                },
+            },
+        )
+        assert response.status_code == 201
+
+    reassigned = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"assigned_edge_id": "edge-b"},
+    )
+
+    assert reassigned.status_code == 200
+    assert reassigned.json()["assigned_edge_id"] == "edge-b"
+
+
+def test_patch_zone_rejects_unmodifiable_or_null_required_fields(
+    client: TestClient,
+) -> None:
+    client.post("/zones", json=zone_payload())
+
+    move = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"department_number": 2},
+    )
+    null_name = client.patch(
+        "/api/v1/zones/r1-s1",
+        json={"name": None},
+    )
+
+    assert move.status_code == 422
+    assert null_name.status_code == 422
+
+
+def test_patch_missing_zone_returns_404(client: TestClient) -> None:
+    response = client.patch(
+        "/api/v1/zones/does-not-exist",
+        json={"name": "Nuovo nome"},
+    )
 
     assert response.status_code == 404

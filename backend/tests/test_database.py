@@ -110,14 +110,19 @@ def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
             for row in legacy.execute("PRAGMA table_info(zones)").fetchall()
         }
         assignment = legacy.execute(
-            "SELECT assigned_edge_id FROM zones WHERE id = 'legacy-zone'"
+            """
+            SELECT assigned_edge_id, administrative_status
+            FROM zones
+            WHERE id = 'legacy-zone'
+            """
         ).fetchone()
     finally:
         legacy.close()
 
     assert "assigned_edge_id" in columns
+    assert "administrative_status" in columns
     assert "zone_type" not in columns
-    assert assignment == (None,)
+    assert assignment == (None, "active")
 
 
 def test_init_db_migrates_schema_to_accept_quarantine() -> None:

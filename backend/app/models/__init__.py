@@ -44,7 +44,13 @@ from ..features.telemetry.models import (
     TelemetryCreate,
     TelemetrySample,
 )
-from ..features.zones.models import Zone, ZoneCreate, ZoneStatus
+from ..features.zones.models import (
+    Zone,
+    ZoneAdministrativeStatus,
+    ZoneCreate,
+    ZoneStatus,
+    ZoneUpdate,
+)
 
 __all__ = [
     "ActuatorCommandState",
@@ -79,6 +85,8 @@ __all__ = [
     "ThresholdConfig",
     "ValueRange",
     "Zone",
+    "ZoneAdministrativeStatus",
     "ZoneCreate",
     "ZoneStatus",
+    "ZoneUpdate",
 ]
