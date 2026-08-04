@@ -76,6 +76,14 @@ std::size_t EdgeRuntime::active_phase_index(
     return phases.size() - 1;
 }
 
+double EdgeRuntime::total_recipe_duration_hours() const noexcept {
+    double total = 0.0;
+    for (const auto& phase : control_system_.recipe().phases) {
+        total += phase.duration_hours;
+    }
+    return total;
+}
+
 void EdgeRuntime::reset_histories_if_needed() {
     const double elapsed_seconds =
         environment_->state().simulation_time_seconds;
@@ -168,6 +176,28 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         }
     }
     reported_phase_index_ = phase_index;
+    if (!recipe_completed_ &&
+        elapsed_recipe_hours() >= total_recipe_duration_hours()) {
+        recipe_completed_ = true;
+        result.events.push_back(
+            {
+                EdgeEventType::RECIPE_COMPLETED,
+                result.start_time_seconds,
+                "recipe completed; final phase remains active: " +
+                    result.phase_name,
+            });
+        if (event_bus_) {
+            event_bus_->publish(
+                RecipeCompleted{
+                    zone_id_,
+                    result.start_time_seconds,
+                    control_system_.recipe().id,
+                    result.phase_name,
+                    total_recipe_duration_hours(),
+                });
+        }
+    }
+    result.recipe_completed = recipe_completed_;
     result.readings = read_sensors();
 
     if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN &&

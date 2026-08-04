@@ -108,6 +108,8 @@ public:
     OperationalState operational_state() const noexcept;
     /** @brief Restituisce il tempo trascorso nella ricetta corrente. */
     double elapsed_recipe_hours() const noexcept;
+    /** @brief Indica che la durata dell'ultima fase e stata completata. */
+    bool recipe_completed() const noexcept;
     /** @brief Restituisce il nome della fase attualmente selezionata. */
     const std::string& active_phase_name() const;
     /**
@@ -207,6 +209,7 @@ private:
     ControlRequest base_request(double delta_time_seconds) const;
     double elapsed_recipe_seconds() const noexcept;
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
+    double total_recipe_duration_hours() const noexcept;
     void reset_histories_if_needed();
     SensorReadings read_sensors();
     void expire_injected_faults(double timestamp_seconds);
@@ -268,6 +271,7 @@ private:
     bool manual_reset_requested_ = false;
     double recipe_start_time_seconds_ = 0.0;
     double recipe_time_offset_seconds_ = 0.0;
+    bool recipe_completed_ = false;
     SoilType active_substrate_ = SoilType::AERATED_UNIVERSAL;
     std::unordered_map<std::string, InjectedFault> injected_faults_;
     std::unordered_set<std::string> reported_runtime_faults_;

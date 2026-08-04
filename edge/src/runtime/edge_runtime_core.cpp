@@ -104,6 +104,8 @@ const char* to_string(EdgeEventType type) noexcept {
             return "RuntimeStarted";
         case EdgeEventType::RECIPE_PHASE_CHANGED:
             return "RecipePhaseChanged";
+        case EdgeEventType::RECIPE_COMPLETED:
+            return "RecipeCompleted";
         case EdgeEventType::OPERATIONAL_STATE_CHANGED:
             return "OperationalStateChanged";
         case EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED:

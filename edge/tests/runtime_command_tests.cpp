@@ -190,27 +190,49 @@ TEST(RuntimeCommandProcessorTest, RejectsInvalidRecipeAndReplaysRejection) {
 }
 
 TEST(RuntimeCommandProcessorTest, AdvancesRecipePhaseUntilLastPhase) {
+    auto recipe = load_demo_recipe();
+    recipe.phases[0].name = "Avvio e attecchimento";
+    recipe.phases[1].name = "Crescita vegetativa";
+    auto production = recipe.phases[1];
+    production.name = "Fioritura e produzione";
+    auto maturation = production;
+    maturation.name = "Maturazione";
+    recipe.phases.push_back(std::move(production));
+    recipe.phases.push_back(std::move(maturation));
     smarthydro::EdgeRuntime runtime(
-        load_demo_recipe(), {}, {}, deterministic_sensors());
+        std::move(recipe), {}, {}, deterministic_sensors());
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    runtime.attach_event_bus(event_bus, "phase-command-zone");
     smarthydro::RuntimeCommandProcessor processor(runtime);
     const auto initial_phase = runtime.active_phase_name();
 
-    const auto advanced = processor.execute(
-        {
-            "phase-1",
-            smarthydro::AdvanceRecipePhaseCommand{},
-        });
+    const auto first_advance = processor.execute(
+        {"phase-1", smarthydro::AdvanceRecipePhaseCommand{}});
+    const auto second_advance = processor.execute(
+        {"phase-2", smarthydro::AdvanceRecipePhaseCommand{}});
+    const auto third_advance = processor.execute(
+        {"phase-3", smarthydro::AdvanceRecipePhaseCommand{}});
     const auto last_phase = runtime.active_phase_name();
     const auto refused = processor.execute(
-        {
-            "phase-2",
-            smarthydro::AdvanceRecipePhaseCommand{},
-        });
+        {"phase-4", smarthydro::AdvanceRecipePhaseCommand{}});
+    std::size_t phase_changed_events = 0;
+    for (const auto& event : observer->events) {
+        if (std::holds_alternative<smarthydro::RecipePhaseChanged>(event)) {
+            ++phase_changed_events;
+        }
+    }
 
-    EXPECT_TRUE(advanced.success());
+    EXPECT_TRUE(first_advance.success());
+    EXPECT_TRUE(second_advance.success());
+    EXPECT_TRUE(third_advance.success());
     EXPECT_NE(last_phase, initial_phase);
+    EXPECT_EQ(last_phase, "Maturazione");
     EXPECT_FALSE(refused.success());
     EXPECT_EQ(runtime.active_phase_name(), last_phase);
+    EXPECT_FALSE(runtime.recipe_completed());
+    EXPECT_EQ(phase_changed_events, 3U);
 }
 
 TEST(RuntimeCommandProcessorTest, InjectsDetectsResetsAndPublishesTypedFault) {

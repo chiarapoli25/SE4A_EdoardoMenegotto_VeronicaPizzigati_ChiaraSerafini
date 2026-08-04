@@ -165,6 +165,20 @@ struct RecipePhaseChanged {
     std::string current_phase;
 };
 
+/** @brief Completamento temporale della ricetta, con ultima fase mantenuta. */
+struct RecipeCompleted {
+    /** Zona che ha completato la sequenza. */
+    std::string zone_id;
+    /** Timestamp simulato del rilevamento, in secondi. */
+    double timestamp_seconds = 0.0;
+    /** Identificatore della ricetta completata. */
+    std::string recipe_id;
+    /** Ultima fase che resta attiva dopo il completamento. */
+    std::string final_phase;
+    /** Durata nominale complessiva della ricetta, in ore. */
+    double total_duration_hours = 0.0;
+};
+
 /** @brief Ingresso della FSM nello stato EmergencyLockdown. */
 struct EmergencyTriggered {
     /** Zona portata nello stato sicuro. */
@@ -227,6 +241,7 @@ using EdgeDomainEvent = std::variant<
     FaultDetected,
     StrategyChanged,
     RecipePhaseChanged,
+    RecipeCompleted,
     EmergencyTriggered,
     BackendUnavailable,
     CommandExecuted,

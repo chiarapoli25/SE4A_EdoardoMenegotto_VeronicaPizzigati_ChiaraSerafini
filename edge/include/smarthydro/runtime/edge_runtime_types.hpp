@@ -64,6 +64,7 @@ struct FaultSpecification {
 enum class EdgeEventType {
     RUNTIME_STARTED,
     RECIPE_PHASE_CHANGED,
+    RECIPE_COMPLETED,
     OPERATIONAL_STATE_CHANGED,
     EMERGENCY_LOCKDOWN_ENTERED,
 };
@@ -113,6 +114,8 @@ struct EdgeStepResult {
     double duration_seconds = 0.0;
     /** Nome della fase usata per calcolare i comandi. */
     std::string phase_name;
+    /** True dopo il termine temporale dell'ultima fase. */
+    bool recipe_completed = false;
     /** Stato operativo della zona durante il ciclo. */
     OperationalState operational_state = OperationalState::NOMINAL;
     /** Eventi prodotti all'inizio del ciclo. */

@@ -15,10 +15,7 @@ from .features.actuators.routes import router as actuator_router
 from .features.commands.routes import router as command_router
 from .features.events.routes import router as event_router
 from .features.plants.routes import router as plant_router
-from .features.recipes.routes import (
-    get_export_directory,
-    router as recipe_router,
-)
+from .features.recipes.routes import router as recipe_router
 from .features.system.routes import router as system_router
 from .features.telemetry.routes import router as telemetry_router
 from .features.zones.routes import (
@@ -70,4 +67,4 @@ for versioned_router in (
     )
 
 
-__all__ = ["app", "get_db", "get_export_directory"]
+__all__ = ["app", "get_db"]

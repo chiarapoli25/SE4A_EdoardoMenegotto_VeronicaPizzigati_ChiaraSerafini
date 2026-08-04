@@ -128,6 +128,11 @@
  * - Predictive: previsione basata su modello e storico.
  *
  * `load_recipe_json()` e `save_recipe_json()` gestiscono il formato JSON.
+ * Le fasi avanzano automaticamente sul tempo simulato oppure tramite
+ * @ref smarthydro::AdvanceRecipePhaseCommand. Ogni transizione pubblica
+ * @ref smarthydro::RecipePhaseChanged. Terminata l'ultima durata viene
+ * pubblicato una sola volta @ref smarthydro::RecipeCompleted; l'ultima fase
+ * resta selezionata e la ricetta non riparte dall'inizio.
  *
  * @section edge_commands Comandi runtime
  *
@@ -152,8 +157,8 @@
  * - @ref smarthydro::BackendClient.
  *
  * Gli eventi principali segnalano telemetria, fault, cambi di Strategy o fase,
- * transizioni della FSM ed esito dei comandi fisici. Un observer che fallisce
- * non interrompe il ciclo locale.
+ * completamento della ricetta, transizioni della FSM ed esito dei comandi
+ * fisici. Un observer che fallisce non interrompe il ciclo locale.
  *
  * @section edge_adapters Adapter e sostituzione hardware
  *
@@ -186,7 +191,7 @@
  * | POST | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
  * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.features.actuators.routes.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
  * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
- * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
+ * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione e persistenza integrale SQLite di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
  * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Catalogo e ricette salvate, filtrabili per reparto |
  * | POST | `/zones/{zone_id}/events` | backend.app.features.events.routes.create_event() | Acquisizione idempotente di un evento Edge |
@@ -210,12 +215,13 @@
  * Le zone espongono il nome canonico dei quattro reparti produttivi; il quinto
  * nome e riservato alla destinazione fisica di quarantena, mentre lo stato di
  * quarantena appartiene sempre alla pianta. La directory
- * `config/recipe_catalog/recipes/` contiene un JSON per ciascuna delle 20
- * specie, mentre `config/recipe_catalog/profiles.json` raccoglie i profili
- * condivisi. `init_db()` valida ogni file e importa una sola volta ciascun ID,
- * registrandolo in `recipe_catalog_imports`: nuovi file vengono acquisiti,
- * ma versioni personalizzate e cancellazioni SQLite non vengono ripristinate.
- * Repository e API leggono poi soltanto il database. Le indicazioni
+ * `config/recipe_catalog/recipes/` contiene un JSON di bootstrap per ciascuna
+ * delle 20 specie, mentre `config/recipe_catalog/profiles.json` raccoglie i
+ * profili condivisi e le sequenze di fase per categoria. `init_db()` espande
+ * profili e override della singola pianta e salva integralmente ogni ricetta
+ * multifase in `recipes.data`. `recipe_catalog_imports.catalog_version`
+ * governa le migrazioni del bootstrap. Repository, API ed Edge leggono poi
+ * soltanto SQLite: i JSON non sono una sorgente runtime. Le indicazioni
  * qualitative originali sono conservate in `care_profile` e affiancate dai
  * target numerici compatibili con l'Edge.
  *
@@ -304,6 +310,6 @@
  * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
  * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;
  * - backend/app/features/commands/: coda ed esiti dei comandi runtime;
- * - backend/app/features/recipes/: catalogo, ricette, persistenza ed esportazione;
+ * - backend/app/features/recipes/: bootstrap, ricette e persistenza SQLite;
  * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */

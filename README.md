@@ -106,9 +106,12 @@ stato e causa. L'ingresso in emergenza produce anche
 `EmergencyLockdownEntered`. I normali vincoli di dose bloccano invece soltanto
 il comando interessato.
 
-Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
-fase produce `RecipePhaseChanged`. `--step-seconds` definisce il quantum fisso
-del controllo simulato; il valore predefinito e 900 secondi. Lo scheduler
+Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico o
+manuale di fase produce `RecipePhaseChanged`. Quando termina anche la durata
+dell'ultima fase, l'Edge pubblica una sola volta `RecipeCompleted`, mantiene
+l'ultima fase attiva e imposta `recipe_completed=true`: la sequenza non torna
+mai automaticamente alla prima fase. `--step-seconds` definisce il quantum
+fisso del controllo simulato; il valore predefinito e 900 secondi. Lo scheduler
 misura il tempo reale con `std::chrono::steady_clock` e, per ogni zona, accumula
 il tempo simulato moltiplicandolo per la velocita configurata. Il polling dei
 comandi resta indipendente e continua anche mentre tutte le zone sono
@@ -214,6 +217,7 @@ dipendente da console, file o rete. Il runtime pubblica automaticamente:
 - `TelemetrySample`;
 - `StateChanged` e `EmergencyTriggered`;
 - `RecipePhaseChanged`;
+- `RecipeCompleted`;
 - `SimulationSpeedChanged`, `SimulationDurationChanged`,
   `SimulationDurationCompleted` e `SchedulerLagStateChanged`;
 - `CommandExecuted` e `CommandFailed`.
@@ -663,15 +667,26 @@ Prima dell'uscita, il supervisore applica con priorita:
 ricetta dimostrativa e in `config/example_recipe.json` e descrive due fasi del
 pomodoro su substrato universale aerato. I coefficienti sono didattici.
 
-La directory `config/recipe_catalog/recipes/` contiene un file JSON per
-ciascuna delle 20 piante, cinque per ognuno dei quattro reparti produttivi.
-`config/recipe_catalog/profiles.json` raccoglie invece i profili condivisi di
-luce, irrigazione, concimazione e fase. Durante `init_db()` ogni file viene
-validato singolarmente e le ricette mai importate vengono inserite nella tabella
-SQLite `recipes`. La tabella `recipe_catalog_imports` registra gli ID gia
-importati; da quel momento API ed Edge leggono esclusivamente il
-database. `GET /api/v1/recipes/{recipe_id}` permette all'Edge di caricarle
-direttamente. Ogni ricetta include `department_number`,
+La directory `config/recipe_catalog/recipes/` contiene un file JSON di
+bootstrap per ciascuna delle 20 piante, cinque per ognuno dei quattro reparti
+produttivi. `config/recipe_catalog/profiles.json` raccoglie i profili condivisi
+di luce, irrigazione e concimazione e quattro sequenze di fasi riutilizzabili:
+fogliame, fioritura, succulente e produzione. Ogni file pianta puo scegliere
+una sequenza diversa e sovrascrivere durata, fotoperiodo, fattori dei setpoint o
+uno dei profili soltanto per una fase; `recipe-pomodorino` contiene un override
+della fase di produzione come esempio.
+
+Durante `init_db()` il bootstrap viene validato ed espanso in una ricetta
+completa di quattro fasi. L'intero contratto risultante, inclusi tutti i target
+di ogni fase e i controllori, viene serializzato nella colonna `recipes.data`
+di SQLite. `recipe_catalog_imports.catalog_version` permette la migrazione del
+vecchio catalogo monofase v1 al catalogo v2 senza rendere i JSON una sorgente
+runtime. Dopo l'importazione, repository, API ed Edge leggono esclusivamente
+SQLite; `GET /api/v1/recipes/{recipe_id}` e il canale usato dall'Edge. Gli
+eventuali JSON prodotti tramite l'utilita di export separata sono soltanto
+snapshot espliciti per avvio offline: `POST /recipes` non li genera e il
+normale runtime non li legge. Ogni ricetta include
+`department_number`,
 il `department_name` calcolato e un `care_profile` che conserva testualmente
 luce, irrigazione, temperatura e concimazione del ricettario. I target
 numerici di luce, umidita del terreno, pH e N/P/K sono una traduzione
@@ -684,12 +699,13 @@ una ricetta di catalogo a un reparto diverso o a una zona con una specie
 diversa da `plant_type`; le ricette personalizzate prive dei metadati di
 catalogo mantengono il comportamento precedente.
 
-Una ricetta iniziale e alla versione 1. Puo essere personalizzata tramite
+Una ricetta iniziale del catalogo e alla versione 2. Puo essere personalizzata tramite
 `POST /api/v1/recipes` usando lo stesso identificativo e una versione
 superiore; la copia salvata nel database prende allora il posto di quella
-iniziale. Le inizializzazioni successive importano soltanto i nuovi file mai
-visti e non sovrascrivono mai personalizzazioni o cancellazioni effettuate in
-SQLite.
+iniziale. Le inizializzazioni successive non rileggono il bootstrap della
+stessa versione e non sovrascrivono ricette SQLite con versione uguale o
+superiore; una nuova versione dello schema di catalogo abilita invece una
+migrazione esplicita dei soli record piu vecchi.
 
 ## Experiments C++
 
@@ -912,7 +928,8 @@ Il catalogo iniziale modificabile e organizzato in
 `config/recipe_catalog/recipes/<pianta>.json`. Per aggiungere una pianta basta
 aggiungere un file valido nella directory `recipes`, senza modificare Python.
 Il modulo `backend/app/features/recipes/catalog.py` valida profili e ricette,
-segnala il percorso esatto dei file errati, costruisce il contratto richiesto
-dall'Edge e inizializza una sola volta ogni ID di catalogo. Il repository non
-possiede fallback in memoria: elenco, lettura e versionamento usano sempre la
-tabella `recipes`.
+segnala il percorso esatto dei file errati, applica la sequenza condivisa della
+categoria e gli override della singola pianta, quindi costruisce il contratto
+multifase richiesto dall'Edge. I JSON sono input di bootstrap: il repository
+non possiede fallback in memoria e, terminata l'inizializzazione, elenco,
+lettura, transizioni e versionamento usano la ricetta completa in `recipes`.

@@ -71,6 +71,8 @@ class ZoneCreate(BaseModel):
     active_recipe_id: str | None = Field(default=None, max_length=64)
     ## @brief Nome della fase di coltivazione corrente, se presente.
     current_phase: str | None = Field(default=None, max_length=100)
+    ## @brief True quando la ricetta ha terminato anche la propria ultima fase.
+    cultivation_completed: bool = False
     ## @brief Disponibilita configurata dall'amministratore.
     administrative_status: ZoneAdministrativeStatus = (
         ZoneAdministrativeStatus.ACTIVE

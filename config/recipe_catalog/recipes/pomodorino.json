@@ -7,5 +7,12 @@
   "light_profile": "full_sun",
   "water_profile": "abundant",
   "feed_profile": "calcium_rich",
-  "ph_setpoint": 6.2
+  "ph_setpoint": 6.2,
+  "phase_overrides": {
+    "production": {
+      "duration_hours": 1344,
+      "feed_profile": "potassium_rich",
+      "potassium_factor": 1.35
+    }
+  }
 }

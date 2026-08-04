@@ -2,8 +2,9 @@
 @brief Esportazione delle ricette in JSON per l'Edge Controller.
 
 @details Il canale HTTP permette all'Edge di scaricare una ricetta tramite
-`GET /api/v1/recipes/{recipe_id}`. L'esportazione su file resta disponibile
-per l'avvio offline e produce lo stesso JSON accettato da `load_recipe_json`.
+`GET /api/v1/recipes/{recipe_id}` e usa SQLite come sorgente autorevole.
+L'esportazione su file e soltanto uno snapshot per l'avvio offline e produce
+lo stesso JSON accettato da `load_recipe_json`; non alimenta il runtime HTTP.
 
 `recipe.id` arriva da una richiesta HTTP esterna e diventa qui un nome di
 file: senza controlli un id come ``"../../etc/passwd"`` scriverebbe fuori

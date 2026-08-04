@@ -48,6 +48,7 @@ def test_create_and_read_zone(client: TestClient) -> None:
         "assigned_edge_id": None,
         "active_recipe_id": None,
         "current_phase": None,
+        "cultivation_completed": False,
         "administrative_status": "active",
         "status": "offline",
         "last_edge_contact": None,

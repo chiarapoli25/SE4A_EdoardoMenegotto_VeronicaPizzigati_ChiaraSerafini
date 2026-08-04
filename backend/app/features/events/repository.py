@@ -11,6 +11,56 @@ class EdgeEventConflict(Exception):
     """Segnala il riuso di un event_id con contenuto differente."""
 
 
+def _phase_name(payload: dict, key: str) -> str | None:
+    """Estrae un nome fase sicuro dai payload Edge non tipizzati."""
+    value = payload.get(key)
+    if isinstance(value, str) and 0 < len(value) <= 100:
+        return value
+    return None
+
+
+def _apply_recipe_state(
+    connection: sqlite3.Connection,
+    zone_id: str,
+    event: EdgeEventCreate,
+) -> None:
+    """Proietta gli eventi della ricetta nello stato sintetico della zona."""
+    if event.event_type == "ZoneLifecycleChanged":
+        previous_state = event.payload.get("previous_state")
+        current_state = event.payload.get("current_state")
+        if previous_state == "Starting" and current_state == "Running":
+            connection.execute(
+                """
+                UPDATE zones
+                SET current_phase = NULL, cultivation_completed = 0
+                WHERE id = ?
+                """,
+                (zone_id,),
+            )
+    elif event.event_type == "RecipePhaseChanged":
+        current_phase = _phase_name(event.payload, "current_phase")
+        if current_phase is not None:
+            connection.execute(
+                """
+                UPDATE zones
+                SET current_phase = ?, cultivation_completed = 0
+                WHERE id = ?
+                """,
+                (current_phase, zone_id),
+            )
+    elif event.event_type == "RecipeCompleted":
+        final_phase = _phase_name(event.payload, "final_phase")
+        if final_phase is not None:
+            connection.execute(
+                """
+                UPDATE zones
+                SET current_phase = ?, cultivation_completed = 1
+                WHERE id = ?
+                """,
+                (final_phase, zone_id),
+            )
+
+
 def _event_from_row(row: tuple) -> EdgeEvent:
     return EdgeEvent(
         event_id=row[0],
@@ -71,6 +121,7 @@ def save_event(
             f"event_id {event.event_id!r} already exists with different data"
         ) from error
 
+    _apply_recipe_state(connection, zone_id, event)
     connection.execute(
         """
         UPDATE zones

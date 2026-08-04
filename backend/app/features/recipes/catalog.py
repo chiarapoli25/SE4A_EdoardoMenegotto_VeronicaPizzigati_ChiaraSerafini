@@ -28,9 +28,42 @@ class _CatalogModel(BaseModel):
 
 
 class _PhaseProfile(_CatalogModel):
+    key: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
     name: str = Field(min_length=1)
     duration_hours: float = Field(gt=0.0)
     start_hour: float = Field(ge=0.0, lt=24.0)
+    photoperiod_offset_hours: float = Field(ge=-12.0, le=12.0)
+    light_factor: float = Field(gt=0.0, le=2.0)
+    water_offset_percent: float = Field(ge=-30.0, le=30.0)
+    nitrogen_factor: float = Field(ge=0.0, le=2.0)
+    phosphorus_factor: float = Field(ge=0.0, le=2.0)
+    potassium_factor: float = Field(ge=0.0, le=2.0)
+    dose_factor: float = Field(ge=0.0, le=2.0)
+    ph_offset: float = Field(ge=-1.0, le=1.0)
+
+
+class _PhaseOverride(_CatalogModel):
+    duration_hours: float | None = Field(default=None, gt=0.0)
+    start_hour: float | None = Field(default=None, ge=0.0, lt=24.0)
+    photoperiod_offset_hours: float | None = Field(
+        default=None, ge=-12.0, le=12.0
+    )
+    light_factor: float | None = Field(default=None, gt=0.0, le=2.0)
+    water_offset_percent: float | None = Field(
+        default=None, ge=-30.0, le=30.0
+    )
+    nitrogen_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    phosphorus_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    potassium_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    dose_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    ph_offset: float | None = Field(default=None, ge=-1.0, le=1.0)
+    light_profile: str | None = Field(default=None, min_length=1)
+    water_profile: str | None = Field(default=None, min_length=1)
+    feed_profile: str | None = Field(default=None, min_length=1)
 
 
 class _LightProfile(_CatalogModel):
@@ -82,14 +115,30 @@ class _RecipeSeed(_CatalogModel):
     water_profile: str = Field(min_length=1)
     feed_profile: str = Field(min_length=1)
     ph_setpoint: float = Field(gt=4.8, lt=7.7)
+    phase_sequence: str | None = Field(default=None, min_length=1)
+    phase_overrides: dict[str, _PhaseOverride] = Field(default_factory=dict)
 
 
 class _CatalogProfiles(_CatalogModel):
-    schema_version: int = Field(ge=1, le=1)
-    phase: _PhaseProfile
+    schema_version: int = Field(ge=2, le=2)
+    phase_sequences: dict[str, list[_PhaseProfile]] = Field(min_length=1)
     light_profiles: dict[str, _LightProfile] = Field(min_length=1)
     water_profiles: dict[str, _WaterProfile] = Field(min_length=1)
     feed_profiles: dict[str, _FeedProfile] = Field(min_length=1)
+
+
+_DEPARTMENT_PHASE_SEQUENCE = {
+    1: "foliage",
+    2: "flowering",
+    3: "succulent",
+    4: "fruiting",
+}
+
+
+def _phase_sequence_name(recipe: _RecipeSeed) -> str:
+    return recipe.phase_sequence or _DEPARTMENT_PHASE_SEQUENCE[
+        recipe.department_number
+    ]
 
 
 def _validate_recipe_seeds(
@@ -100,6 +149,12 @@ def _validate_recipe_seeds(
     if len(recipe_ids) != len(set(recipe_ids)):
         raise ValueError("recipe ids in catalog must be unique")
     for recipe in recipes:
+        sequence_name = _phase_sequence_name(recipe)
+        if sequence_name not in profiles.phase_sequences:
+            raise ValueError(
+                f"recipe {recipe.id!r} uses unknown phase sequence "
+                f"{sequence_name!r}"
+            )
         if recipe.light_profile not in profiles.light_profiles:
             raise ValueError(
                 f"recipe {recipe.id!r} uses unknown light profile "
@@ -115,6 +170,30 @@ def _validate_recipe_seeds(
                 f"recipe {recipe.id!r} uses unknown feed profile "
                 f"{recipe.feed_profile!r}"
             )
+        phase_keys = {
+            phase.key for phase in profiles.phase_sequences[sequence_name]
+        }
+        if len(phase_keys) != len(profiles.phase_sequences[sequence_name]):
+            raise ValueError(
+                f"phase sequence {sequence_name!r} contains duplicate keys"
+            )
+        unknown_overrides = set(recipe.phase_overrides) - phase_keys
+        if unknown_overrides:
+            raise ValueError(
+                f"recipe {recipe.id!r} overrides unknown phases "
+                f"{sorted(unknown_overrides)!r}"
+            )
+        for phase_key, override in recipe.phase_overrides.items():
+            for profile_kind, profile_name, available in (
+                ("light", override.light_profile, profiles.light_profiles),
+                ("water", override.water_profile, profiles.water_profiles),
+                ("feed", override.feed_profile, profiles.feed_profiles),
+            ):
+                if profile_name is not None and profile_name not in available:
+                    raise ValueError(
+                        f"recipe {recipe.id!r} phase {phase_key!r} uses "
+                        f"unknown {profile_kind} profile {profile_name!r}"
+                    )
 
 
 def _target(
@@ -144,7 +223,7 @@ def _nutrient_target(variable: str, setpoint: float, dose: float) -> dict:
     return _target(
         variable,
         setpoint,
-        setpoint - margin,
+        max(0.0, setpoint - margin),
         setpoint + margin,
         0.0,
         safety_maximum,
@@ -230,69 +309,179 @@ def _predictive_parameters(
     }
 
 
+def _phase_value(
+    phase: _PhaseProfile,
+    override: _PhaseOverride | None,
+    field_name: str,
+) -> float:
+    override_value = None if override is None else getattr(override, field_name)
+    return getattr(phase, field_name) if override_value is None else override_value
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
 def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
-    light = catalog.light_profiles[spec.light_profile]
-    water = catalog.water_profiles[spec.water_profile]
-    feed = catalog.feed_profiles[spec.feed_profile]
-    targets = [
-        _target(
-            "soil_moisture",
-            water.setpoint,
-            water.minimum,
-            water.maximum,
-            0.0,
-            100.0,
-        ),
-        _target(
-            "light",
-            light.setpoint,
-            light.minimum,
-            light.maximum,
-            0.0,
-            1200.0,
-        ),
-        _target(
-            "ph",
-            spec.ph_setpoint,
-            spec.ph_setpoint - 0.3,
-            spec.ph_setpoint + 0.3,
-            4.5,
-            8.0,
-        ),
-        _nutrient_target(
-            "nitrogen", feed.nitrogen, feed.phase_dose_milliliters
-        ),
-        _nutrient_target(
-            "phosphorus", feed.phosphorus, feed.phase_dose_milliliters
-        ),
-        _nutrient_target(
-            "potassium", feed.potassium, feed.phase_dose_milliliters
-        ),
-    ]
+    sequence = catalog.phase_sequences[_phase_sequence_name(spec)]
+    phases: list[dict] = []
+    resolved: list[dict] = []
+
+    for phase in sequence:
+        override = spec.phase_overrides.get(phase.key)
+        light_name = (
+            spec.light_profile
+            if override is None or override.light_profile is None
+            else override.light_profile
+        )
+        water_name = (
+            spec.water_profile
+            if override is None or override.water_profile is None
+            else override.water_profile
+        )
+        feed_name = (
+            spec.feed_profile
+            if override is None or override.feed_profile is None
+            else override.feed_profile
+        )
+        light = catalog.light_profiles[light_name]
+        water = catalog.water_profiles[water_name]
+        feed = catalog.feed_profiles[feed_name]
+
+        light_factor = _phase_value(phase, override, "light_factor")
+        water_offset = _phase_value(
+            phase, override, "water_offset_percent"
+        )
+        nitrogen_factor = _phase_value(
+            phase, override, "nitrogen_factor"
+        )
+        phosphorus_factor = _phase_value(
+            phase, override, "phosphorus_factor"
+        )
+        potassium_factor = _phase_value(
+            phase, override, "potassium_factor"
+        )
+        dose_factor = _phase_value(phase, override, "dose_factor")
+        ph_setpoint = spec.ph_setpoint + _phase_value(
+            phase, override, "ph_offset"
+        )
+        photoperiod_hours = _clamp(
+            light.photoperiod_hours
+            + _phase_value(phase, override, "photoperiod_offset_hours"),
+            1.0,
+            24.0,
+        )
+
+        light_setpoint = light.setpoint * light_factor
+        light_minimum = light.minimum * light_factor
+        light_maximum = light.maximum * light_factor
+        water_setpoint = _clamp(water.setpoint + water_offset, 0.0, 100.0)
+        water_minimum = _clamp(water.minimum + water_offset, 0.0, 100.0)
+        water_maximum = _clamp(water.maximum + water_offset, 0.0, 100.0)
+        nutrient_setpoints = {
+            "nitrogen": feed.nitrogen * nitrogen_factor,
+            "phosphorus": feed.phosphorus * phosphorus_factor,
+            "potassium": feed.potassium * potassium_factor,
+        }
+        phase_dose = feed.phase_dose_milliliters * dose_factor
+        targets = [
+            _target(
+                "soil_moisture",
+                water_setpoint,
+                water_minimum,
+                water_maximum,
+                0.0,
+                100.0,
+            ),
+            _target(
+                "light",
+                light_setpoint,
+                light_minimum,
+                light_maximum,
+                0.0,
+                1500.0,
+            ),
+            _target(
+                "ph",
+                ph_setpoint,
+                ph_setpoint - 0.3,
+                ph_setpoint + 0.3,
+                4.5,
+                8.0,
+            ),
+        ]
+        targets.extend(
+            _nutrient_target(variable, setpoint, phase_dose)
+            for variable, setpoint in nutrient_setpoints.items()
+        )
+        phases.append(
+            {
+                "name": phase.name,
+                "duration_hours": _phase_value(
+                    phase, override, "duration_hours"
+                ),
+                "photoperiod": {
+                    "start_hour": _phase_value(
+                        phase, override, "start_hour"
+                    ),
+                    "duration_hours": photoperiod_hours,
+                },
+                "targets": targets,
+            }
+        )
+        resolved.append(
+            {
+                "light": light,
+                "water": water,
+                "feed": feed,
+                "targets": targets,
+                "nutrient_setpoints": nutrient_setpoints,
+            }
+        )
+
+    first = resolved[0]
+    first_targets = {target["variable"]: target for target in first["targets"]}
+    maximum_water_liters = max(
+        phase["water"].maximum_water_liters for phase in resolved
+    )
+    maximum_command_milliliters = max(
+        phase["feed"].maximum_command_milliliters for phase in resolved
+    )
+    maximum_daily_milliliters = max(
+        phase["feed"].maximum_daily_milliliters for phase in resolved
+    )
     nutrient_limits = _safety_limits(
-        maximum_dose_milliliters=feed.maximum_command_milliliters,
-        maximum_daily_milliliters=feed.maximum_daily_milliliters,
+        maximum_dose_milliliters=maximum_command_milliliters,
+        maximum_daily_milliliters=maximum_daily_milliliters,
         minimum_seconds_between_doses=3600.0,
     )
     controllers = [
         _controller(
             "soil_moisture",
             {
-                "lower_threshold": water.minimum,
-                "upper_threshold": water.maximum,
+                "lower_threshold": first_targets["soil_moisture"][
+                    "allowed_range"
+                ]["minimum"],
+                "upper_threshold": first_targets["soil_moisture"][
+                    "allowed_range"
+                ]["maximum"],
                 "direction": "increases",
                 "active_command": 0.5,
                 "inactive_command": 0.0,
                 "bidirectional": False,
             },
             "% soil moisture",
-            _safety_limits(maximum_water_liters=water.maximum_water_liters),
+            _safety_limits(maximum_water_liters=maximum_water_liters),
         ),
         _controller(
             "light",
             {
-                "lower_threshold": light.minimum,
-                "upper_threshold": light.maximum,
+                "lower_threshold": first_targets["light"]["allowed_range"][
+                    "minimum"
+                ],
+                "upper_threshold": first_targets["light"]["allowed_range"][
+                    "maximum"
+                ],
                 "direction": "increases",
                 "active_command": 100.0,
                 "inactive_command": 0.0,
@@ -304,7 +493,7 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
         _controller(
             "ph",
             {
-                "setpoint": spec.ph_setpoint,
+                "setpoint": first_targets["ph"]["setpoint"],
                 "proportional_gain": 1.0,
                 "integral_gain": 0.00001,
                 "derivative_gain": 0.0,
@@ -319,18 +508,14 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
             ),
         ),
     ]
-    for variable, setpoint in (
-        ("nitrogen", feed.nitrogen),
-        ("phosphorus", feed.phosphorus),
-        ("potassium", feed.potassium),
-    ):
+    for variable in ("nitrogen", "phosphorus", "potassium"):
         controllers.append(
             _controller(
                 variable,
                 _predictive_parameters(
-                    setpoint,
+                    first_targets[variable]["setpoint"],
                     variable,
-                    feed.maximum_command_milliliters,
+                    maximum_command_milliliters,
                 ),
                 "mg/L",
                 nutrient_limits,
@@ -342,20 +527,10 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
             "id": spec.id,
             "plant_type": spec.plant_type,
             "substrate": spec.substrate,
-            "version": 1,
+            "version": catalog.schema_version,
             "department_number": spec.department_number,
             "care_profile": spec.care_profile,
-            "phases": [
-                {
-                    "name": catalog.phase.name,
-                    "duration_hours": catalog.phase.duration_hours,
-                    "photoperiod": {
-                        "start_hour": catalog.phase.start_hour,
-                        "duration_hours": light.photoperiod_hours,
-                    },
-                    "targets": targets,
-                }
-            ],
+            "phases": phases,
             "controllers": controllers,
         }
     )
@@ -404,32 +579,54 @@ def seed_recipe_catalog(
     connection: sqlite3.Connection,
     catalog_path: Path | str = DEFAULT_CATALOG_PATH,
 ) -> int:
-    """Importa una sola volta ogni id, lasciando poi SQLite come autorita."""
-    inserted = 0
+    """Importa o migra il bootstrap, lasciando poi SQLite come autorita."""
+    changed = 0
     for recipe in load_recipe_catalog(catalog_path):
-        already_imported = connection.execute(
+        imported = connection.execute(
             """
-            SELECT 1
+            SELECT catalog_version
             FROM recipe_catalog_imports
             WHERE recipe_id = ?
             """,
             (recipe.id,),
         ).fetchone()
-        if already_imported is not None:
+        if imported is not None and imported[0] >= recipe.version:
             continue
-        cursor = connection.execute(
-            """
-            INSERT OR IGNORE INTO recipes (id, version, data, updated_at)
-            VALUES (?, ?, ?, datetime('now'))
-            """,
-            (recipe.id, recipe.version, recipe.model_dump_json()),
-        )
+
+        stored = connection.execute(
+            "SELECT version FROM recipes WHERE id = ?",
+            (recipe.id,),
+        ).fetchone()
+        if stored is None:
+            connection.execute(
+                """
+                INSERT INTO recipes (id, version, data, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                """,
+                (recipe.id, recipe.version, recipe.model_dump_json()),
+            )
+            changed += 1
+        elif stored[0] < recipe.version:
+            connection.execute(
+                """
+                UPDATE recipes
+                SET version = ?, data = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (recipe.version, recipe.model_dump_json(), recipe.id),
+            )
+            changed += 1
+
         connection.execute(
             """
-            INSERT INTO recipe_catalog_imports (recipe_id, imported_at)
-            VALUES (?, datetime('now'))
+            INSERT INTO recipe_catalog_imports (
+                recipe_id, imported_at, catalog_version
+            )
+            VALUES (?, datetime('now'), ?)
+            ON CONFLICT(recipe_id) DO UPDATE SET
+                imported_at = excluded.imported_at,
+                catalog_version = excluded.catalog_version
             """,
-            (recipe.id,),
+            (recipe.id, recipe.version),
         )
-        inserted += cursor.rowcount
-    return inserted
+    return changed

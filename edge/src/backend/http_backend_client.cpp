@@ -289,6 +289,14 @@ std::vector<PendingUpload> uploads_from_event(
                         {"current_phase", value.current_phase},
                     };
                 } else if constexpr (
+                    std::is_same_v<Event, RecipeCompleted>) {
+                    payload = {
+                        {"recipe_id", value.recipe_id},
+                        {"final_phase", value.final_phase},
+                        {"total_duration_hours",
+                         value.total_duration_hours},
+                    };
+                } else if constexpr (
                     std::is_same_v<Event, EmergencyTriggered>) {
                     payload = {{"reason", value.reason}};
                 } else if constexpr (

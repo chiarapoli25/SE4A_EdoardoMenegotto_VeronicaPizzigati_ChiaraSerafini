@@ -1,9 +1,30 @@
 {
-  "schema_version": 1,
-  "phase": {
-    "name": "Mantenimento annuale",
-    "duration_hours": 8760,
-    "start_hour": 7
+  "schema_version": 2,
+  "phase_sequences": {
+    "foliage": [
+      {"key": "establishment", "name": "Avvio e attecchimento", "duration_hours": 336, "start_hour": 7, "photoperiod_offset_hours": -2, "light_factor": 0.75, "water_offset_percent": 4, "nitrogen_factor": 0.55, "phosphorus_factor": 0.65, "potassium_factor": 0.65, "dose_factor": 0.5, "ph_offset": 0.1},
+      {"key": "vegetative", "name": "Crescita vegetativa", "duration_hours": 1080, "start_hour": 7, "photoperiod_offset_hours": 1, "light_factor": 1.0, "water_offset_percent": 2, "nitrogen_factor": 1.1, "phosphorus_factor": 0.9, "potassium_factor": 1.0, "dose_factor": 1.0, "ph_offset": 0},
+      {"key": "maintenance", "name": "Mantenimento fogliare", "duration_hours": 2880, "start_hour": 8, "photoperiod_offset_hours": 0, "light_factor": 0.9, "water_offset_percent": 0, "nitrogen_factor": 0.9, "phosphorus_factor": 0.8, "potassium_factor": 0.9, "dose_factor": 0.8, "ph_offset": 0},
+      {"key": "rest", "name": "Riposo vegetativo", "duration_hours": 720, "start_hour": 9, "photoperiod_offset_hours": -3, "light_factor": 0.65, "water_offset_percent": -8, "nitrogen_factor": 0.35, "phosphorus_factor": 0.35, "potassium_factor": 0.4, "dose_factor": 0.25, "ph_offset": 0.1}
+    ],
+    "flowering": [
+      {"key": "establishment", "name": "Avvio e attecchimento", "duration_hours": 336, "start_hour": 7, "photoperiod_offset_hours": -2, "light_factor": 0.75, "water_offset_percent": 4, "nitrogen_factor": 0.55, "phosphorus_factor": 0.65, "potassium_factor": 0.65, "dose_factor": 0.5, "ph_offset": 0.1},
+      {"key": "vegetative", "name": "Crescita vegetativa", "duration_hours": 1008, "start_hour": 7, "photoperiod_offset_hours": 1, "light_factor": 1.0, "water_offset_percent": 2, "nitrogen_factor": 1.1, "phosphorus_factor": 0.9, "potassium_factor": 1.0, "dose_factor": 1.0, "ph_offset": 0},
+      {"key": "flowering", "name": "Fioritura", "duration_hours": 1440, "start_hour": 6, "photoperiod_offset_hours": 2, "light_factor": 1.05, "water_offset_percent": 3, "nitrogen_factor": 0.8, "phosphorus_factor": 1.2, "potassium_factor": 1.2, "dose_factor": 1.2, "ph_offset": -0.1},
+      {"key": "rest", "name": "Riposo post-fioritura", "duration_hours": 720, "start_hour": 9, "photoperiod_offset_hours": -3, "light_factor": 0.65, "water_offset_percent": -8, "nitrogen_factor": 0.35, "phosphorus_factor": 0.35, "potassium_factor": 0.4, "dose_factor": 0.25, "ph_offset": 0.1}
+    ],
+    "succulent": [
+      {"key": "establishment", "name": "Avvio e attecchimento", "duration_hours": 504, "start_hour": 8, "photoperiod_offset_hours": -2, "light_factor": 0.7, "water_offset_percent": 3, "nitrogen_factor": 0.45, "phosphorus_factor": 0.55, "potassium_factor": 0.6, "dose_factor": 0.4, "ph_offset": 0.1},
+      {"key": "vegetative", "name": "Crescita vegetativa", "duration_hours": 1440, "start_hour": 7, "photoperiod_offset_hours": 1, "light_factor": 1.0, "water_offset_percent": 0, "nitrogen_factor": 0.8, "phosphorus_factor": 0.8, "potassium_factor": 0.9, "dose_factor": 0.7, "ph_offset": 0},
+      {"key": "maturation", "name": "Maturazione", "duration_hours": 2160, "start_hour": 7, "photoperiod_offset_hours": 0, "light_factor": 1.05, "water_offset_percent": -3, "nitrogen_factor": 0.55, "phosphorus_factor": 0.7, "potassium_factor": 1.0, "dose_factor": 0.55, "ph_offset": 0},
+      {"key": "rest", "name": "Riposo asciutto", "duration_hours": 1440, "start_hour": 9, "photoperiod_offset_hours": -4, "light_factor": 0.7, "water_offset_percent": -8, "nitrogen_factor": 0.2, "phosphorus_factor": 0.2, "potassium_factor": 0.25, "dose_factor": 0.1, "ph_offset": 0.1}
+    ],
+    "fruiting": [
+      {"key": "establishment", "name": "Avvio e attecchimento", "duration_hours": 336, "start_hour": 7, "photoperiod_offset_hours": -2, "light_factor": 0.75, "water_offset_percent": 4, "nitrogen_factor": 0.55, "phosphorus_factor": 0.65, "potassium_factor": 0.65, "dose_factor": 0.5, "ph_offset": 0.1},
+      {"key": "vegetative", "name": "Crescita vegetativa", "duration_hours": 840, "start_hour": 6, "photoperiod_offset_hours": 1, "light_factor": 1.0, "water_offset_percent": 2, "nitrogen_factor": 1.2, "phosphorus_factor": 0.9, "potassium_factor": 1.0, "dose_factor": 1.0, "ph_offset": 0},
+      {"key": "flowering", "name": "Fioritura e allegagione", "duration_hours": 840, "start_hour": 6, "photoperiod_offset_hours": 1, "light_factor": 1.05, "water_offset_percent": 4, "nitrogen_factor": 0.85, "phosphorus_factor": 1.2, "potassium_factor": 1.2, "dose_factor": 1.2, "ph_offset": -0.1},
+      {"key": "production", "name": "Produzione e maturazione", "duration_hours": 1008, "start_hour": 6, "photoperiod_offset_hours": 0, "light_factor": 1.0, "water_offset_percent": 2, "nitrogen_factor": 0.75, "phosphorus_factor": 1.0, "potassium_factor": 1.3, "dose_factor": 1.15, "ph_offset": -0.1}
+    ]
   },
   "light_profiles": {
     "low": {"setpoint": 140, "minimum": 80, "maximum": 220, "photoperiod_hours": 10},

@@ -172,6 +172,33 @@ def _migrate_soil_probe_columns(connection: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_recipe_catalog_version(connection: sqlite3.Connection) -> None:
+    """Versiona il bootstrap senza trasformare i JSON in sorgente runtime."""
+    columns = _table_columns(connection, "recipe_catalog_imports")
+    if columns and "catalog_version" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE recipe_catalog_imports
+            ADD COLUMN catalog_version INTEGER NOT NULL DEFAULT 1
+            """
+        )
+
+
+def _migrate_cultivation_completed_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """Aggiunge lo stato finale esplicito alle zone create in precedenza."""
+    columns = _table_columns(connection, "zones")
+    if columns and "cultivation_completed" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE zones
+            ADD COLUMN cultivation_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (cultivation_completed IN (0, 1))
+            """
+        )
+
+
 def _migrate_zone_administrative_status_column(
     connection: sqlite3.Connection,
 ) -> None:
@@ -220,6 +247,8 @@ def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            cultivation_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (cultivation_completed IN (0, 1)),
             administrative_status TEXT NOT NULL DEFAULT 'active'
                 CHECK (administrative_status IN
                        ('active', 'inactive', 'maintenance')),
@@ -276,10 +305,12 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS recipe_catalog_imports (
             recipe_id TEXT PRIMARY KEY,
-            imported_at TEXT NOT NULL
+            imported_at TEXT NOT NULL,
+            catalog_version INTEGER NOT NULL DEFAULT 1
         )
         """
     )
+    _migrate_recipe_catalog_version(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS zones (
@@ -295,6 +326,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            cultivation_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (cultivation_completed IN (0, 1)),
             administrative_status TEXT NOT NULL DEFAULT 'active'
                 CHECK (administrative_status IN
                        ('active', 'inactive', 'maintenance')),
@@ -312,6 +345,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     _migrate_zone_assignment_column(connection)
     _migrate_fifth_department_schema(connection)
     _migrate_zone_administrative_status_column(connection)
+    _migrate_cultivation_completed_column(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plants (

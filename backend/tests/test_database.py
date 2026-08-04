@@ -47,8 +47,10 @@ def test_init_db_persists_the_seed_catalog_in_sqlite(
 
     assert count == 20
     assert stored is not None
-    assert stored[0] == 1
-    assert Recipe.model_validate_json(stored[1]).plant_type == "Calathea"
+    assert stored[0] == 2
+    expanded = Recipe.model_validate_json(stored[1])
+    assert expanded.plant_type == "Calathea"
+    assert len(expanded.phases) == 4
 
 
 def test_recipe_repository_has_no_in_memory_catalog_fallback(
@@ -70,7 +72,7 @@ def test_catalog_seed_does_not_overwrite_a_database_customization(
     recipe = get_recipe(connection, "recipe-calathea")
     assert recipe is not None
     customized = recipe.model_copy(
-        update={"version": 2, "plant_type": "Calathea personalizzata"}
+        update={"version": 3, "plant_type": "Calathea personalizzata"}
     )
     save_recipe(connection, customized)
 
@@ -78,8 +80,38 @@ def test_catalog_seed_does_not_overwrite_a_database_customization(
 
     stored = get_recipe(connection, "recipe-calathea")
     assert stored is not None
-    assert stored.version == 2
+    assert stored.version == 3
     assert stored.plant_type == "Calathea personalizzata"
+
+
+def test_catalog_v1_bootstrap_is_migrated_to_multiphase_v2(
+    connection: sqlite3.Connection,
+) -> None:
+    recipe = get_recipe(connection, "recipe-calathea")
+    assert recipe is not None
+    legacy = recipe.model_copy(
+        update={"version": 1, "phases": recipe.phases[:1]}
+    )
+    connection.execute(
+        "UPDATE recipes SET version = 1, data = ? WHERE id = ?",
+        (legacy.model_dump_json(), legacy.id),
+    )
+    connection.execute(
+        """
+        UPDATE recipe_catalog_imports
+        SET catalog_version = 1
+        WHERE recipe_id = ?
+        """,
+        (legacy.id,),
+    )
+    connection.commit()
+
+    init_db(connection)
+
+    migrated = get_recipe(connection, legacy.id)
+    assert migrated is not None
+    assert migrated.version == 2
+    assert len(migrated.phases) == 4
 
 
 def test_save_recipe_upserts_on_higher_version(
@@ -156,7 +188,8 @@ def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
         }
         assignment = legacy.execute(
             """
-            SELECT assigned_edge_id, administrative_status
+            SELECT assigned_edge_id, administrative_status,
+                   cultivation_completed
             FROM zones
             WHERE id = 'legacy-zone'
             """
@@ -166,8 +199,9 @@ def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
 
     assert "assigned_edge_id" in columns
     assert "administrative_status" in columns
+    assert "cultivation_completed" in columns
     assert "zone_type" not in columns
-    assert assignment == (None, "active")
+    assert assignment == (None, "active", 0)
 
 
 def test_init_db_migrates_schema_to_accept_quarantine() -> None:

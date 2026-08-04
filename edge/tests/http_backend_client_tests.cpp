@@ -597,6 +597,14 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
             3600.0,
         });
     bus.publish(
+        smarthydro::RecipeCompleted{
+            "zone-1",
+            4000.0,
+            "recipe-pomodorino",
+            "Produzione e maturazione",
+            3024.0,
+        });
+    bus.publish(
         smarthydro::SchedulerLagStateChanged{
             "zone-1",
             900.0,
@@ -607,11 +615,11 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
         });
 
     ASSERT_TRUE(wait_until([&] {
-        return transport->post_count() >= 4;
+        return transport->post_count() >= 5;
     }));
     client->stop();
     const auto posts = transport->post_snapshot();
-    ASSERT_EQ(posts.size(), 4U);
+    ASSERT_EQ(posts.size(), 5U);
 
     const auto speed = nlohmann::json::parse(posts[0].second);
     EXPECT_EQ(speed.at("event_type"), "SimulationSpeedChanged");
@@ -642,7 +650,16 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
         completed.at("payload").at("duration_seconds"),
         3600.0);
 
-    const auto lag = nlohmann::json::parse(posts[3].second);
+    const auto recipe_completed = nlohmann::json::parse(posts[3].second);
+    EXPECT_EQ(recipe_completed.at("event_type"), "RecipeCompleted");
+    EXPECT_EQ(
+        recipe_completed.at("payload").at("recipe_id"),
+        "recipe-pomodorino");
+    EXPECT_EQ(
+        recipe_completed.at("payload").at("final_phase"),
+        "Produzione e maturazione");
+
+    const auto lag = nlohmann::json::parse(posts[4].second);
     EXPECT_EQ(lag.at("event_type"), "SchedulerLagStateChanged");
     EXPECT_TRUE(lag.at("payload").at("lagging"));
     EXPECT_EQ(lag.at("payload").at("pending_steps"), 2);

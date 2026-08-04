@@ -248,6 +248,8 @@ void print_step(
         << " | sequence=" << result.sequence_number
         << " | t=" << result.start_time_seconds / 3600.0 << " h"
         << " | phase=" << result.phase_name
+        << " | recipe="
+        << (result.recipe_completed ? "completed" : "running")
         << " | state="
         << smarthydro::to_string(result.operational_state)
         << "\nSensors: soil=";

@@ -37,9 +37,10 @@ def create_zone(connection: sqlite3.Connection, zone: ZoneCreate) -> Zone:
             INSERT INTO zones (
                 id, name, department_number, sector_number, plant_species,
                 assigned_edge_id, status, active_recipe_id,
-                last_edge_contact, current_phase, administrative_status
+                last_edge_contact, current_phase, cultivation_completed,
+                administrative_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 stored_zone.id,
@@ -52,6 +53,7 @@ def create_zone(connection: sqlite3.Connection, zone: ZoneCreate) -> Zone:
                 stored_zone.active_recipe_id,
                 stored_zone.last_edge_contact,
                 stored_zone.current_phase,
+                int(stored_zone.cultivation_completed),
                 stored_zone.administrative_status.value,
             ),
         )
@@ -77,7 +79,8 @@ def _zone_from_row(row: tuple) -> Zone:
         active_recipe_id=row[7],
         last_edge_contact=row[8],
         current_phase=row[9],
-        administrative_status=row[10],
+        cultivation_completed=bool(row[10]),
+        administrative_status=row[11],
     )
 
 
@@ -87,7 +90,8 @@ def get_zone(connection: sqlite3.Connection, zone_id: str) -> Zone | None:
         """
         SELECT id, name, department_number, sector_number, plant_species,
                assigned_edge_id, status, active_recipe_id,
-               last_edge_contact, current_phase, administrative_status
+               last_edge_contact, current_phase, cultivation_completed,
+               administrative_status
         FROM zones
         WHERE id = ?
         """,
@@ -104,7 +108,8 @@ def list_zones(connection: sqlite3.Connection) -> list[Zone]:
         """
         SELECT id, name, department_number, sector_number, plant_species,
                assigned_edge_id, status, active_recipe_id,
-               last_edge_contact, current_phase, administrative_status
+               last_edge_contact, current_phase, cultivation_completed,
+               administrative_status
         FROM zones
         ORDER BY department_number, sector_number
         """
@@ -121,7 +126,8 @@ def list_zones_for_edge(
         """
         SELECT id, name, department_number, sector_number, plant_species,
                assigned_edge_id, status, active_recipe_id,
-               last_edge_contact, current_phase, administrative_status
+               last_edge_contact, current_phase, cultivation_completed,
+               administrative_status
         FROM zones
         WHERE assigned_edge_id = ?
         ORDER BY department_number, sector_number

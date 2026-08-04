@@ -118,6 +118,10 @@ std::string event_detail(const EdgeDomainEvent& event) {
                 return value.previous_phase + " -> " +
                        value.current_phase;
             } else if constexpr (
+                std::is_same_v<Event, RecipeCompleted>) {
+                return value.recipe_id + " completed in " +
+                       value.final_phase;
+            } else if constexpr (
                 std::is_same_v<Event, EmergencyTriggered>) {
                 return value.reason;
             } else if constexpr (
@@ -167,6 +171,9 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             } else if constexpr (
                 std::is_same_v<Event, RecipePhaseChanged>) {
                 return "RecipePhaseChanged";
+            } else if constexpr (
+                std::is_same_v<Event, RecipeCompleted>) {
+                return "RecipeCompleted";
             } else if constexpr (
                 std::is_same_v<Event, EmergencyTriggered>) {
                 return "EmergencyTriggered";
