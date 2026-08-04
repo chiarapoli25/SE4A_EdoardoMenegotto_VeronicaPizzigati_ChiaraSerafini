@@ -167,7 +167,7 @@
  * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
  * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
- * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Elenco delle ricette disponibili |
+ * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Catalogo e ricette salvate, filtrabili per reparto |
  * | POST | `/zones/{zone_id}/events` | backend.app.features.events.routes.create_event() | Acquisizione idempotente di un evento Edge |
  * | GET | `/zones/{zone_id}/events` | backend.app.features.events.routes.read_events() | Storico degli eventi Edge |
  * | POST | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.enqueue_command() | Accodamento di un comando runtime |
@@ -185,6 +185,18 @@
  * L'endpoint `/health` e attualmente statico: non verifica sensori, database o
  * collegamento con l'Edge. La specifica OpenAPI interattiva e disponibile in
  * `/docs` quando il server e in esecuzione.
+ *
+ * Le zone espongono il nome canonico dei quattro reparti produttivi; il quinto
+ * nome e riservato alla destinazione fisica di quarantena, mentre lo stato di
+ * quarantena appartiene sempre alla pianta. La directory
+ * `config/recipe_catalog/recipes/` contiene un JSON per ciascuna delle 20
+ * specie, mentre `config/recipe_catalog/profiles.json` raccoglie i profili
+ * condivisi. `init_db()` valida ogni file e importa una sola volta ciascun ID,
+ * registrandolo in `recipe_catalog_imports`: nuovi file vengono acquisiti,
+ * ma versioni personalizzate e cancellazioni SQLite non vengono ripristinate.
+ * Repository e API leggono poi soltanto il database. Le indicazioni
+ * qualitative originali sono conservate in `care_profile` e affiancate dai
+ * target numerici compatibili con l'Edge.
  *
  * @section backend_architecture Organizzazione per funzionalita
  *
@@ -271,6 +283,6 @@
  * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
  * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;
  * - backend/app/features/commands/: coda ed esiti dei comandi runtime;
- * - backend/app/features/recipes/: ricette, persistenza ed esportazione;
+ * - backend/app/features/recipes/: catalogo, ricette, persistenza ed esportazione;
  * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */

@@ -1,0 +1,11 @@
+{
+  "id": "recipe-kumquat",
+  "plant_type": "Kumquat",
+  "department_number": 4,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Pieno sole", "watering": "Come il limone", "temperature": "Fino a -5°C", "fertilization": "Agrumi"},
+  "light_profile": "full_sun",
+  "water_profile": "regular",
+  "feed_profile": "citrus",
+  "ph_setpoint": 6.2
+}

@@ -4,7 +4,16 @@
 
 from enum import Enum
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    model_validator,
+)
+
+from ...greenhouse_layout import department_name
 
 
 class ZoneStatus(str, Enum):
@@ -66,6 +75,12 @@ class ZoneCreate(BaseModel):
     administrative_status: ZoneAdministrativeStatus = (
         ZoneAdministrativeStatus.ACTIVE
     )
+
+    @computed_field
+    @property
+    def department_name(self) -> str:
+        """Nome canonico del reparto fisico mostrato ai client."""
+        return department_name(self.department_number)
 
     @model_validator(mode="after")
     def _validate_department_role(self) -> "ZoneCreate":

@@ -7,6 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
+from ..recipes.models import Recipe
 from ..recipes.repository import get_recipe
 from .models import Zone, ZoneCreate, ZoneUpdate
 from .repository import (
@@ -26,6 +27,36 @@ router = APIRouter(prefix="/zones", tags=["zones"])
 edge_router = APIRouter(prefix="/edges", tags=["edges"])
 
 
+def _assert_recipe_matches_zone(
+    recipe: Recipe,
+    department_number: int,
+    plant_species: str | None,
+) -> None:
+    """Impedisce di assegnare una ricetta catalogata al reparto sbagliato."""
+    if (
+        recipe.department_number is not None
+        and recipe.department_number != department_number
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"recipe {recipe.id!r} belongs to department "
+                f"{recipe.department_number}, not {department_number}"
+            ),
+        )
+    if (
+        recipe.department_number is not None
+        and recipe.plant_type != plant_species
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"recipe {recipe.id!r} is for {recipe.plant_type!r}, "
+                f"not {plant_species!r}"
+            ),
+        )
+
+
 @router.post("", response_model=Zone, status_code=201)
 def register_zone(
     zone: ZoneCreate,
@@ -38,13 +69,17 @@ def register_zone(
     @return Zona creata con stato iniziale `offline`.
     @throws HTTPException Se id o posizione sono gia occupati.
     """
-    if (
-        zone.active_recipe_id is not None
-        and get_recipe(connection, zone.active_recipe_id) is None
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=f"recipe {zone.active_recipe_id!r} not found",
+    if zone.active_recipe_id is not None:
+        recipe = get_recipe(connection, zone.active_recipe_id)
+        if recipe is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"recipe {zone.active_recipe_id!r} not found",
+            )
+        _assert_recipe_matches_zone(
+            recipe,
+            zone.department_number,
+            zone.plant_species,
         )
     try:
         return create_zone(connection, zone)
@@ -92,14 +127,27 @@ def modify_zone(
     if zone is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
 
-    if (
-        "active_recipe_id" in update.model_fields_set
-        and update.active_recipe_id is not None
-        and get_recipe(connection, update.active_recipe_id) is None
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=f"recipe {update.active_recipe_id!r} not found",
+    candidate_recipe_id = (
+        update.active_recipe_id
+        if "active_recipe_id" in update.model_fields_set
+        else zone.active_recipe_id
+    )
+    candidate_species = (
+        update.plant_species
+        if "plant_species" in update.model_fields_set
+        else zone.plant_species
+    )
+    if candidate_recipe_id is not None:
+        recipe = get_recipe(connection, candidate_recipe_id)
+        if recipe is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"recipe {candidate_recipe_id!r} not found",
+            )
+        _assert_recipe_matches_zone(
+            recipe,
+            zone.department_number,
+            candidate_species,
         )
 
     try:

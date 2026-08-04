@@ -250,6 +250,14 @@ def init_db(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS recipe_catalog_imports (
+            recipe_id TEXT PRIMARY KEY,
+            imported_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS zones (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -443,4 +451,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON actuator_snapshots (zone_id, recorded_at DESC)
         """
     )
+    from ..features.recipes.catalog import seed_recipe_catalog
+
+    seed_recipe_catalog(connection)
     connection.commit()

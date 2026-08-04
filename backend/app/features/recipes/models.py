@@ -19,7 +19,9 @@ quando la ricetta viene letta da JSON, e non sono quindi replicati qui.
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+from ...greenhouse_layout import PRODUCTION_DEPARTMENT_NAMES, department_name
 
 
 # --- Enum condivisi dalla ricetta -------------------------------------------
@@ -344,6 +346,19 @@ class RecipePhase(BaseModel):
         return self
 
 
+class RecipeCareProfile(BaseModel):
+    """Indicazioni agronomiche originali associate alla ricetta numerica.
+
+    I quattro campi conservano il testo del ricettario. L'Edge usa invece i
+    target numerici presenti nelle fasi e nei controllori.
+    """
+
+    light: str = Field(min_length=1)
+    watering: str = Field(min_length=1)
+    temperature: str = Field(min_length=1)
+    fertilization: str = Field(min_length=1)
+
+
 ## @brief Sensore o modello obbligatorio per ogni variabile controllata.
 _REQUIRED_SENSOR: dict[ControlledVariable, SensorType] = {
     ControlledVariable.SOIL_MOISTURE: SensorType.SOIL_MOISTURE_SENSOR,
@@ -484,10 +499,22 @@ class Recipe(BaseModel):
     substrate: SoilType
     ## @brief Versione positiva della ricetta.
     version: int = Field(ge=1)
+    ## @brief Reparto produttivo al quale appartiene la specie, se catalogata.
+    department_number: int | None = Field(default=None, ge=1, le=4)
+    ## @brief Indicazioni qualitative riportate dal ricettario della serra.
+    care_profile: RecipeCareProfile | None = None
     ## @brief Sequenza non vuota delle fasi di coltivazione.
     phases: list[RecipePhase] = Field(min_length=1)
     ## @brief Configurazioni delle sei variabili controllate.
     controllers: list[ControllerConfiguration] = Field(min_length=6, max_length=6)
+
+    @computed_field
+    @property
+    def department_name(self) -> str | None:
+        """Nome canonico del reparto delle ricette catalogate."""
+        if self.department_number is None:
+            return None
+        return department_name(self.department_number)
 
     @model_validator(mode="after")
     def _check_controllers_cover_all_variables(self) -> "Recipe":
@@ -500,4 +527,9 @@ class Recipe(BaseModel):
                 controller.variable for controller in self.controllers):
             raise ValueError(
                 "controllers must contain exactly one entry per ControlledVariable")
+        if (
+            self.department_number is not None
+            and self.department_number not in PRODUCTION_DEPARTMENT_NAMES
+        ):
+            raise ValueError("recipes can belong only to departments 1-4")
         return self

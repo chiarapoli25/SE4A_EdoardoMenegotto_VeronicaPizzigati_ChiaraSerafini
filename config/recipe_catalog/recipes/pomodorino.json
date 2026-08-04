@@ -1,0 +1,11 @@
+{
+  "id": "recipe-pomodorino",
+  "plant_type": "Pomodorino",
+  "department_number": 4,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Pieno sole", "watering": "Giornaliera (estate)", "temperature": "20-30°C", "fertilization": "Ricco di calcio"},
+  "light_profile": "full_sun",
+  "water_profile": "abundant",
+  "feed_profile": "calcium_rich",
+  "ph_setpoint": 6.2
+}

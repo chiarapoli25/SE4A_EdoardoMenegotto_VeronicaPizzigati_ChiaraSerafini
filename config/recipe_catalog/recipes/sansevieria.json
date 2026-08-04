@@ -1,0 +1,11 @@
+{
+  "id": "recipe-sansevieria",
+  "plant_type": "Sansevieria",
+  "department_number": 1,
+  "substrate": "draining",
+  "care_profile": {"light": "Adattabile", "watering": "Ogni 3-4 settimane", "temperature": "15-30°C", "fertilization": "2 volte all'anno"},
+  "light_profile": "adaptable",
+  "water_profile": "arid",
+  "feed_profile": "rare",
+  "ph_setpoint": 6.2
+}

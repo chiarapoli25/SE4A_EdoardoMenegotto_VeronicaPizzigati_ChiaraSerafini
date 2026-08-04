@@ -55,10 +55,22 @@ def create_recipe(
 
 @router.get("", response_model=list[Recipe])
 def read_recipes(
+    department_number: int | None = None,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[Recipe]:
-    """Elenca tutte le ricette disponibili per gli Edge."""
-    return list_recipes(connection)
+    """Elenca le ricette, eventualmente filtrate per reparto produttivo."""
+    recipes = list_recipes(connection)
+    if department_number is None:
+        return recipes
+    if department_number not in range(1, 5):
+        raise HTTPException(
+            status_code=422,
+            detail="department_number must be between 1 and 4",
+        )
+    return [
+        recipe for recipe in recipes
+        if recipe.department_number == department_number
+    ]
 
 
 @router.get("/{recipe_id}", response_model=Recipe)

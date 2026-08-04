@@ -1,0 +1,11 @@
+{
+  "id": "recipe-ficus-lyrata",
+  "plant_type": "Ficus Lyrata",
+  "department_number": 1,
+  "substrate": "aerated-universal",
+  "care_profile": {"light": "Indiretta molto forte", "watering": "Terreno quasi asciutto", "temperature": "15-25°C", "fertilization": "Mensile"},
+  "light_profile": "strong_indirect",
+  "water_profile": "dry",
+  "feed_profile": "monthly",
+  "ph_setpoint": 6.2
+}

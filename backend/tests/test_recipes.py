@@ -82,6 +82,119 @@ def test_read_missing_recipe_returns_404(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+def test_seeded_catalog_contains_five_recipes_for_each_department(
+    client: TestClient,
+) -> None:
+    response = client.get("/recipes")
+
+    assert response.status_code == 200
+    catalog_recipes = [
+        recipe for recipe in response.json()
+        if recipe["id"].startswith("recipe-")
+    ]
+    assert len(catalog_recipes) == 20
+    assert {
+        department: sum(
+            recipe["department_number"] == department
+            for recipe in catalog_recipes
+        )
+        for department in range(1, 5)
+    } == {1: 5, 2: 5, 3: 5, 4: 5}
+    assert {
+        department: {
+            recipe["plant_type"]
+            for recipe in catalog_recipes
+            if recipe["department_number"] == department
+        }
+        for department in range(1, 5)
+    } == {
+        1: {
+            "Pothos (Epipremnum)",
+            "Monstera Deliciosa",
+            "Ficus Lyrata",
+            "Calathea",
+            "Sansevieria",
+        },
+        2: {
+            "Orchidea (Phalaenopsis)",
+            "Spatifillo",
+            "Anturio",
+            "Ibisco",
+            "Violetta Africana",
+        },
+        3: {
+            "Aloe Vera",
+            "Echeveria",
+            "Cactus di Natale",
+            "Albero di Giada",
+            "Lithops",
+        },
+        4: {
+            "Limone (vaso)",
+            "Pomodorino",
+            "Fragola",
+            "Peperoncino",
+            "Kumquat",
+        },
+    }
+
+
+def test_catalog_recipe_preserves_source_care_profile(client: TestClient) -> None:
+    response = client.get("/recipes/recipe-calathea")
+
+    assert response.status_code == 200
+    assert response.json()["plant_type"] == "Calathea"
+    assert response.json()["department_name"] == (
+        "Piante Tropicali e da Fogliame"
+    )
+    assert response.json()["care_profile"] == {
+        "light": "Bassa/Media",
+        "watering": "Costante, leggermente umido",
+        "temperature": "Umidità >60%",
+        "fertilization": "Mensile diluito",
+    }
+    assert len(response.json()["phases"][0]["targets"]) == 6
+    assert len(response.json()["controllers"]) == 6
+
+
+def test_catalog_recipes_can_be_filtered_by_department(
+    client: TestClient,
+) -> None:
+    response = client.get("/recipes", params={"department_number": 3})
+
+    assert response.status_code == 200
+    assert len(response.json()) == 5
+    assert {
+        recipe["plant_type"] for recipe in response.json()
+    } == {
+        "Aloe Vera",
+        "Echeveria",
+        "Cactus di Natale",
+        "Albero di Giada",
+        "Lithops",
+    }
+
+
+def test_recipe_filter_rejects_quarantine_department(client: TestClient) -> None:
+    response = client.get("/recipes", params={"department_number": 5})
+
+    assert response.status_code == 422
+
+
+def test_catalog_recipe_requires_a_higher_version_to_override(
+    client: TestClient,
+) -> None:
+    recipe = client.get("/recipes/recipe-lithops").json()
+
+    conflict = client.post("/recipes", json=recipe)
+    recipe["version"] = 2
+    updated = client.post("/recipes", json=recipe)
+
+    assert conflict.status_code == 409
+    assert updated.status_code == 201
+    assert updated.json()["version"] == 2
+
+
 def test_create_recipe_rejects_invalid_payload(client: TestClient) -> None:
     response = client.post("/recipes", json={"id": "incomplete"})
 

@@ -1,0 +1,11 @@
+{
+  "id": "recipe-aloe-vera",
+  "plant_type": "Aloe Vera",
+  "department_number": 3,
+  "substrate": "draining",
+  "care_profile": {"light": "Sole diretto/forte", "watering": "Ogni 3 sett. a terreno arido", "temperature": "10-30°C", "fertilization": "1 volta in primavera"},
+  "light_profile": "direct_sun",
+  "water_profile": "arid",
+  "feed_profile": "rare",
+  "ph_setpoint": 6.5
+}

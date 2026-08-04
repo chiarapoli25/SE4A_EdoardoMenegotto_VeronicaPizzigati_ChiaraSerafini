@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "phase": {
+    "name": "Mantenimento annuale",
+    "duration_hours": 8760,
+    "start_hour": 7
+  },
+  "light_profiles": {
+    "low": {"setpoint": 140, "minimum": 80, "maximum": 220, "photoperiod_hours": 10},
+    "indirect": {"setpoint": 250, "minimum": 150, "maximum": 350, "photoperiod_hours": 12},
+    "bright_indirect": {"setpoint": 400, "minimum": 300, "maximum": 500, "photoperiod_hours": 12},
+    "strong_indirect": {"setpoint": 500, "minimum": 380, "maximum": 620, "photoperiod_hours": 12},
+    "adaptable": {"setpoint": 300, "minimum": 120, "maximum": 520, "photoperiod_hours": 12},
+    "partial_sun": {"setpoint": 600, "minimum": 450, "maximum": 750, "photoperiod_hours": 13},
+    "direct_sun": {"setpoint": 800, "minimum": 650, "maximum": 950, "photoperiod_hours": 14},
+    "full_sun": {"setpoint": 950, "minimum": 800, "maximum": 1100, "photoperiod_hours": 14}
+  },
+  "water_profiles": {
+    "minimal": {"setpoint": 18, "minimum": 8, "maximum": 28, "maximum_water_liters": 0.15},
+    "arid": {"setpoint": 24, "minimum": 14, "maximum": 34, "maximum_water_liters": 0.25},
+    "dry": {"setpoint": 34, "minimum": 24, "maximum": 44, "maximum_water_liters": 0.4},
+    "moderate": {"setpoint": 48, "minimum": 38, "maximum": 58, "maximum_water_liters": 0.65},
+    "regular": {"setpoint": 56, "minimum": 46, "maximum": 66, "maximum_water_liters": 0.8},
+    "moist": {"setpoint": 64, "minimum": 54, "maximum": 74, "maximum_water_liters": 0.9},
+    "abundant": {"setpoint": 72, "minimum": 62, "maximum": 82, "maximum_water_liters": 1.0}
+  },
+  "feed_profiles": {
+    "none": {"nitrogen": 40, "phosphorus": 20, "potassium": 60, "phase_dose_milliliters": 0, "maximum_command_milliliters": 0, "maximum_daily_milliliters": 0},
+    "rare": {"nitrogen": 70, "phosphorus": 35, "potassium": 100, "phase_dose_milliliters": 4, "maximum_command_milliliters": 1, "maximum_daily_milliliters": 3},
+    "light": {"nitrogen": 90, "phosphorus": 45, "potassium": 130, "phase_dose_milliliters": 8, "maximum_command_milliliters": 2, "maximum_daily_milliliters": 6},
+    "monthly": {"nitrogen": 110, "phosphorus": 55, "potassium": 165, "phase_dose_milliliters": 12, "maximum_command_milliliters": 3, "maximum_daily_milliliters": 9},
+    "biweekly": {"nitrogen": 135, "phosphorus": 70, "potassium": 205, "phase_dose_milliliters": 18, "maximum_command_milliliters": 4, "maximum_daily_milliliters": 12},
+    "high": {"nitrogen": 160, "phosphorus": 80, "potassium": 250, "phase_dose_milliliters": 24, "maximum_command_milliliters": 5, "maximum_daily_milliliters": 15},
+    "organic": {"nitrogen": 110, "phosphorus": 60, "potassium": 180, "phase_dose_milliliters": 14, "maximum_command_milliliters": 3, "maximum_daily_milliliters": 9},
+    "calcium_rich": {"nitrogen": 130, "phosphorus": 70, "potassium": 190, "phase_dose_milliliters": 20, "maximum_command_milliliters": 4, "maximum_daily_milliliters": 12},
+    "potassium_rich": {"nitrogen": 120, "phosphorus": 65, "potassium": 260, "phase_dose_milliliters": 20, "maximum_command_milliliters": 4, "maximum_daily_milliliters": 12},
+    "citrus": {"nitrogen": 140, "phosphorus": 70, "potassium": 220, "phase_dose_milliliters": 20, "maximum_command_milliliters": 4, "maximum_daily_milliliters": 12}
+  }
+}

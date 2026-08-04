@@ -44,6 +44,7 @@ def test_create_and_read_zone(client: TestClient) -> None:
     assert created.status_code == 201
     assert created.json() == {
         **zone_payload(),
+        "department_name": "Piante Tropicali e da Fogliame",
         "assigned_edge_id": None,
         "active_recipe_id": None,
         "current_phase": None,
@@ -55,6 +56,32 @@ def test_create_and_read_zone(client: TestClient) -> None:
     read = client.get("/zones/r1-s1")
     assert read.status_code == 200
     assert read.json() == created.json()
+
+
+def test_zone_responses_use_the_canonical_department_names(
+    client: TestClient,
+) -> None:
+    expected_names = {
+        1: "Piante Tropicali e da Fogliame",
+        2: "Piante da Fiore",
+        3: "Piante Grasse e Succulente",
+        4: "Piante da Frutto e Ortaggi",
+        5: "Quarantena",
+    }
+    for department_number, expected_name in expected_names.items():
+        plant_species = None if department_number == 5 else "Specie test"
+        response = client.post(
+            "/zones",
+            json=zone_payload(
+                f"r{department_number}-s1",
+                department_number,
+                1,
+                plant_species,
+            ),
+        )
+
+        assert response.status_code == 201
+        assert response.json()["department_name"] == expected_name
 
 
 def test_list_zones_orders_departments_and_sectors(client: TestClient) -> None:
@@ -233,6 +260,47 @@ def test_create_zone_rejects_missing_recipe(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert client.get("/zones/r1-s1").status_code == 404
+
+
+def test_create_zone_accepts_a_catalog_recipe(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/zones",
+        json={
+            **zone_payload(plant_species="Calathea"),
+            "active_recipe_id": "recipe-calathea",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["active_recipe_id"] == "recipe-calathea"
+
+
+def test_create_zone_rejects_catalog_recipe_from_another_department(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/v1/zones",
+        json={
+            **zone_payload(plant_species="Lithops"),
+            "active_recipe_id": "recipe-lithops",
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_create_zone_rejects_catalog_recipe_for_another_species(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/v1/zones",
+        json={
+            **zone_payload(plant_species="Pothos (Epipremnum)"),
+            "active_recipe_id": "recipe-calathea",
+        },
+    )
+
+    assert response.status_code == 409
 
 
 def test_patch_zone_rejects_species_incompatible_with_registered_plants(

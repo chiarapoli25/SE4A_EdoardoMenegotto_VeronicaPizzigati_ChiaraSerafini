@@ -246,10 +246,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/zones \
   -H 'Content-Type: application/json' \
   -d '{
     "id": "r1-s1",
-    "name": "Reparto 1 - Settore 1",
+    "name": "Piante Tropicali e da Fogliame - Settore 1",
     "department_number": 1,
     "sector_number": 1,
-    "plant_species": "Pomodoro",
+    "plant_species": "Calathea",
+    "active_recipe_id": "recipe-calathea",
     "assigned_edge_id": "edge-serra-1"
   }'
 ```
@@ -257,7 +258,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/zones \
 La serra comprende quattro reparti produttivi e un quinto reparto nel quale
 vengono spostate le piante in quarantena. I reparti da 1 a 4 dichiarano una
 sola `plant_species`; il reparto 5 usa `plant_species: null`, perche puo
-accogliere contemporaneamente esemplari di specie diverse:
+accogliere contemporaneamente esemplari di specie diverse. Ogni risposta zona
+espone anche `department_name`, calcolato dal numero con questa configurazione
+fissa:
+
+1. `Piante Tropicali e da Fogliame`;
+2. `Piante da Fiore`;
+3. `Piante Grasse e Succulente`;
+4. `Piante da Frutto e Ortaggi`;
+5. `Quarantena`.
+
+Il quinto nome descrive soltanto la destinazione fisica: la quarantena rimane
+il flag temporaneo `is_quarantined` della singola pianta.
+
+Per registrare uno dei settori misti di quarantena:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/zones \
@@ -613,6 +627,34 @@ Prima dell'uscita, il supervisore applica con priorita:
 ricetta dimostrativa e in `config/example_recipe.json` e descrive due fasi del
 pomodoro su substrato universale aerato. I coefficienti sono didattici.
 
+La directory `config/recipe_catalog/recipes/` contiene un file JSON per
+ciascuna delle 20 piante, cinque per ognuno dei quattro reparti produttivi.
+`config/recipe_catalog/profiles.json` raccoglie invece i profili condivisi di
+luce, irrigazione, concimazione e fase. Durante `init_db()` ogni file viene
+validato singolarmente e le ricette mai importate vengono inserite nella tabella
+SQLite `recipes`. La tabella `recipe_catalog_imports` registra gli ID gia
+importati; da quel momento API ed Edge leggono esclusivamente il
+database. `GET /api/v1/recipes/{recipe_id}` permette all'Edge di caricarle
+direttamente. Ogni ricetta include `department_number`,
+il `department_name` calcolato e un `care_profile` che conserva testualmente
+luce, irrigazione, temperatura e concimazione del ricettario. I target
+numerici di luce, umidita del terreno, pH e N/P/K sono una traduzione
+operativa prudenziale delle indicazioni qualitative e richiedono comunque la
+conferma dell'agronomo.
+
+L'elenco si puo restringere, per esempio, con
+`GET /api/v1/recipes?department_number=3`. Il backend impedisce di assegnare
+una ricetta di catalogo a un reparto diverso o a una zona con una specie
+diversa da `plant_type`; le ricette personalizzate prive dei metadati di
+catalogo mantengono il comportamento precedente.
+
+Una ricetta iniziale e alla versione 1. Puo essere personalizzata tramite
+`POST /api/v1/recipes` usando lo stesso identificativo e una versione
+superiore; la copia salvata nel database prende allora il posto di quella
+iniziale. Le inizializzazioni successive importano soltanto i nuovi file mai
+visti e non sovrascrivono mai personalizzazioni o cancellazioni effettuate in
+SQLite.
+
 ## Experiments C++
 
 Gli experiments sono programmi dimostrativi separati dagli unit test e usano
@@ -828,3 +870,13 @@ controllo Edge e dall'experiment dedicato. Contiene le fasi
 `VegetativeGrowth` e `Flowering`, i target delle sei variabili, le
 configurazioni Strategy e tutti i limiti prioritari. I valori hanno finalita
 dimostrativa e non sostituiscono la validazione di un agronomo.
+
+Il catalogo iniziale modificabile e organizzato in
+`config/recipe_catalog/profiles.json` e
+`config/recipe_catalog/recipes/<pianta>.json`. Per aggiungere una pianta basta
+aggiungere un file valido nella directory `recipes`, senza modificare Python.
+Il modulo `backend/app/features/recipes/catalog.py` valida profili e ricette,
+segnala il percorso esatto dei file errati, costruisce il contratto richiesto
+dall'Edge e inizializza una sola volta ogni ID di catalogo. Il repository non
+possiede fallback in memoria: elenco, lettura e versionamento usano sempre la
+tabella `recipes`.

@@ -37,6 +37,51 @@ def test_get_missing_recipe_returns_none(connection: sqlite3.Connection) -> None
     assert get_recipe(connection, "does-not-exist") is None
 
 
+def test_init_db_persists_the_seed_catalog_in_sqlite(
+    connection: sqlite3.Connection,
+) -> None:
+    count = connection.execute("SELECT COUNT(*) FROM recipes").fetchone()[0]
+    stored = connection.execute(
+        "SELECT version, data FROM recipes WHERE id = 'recipe-calathea'"
+    ).fetchone()
+
+    assert count == 20
+    assert stored is not None
+    assert stored[0] == 1
+    assert Recipe.model_validate_json(stored[1]).plant_type == "Calathea"
+
+
+def test_recipe_repository_has_no_in_memory_catalog_fallback(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute("DELETE FROM recipes WHERE id = 'recipe-calathea'")
+    connection.commit()
+
+    assert get_recipe(connection, "recipe-calathea") is None
+
+    init_db(connection)
+
+    assert get_recipe(connection, "recipe-calathea") is None
+
+
+def test_catalog_seed_does_not_overwrite_a_database_customization(
+    connection: sqlite3.Connection,
+) -> None:
+    recipe = get_recipe(connection, "recipe-calathea")
+    assert recipe is not None
+    customized = recipe.model_copy(
+        update={"version": 2, "plant_type": "Calathea personalizzata"}
+    )
+    save_recipe(connection, customized)
+
+    init_db(connection)
+
+    stored = get_recipe(connection, "recipe-calathea")
+    assert stored is not None
+    assert stored.version == 2
+    assert stored.plant_type == "Calathea personalizzata"
+
+
 def test_save_recipe_upserts_on_higher_version(
     connection: sqlite3.Connection, example_recipe: Recipe
 ) -> None:
