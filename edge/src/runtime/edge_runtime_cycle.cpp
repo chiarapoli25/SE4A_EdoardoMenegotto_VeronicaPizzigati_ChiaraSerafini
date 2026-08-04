@@ -20,16 +20,16 @@ double hour_of_day(double elapsed_hours) {
     return hour;
 }
 
-double nutrient_model_value(
+std::optional<double> nutrient_probe_estimate(
     ControlledVariable variable,
-    const EnvironmentState& state) {
+    const SensorReadings& readings) {
     switch (variable) {
         case ControlledVariable::NITROGEN:
-            return state.nitrogen_mg_per_liter;
+            return readings.nitrogen_estimate_mg_per_liter;
         case ControlledVariable::PHOSPHORUS:
-            return state.phosphorus_mg_per_liter;
+            return readings.phosphorus_estimate_mg_per_liter;
         case ControlledVariable::POTASSIUM:
-            return state.potassium_mg_per_liter;
+            return readings.potassium_estimate_mg_per_liter;
         default:
             break;
     }
@@ -107,6 +107,9 @@ SensorReadings EdgeRuntime::read_sensors() {
     readings.soil_moisture_percent =
         sensors_[sensor_channel_index(SensorChannel::SOIL_MOISTURE)]
             ->read(state);
+    readings.soil_bulk_ec_ms_cm =
+        sensors_[sensor_channel_index(SensorChannel::SOIL_CONDUCTIVITY)]
+            ->read(state);
     readings.ph =
         sensors_[sensor_channel_index(SensorChannel::PH)]
             ->read(state);
@@ -114,6 +117,7 @@ SensorReadings EdgeRuntime::read_sensors() {
         sensors_[sensor_channel_index(SensorChannel::LIGHT)]
             ->read(state);
     apply_sensor_faults(readings);
+    update_soil_probe_estimates(readings, state, soil_probe_model_);
     return readings;
 }
 
@@ -222,7 +226,9 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         const auto index = controlled_variable_index(variable);
         request = base_request(delta_time_seconds);
         request.controller_input.model_estimate =
-            nutrient_model_value(variable, environment_->state());
+            nutrient_probe_estimate(variable, result.readings);
+        request.source_valid =
+            request.controller_input.model_estimate.has_value();
         request.controller_input.water_delivered_liters =
             requested_water;
         request.controller_input.cumulative_dose_milliliters =

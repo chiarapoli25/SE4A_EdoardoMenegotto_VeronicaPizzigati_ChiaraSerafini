@@ -46,6 +46,12 @@ def telemetry_payload(
         "temperature_c": 24.5,
         "air_humidity_percent": 61.0,
         "soil_moisture_percent": 48.2,
+        "soil_bulk_ec_ms_cm": 0.68,
+        "soil_ec_ms_cm": 1.75,
+        "fertilizer_concentration_mg_per_liter": 388.9,
+        "nitrogen_estimate_mg_per_liter": 145.8,
+        "phosphorus_estimate_mg_per_liter": 48.6,
+        "potassium_estimate_mg_per_liter": 194.5,
         "ph": 6.4,
         "light_ppfd_umol_m2_s": 520.0,
     }
@@ -61,6 +67,8 @@ def test_ingest_and_read_latest_telemetry(client: TestClient) -> None:
     assert body["sequence_number"] == 1
     assert body["recorded_at"] == "2026-07-29T10:00:00Z"
     assert body["received_at"] is not None
+    assert body["soil_ec_ms_cm"] == 1.75
+    assert body["fertilizer_concentration_mg_per_liter"] == 388.9
 
     latest = client.get("/zones/r1-s1/telemetry/latest")
     assert latest.status_code == 200
@@ -141,6 +149,18 @@ def test_invalid_sensor_value_is_rejected(client: TestClient) -> None:
     response = client.post(
         "/zones/r1-s1/telemetry",
         json={**telemetry_payload(), "ph": 15.0},
+    )
+
+    assert response.status_code == 422
+
+
+def test_negative_fertilizer_estimate_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/zones/r1-s1/telemetry",
+        json={
+            **telemetry_payload(),
+            "fertilizer_concentration_mg_per_liter": -1.0,
+        },
     )
 
     assert response.status_code == 422

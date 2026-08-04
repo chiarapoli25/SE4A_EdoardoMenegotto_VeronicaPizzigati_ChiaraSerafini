@@ -22,6 +22,7 @@ enum class SensorChannel : std::size_t {
     TEMPERATURE = 0,
     AIR_HUMIDITY,
     SOIL_MOISTURE,
+    SOIL_CONDUCTIVITY,
     PH,
     LIGHT,
     COUNT,
@@ -114,7 +115,7 @@ public:
 /**
  * @brief Campionatore condiviso dagli adapter dei sensori simulati.
  *
- * La cache garantisce che i cinque adapter osservino lo stesso SensorReadings
+ * La cache garantisce che i sei adapter osservino lo stesso SensorReadings
  * quando vengono interrogati allo stesso timestamp.
  */
 class SimulatedSensorSampler {
@@ -173,6 +174,20 @@ private:
     std::shared_ptr<SimulatedSensorSampler> sampler_;
 };
 
+/** @brief Adapter della sonda resistiva di conducibilita del terriccio. */
+class SoilConductivitySensorAdapter final : public ISensor {
+public:
+    /** @brief Collega il canale al campionatore simulato condiviso. */
+    explicit SoilConductivitySensorAdapter(
+        std::shared_ptr<SimulatedSensorSampler> sampler);
+    SensorChannel channel() const noexcept override;
+    std::optional<double> read(
+        const EnvironmentState& environment_state) override;
+
+private:
+    std::shared_ptr<SimulatedSensorSampler> sampler_;
+};
+
 /** @brief Adapter dell'elettrodo di pH simulato. */
 class PhSensorAdapter final : public ISensor {
 public:
@@ -202,7 +217,7 @@ private:
 };
 
 /**
- * @brief Crea i cinque adapter simulati con un campionatore condiviso.
+ * @brief Crea i sei adapter simulati con un campionatore condiviso.
  * @return Array completo, indicizzato tramite SensorChannel.
  */
 SensorAdapterArray make_simulated_sensor_adapters(

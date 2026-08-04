@@ -210,3 +210,46 @@ def test_init_db_migrates_schema_to_accept_quarantine() -> None:
         legacy.close()
 
     assert stored == (5, None)
+
+
+def test_init_db_adds_soil_probe_telemetry_to_existing_schema() -> None:
+    legacy = sqlite3.connect(":memory:")
+    legacy.execute(
+        """
+        CREATE TABLE telemetry_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            zone_id TEXT NOT NULL,
+            boot_id TEXT NOT NULL,
+            sequence_number INTEGER NOT NULL,
+            timestamp_seconds REAL NOT NULL,
+            recorded_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            temperature_c REAL,
+            air_humidity_percent REAL,
+            soil_moisture_percent REAL,
+            ph REAL,
+            light_ppfd_umol_m2_s REAL,
+            UNIQUE (zone_id, boot_id, sequence_number)
+        )
+        """
+    )
+
+    try:
+        init_db(legacy)
+        columns = {
+            row[1]
+            for row in legacy.execute(
+                "PRAGMA table_info(telemetry_samples)"
+            ).fetchall()
+        }
+    finally:
+        legacy.close()
+
+    assert {
+        "soil_bulk_ec_ms_cm",
+        "soil_ec_ms_cm",
+        "fertilizer_concentration_mg_per_liter",
+        "nitrogen_estimate_mg_per_liter",
+        "phosphorus_estimate_mg_per_liter",
+        "potassium_estimate_mg_per_liter",
+    } <= columns

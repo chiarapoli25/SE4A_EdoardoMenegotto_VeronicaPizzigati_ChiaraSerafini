@@ -75,6 +75,12 @@ def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
                 temperature_c REAL,
                 air_humidity_percent REAL,
                 soil_moisture_percent REAL,
+                soil_bulk_ec_ms_cm REAL,
+                soil_ec_ms_cm REAL,
+                fertilizer_concentration_mg_per_liter REAL,
+                nitrogen_estimate_mg_per_liter REAL,
+                phosphorus_estimate_mg_per_liter REAL,
+                potassium_estimate_mg_per_liter REAL,
                 ph REAL,
                 light_ppfd_umol_m2_s REAL,
                 FOREIGN KEY (zone_id) REFERENCES zones(id),
@@ -146,6 +152,24 @@ def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE zones ADD COLUMN assigned_edge_id TEXT"
         )
+
+
+def _migrate_soil_probe_columns(connection: sqlite3.Connection) -> None:
+    """Aggiunge alle telemetrie legacy le stime prodotte dalle sonde nel suolo."""
+    columns = _table_columns(connection, "telemetry_samples")
+    additions = {
+        "soil_bulk_ec_ms_cm": "REAL",
+        "soil_ec_ms_cm": "REAL",
+        "fertilizer_concentration_mg_per_liter": "REAL",
+        "nitrogen_estimate_mg_per_liter": "REAL",
+        "phosphorus_estimate_mg_per_liter": "REAL",
+        "potassium_estimate_mg_per_liter": "REAL",
+    }
+    for column, declaration in additions.items():
+        if columns and column not in columns:
+            connection.execute(
+                f"ALTER TABLE telemetry_samples ADD COLUMN {column} {declaration}"
+            )
 
 
 def _migrate_zone_administrative_status_column(
@@ -357,6 +381,12 @@ def init_db(connection: sqlite3.Connection) -> None:
             temperature_c REAL,
             air_humidity_percent REAL,
             soil_moisture_percent REAL,
+            soil_bulk_ec_ms_cm REAL,
+            soil_ec_ms_cm REAL,
+            fertilizer_concentration_mg_per_liter REAL,
+            nitrogen_estimate_mg_per_liter REAL,
+            phosphorus_estimate_mg_per_liter REAL,
+            potassium_estimate_mg_per_liter REAL,
             ph REAL,
             light_ppfd_umol_m2_s REAL,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
@@ -439,6 +469,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
     )
     _migrate_edge_session_columns(connection)
+    _migrate_soil_probe_columns(connection)
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_telemetry_zone_recorded_at

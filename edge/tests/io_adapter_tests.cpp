@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <memory>
 #include <optional>
 
@@ -13,6 +14,7 @@ smarthydro::SensorConfig deterministic_sensors() {
              &config.temperature,
              &config.air_humidity,
              &config.soil_moisture,
+             &config.soil_conductivity,
              &config.ph,
              &config.light_ppfd}) {
         channel->bias = 0.0;
@@ -32,6 +34,7 @@ TEST(IoAdapterTest, RoutesOneSynchronizedSampleToAllSensorChannels) {
     state.temperature_c = 21.5;
     state.air_humidity_percent = 64.0;
     state.soil_moisture_percent = 58.0;
+    state.ec_ms_cm = 2.0;
     state.ph = 6.1;
     state.light_ppfd_umol_m2_s = 430.0;
 
@@ -50,6 +53,12 @@ TEST(IoAdapterTest, RoutesOneSynchronizedSampleToAllSensorChannels) {
             smarthydro::SensorChannel::SOIL_MOISTURE)]
              ->read(state),
         state.soil_moisture_percent);
+    EXPECT_NEAR(
+        *adapters[smarthydro::sensor_channel_index(
+            smarthydro::SensorChannel::SOIL_CONDUCTIVITY)]
+             ->read(state),
+        state.ec_ms_cm * std::pow(0.58, 1.30),
+        1.0e-12);
     EXPECT_DOUBLE_EQ(
         *adapters[smarthydro::sensor_channel_index(
             smarthydro::SensorChannel::PH)]
@@ -106,6 +115,9 @@ TEST(IoAdapterTest, RejectsInvalidSensorChannelAndMissingSampler) {
         std::invalid_argument);
     EXPECT_THROW(
         smarthydro::SoilMoistureSensorAdapter(nullptr),
+        std::invalid_argument);
+    EXPECT_THROW(
+        smarthydro::SoilConductivitySensorAdapter(nullptr),
         std::invalid_argument);
 }
 

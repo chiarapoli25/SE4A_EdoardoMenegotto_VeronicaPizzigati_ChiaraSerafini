@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.database import init_db
 from backend.app.main import app, get_db, get_export_directory
+from backend.app.models import ControlledVariable
 
 
 @pytest.fixture()
@@ -42,6 +43,36 @@ def test_create_recipe_then_read_it_back(
     read_response = client.get(f"/recipes/{example_recipe_data['id']}")
     assert read_response.status_code == 200
     assert read_response.json() == create_response.json()
+
+
+def test_legacy_sensor_field_is_accepted_but_response_is_canonical(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    legacy_recipe = json.loads(json.dumps(example_recipe_data))
+    for controller in legacy_recipe["controllers"]:
+        controller["sensor"] = controller.pop("input_source")
+
+    response = client.post("/recipes", json=legacy_recipe)
+
+    assert response.status_code == 201
+    for controller in response.json()["controllers"]:
+        assert "input_source" in controller
+        assert "sensor" not in controller
+
+
+def test_air_conditions_are_not_controlled_variables() -> None:
+    controlled = {variable.value for variable in ControlledVariable}
+
+    assert controlled == {
+        "soil_moisture",
+        "light",
+        "ph",
+        "nitrogen",
+        "phosphorus",
+        "potassium",
+    }
+    assert "temperature" not in controlled
+    assert "air_humidity" not in controlled
 
 
 def test_create_recipe_exports_json_file_for_edge(

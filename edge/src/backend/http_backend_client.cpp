@@ -179,6 +179,23 @@ std::vector<PendingUpload> uploads_from_event(
                      optional_json(value.readings.air_humidity_percent)},
                     {"soil_moisture_percent",
                      optional_json(value.readings.soil_moisture_percent)},
+                    {"soil_bulk_ec_ms_cm",
+                     optional_json(value.readings.soil_bulk_ec_ms_cm)},
+                    {"soil_ec_ms_cm",
+                     optional_json(value.readings.soil_ec_ms_cm)},
+                    {"fertilizer_concentration_mg_per_liter",
+                     optional_json(
+                         value.readings
+                             .fertilizer_concentration_mg_per_liter)},
+                    {"nitrogen_estimate_mg_per_liter",
+                     optional_json(
+                         value.readings.nitrogen_estimate_mg_per_liter)},
+                    {"phosphorus_estimate_mg_per_liter",
+                     optional_json(
+                         value.readings.phosphorus_estimate_mg_per_liter)},
+                    {"potassium_estimate_mg_per_liter",
+                     optional_json(
+                         value.readings.potassium_estimate_mg_per_liter)},
                     {"ph", optional_json(value.readings.ph)},
                     {"light_ppfd_umol_m2_s",
                      optional_json(

@@ -26,9 +26,14 @@ def save_telemetry(
             INSERT INTO telemetry_samples (
                 zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                 received_at, temperature_c, air_humidity_percent,
-                soil_moisture_percent, ph, light_ppfd_umol_m2_s
+                soil_moisture_percent, soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+                fertilizer_concentration_mg_per_liter,
+                nitrogen_estimate_mg_per_liter,
+                phosphorus_estimate_mg_per_liter,
+                potassium_estimate_mg_per_liter,
+                ph, light_ppfd_umol_m2_s
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 zone_id,
@@ -40,6 +45,12 @@ def save_telemetry(
                 telemetry.temperature_c,
                 telemetry.air_humidity_percent,
                 telemetry.soil_moisture_percent,
+                telemetry.soil_bulk_ec_ms_cm,
+                telemetry.soil_ec_ms_cm,
+                telemetry.fertilizer_concentration_mg_per_liter,
+                telemetry.nitrogen_estimate_mg_per_liter,
+                telemetry.phosphorus_estimate_mg_per_liter,
+                telemetry.potassium_estimate_mg_per_liter,
                 telemetry.ph,
                 telemetry.light_ppfd_umol_m2_s,
             ),
@@ -49,7 +60,12 @@ def save_telemetry(
             """
             SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds,
                    recorded_at, received_at, temperature_c,
-                   air_humidity_percent, soil_moisture_percent, ph,
+                   air_humidity_percent, soil_moisture_percent,
+                   soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+                   fertilizer_concentration_mg_per_liter,
+                   nitrogen_estimate_mg_per_liter,
+                   phosphorus_estimate_mg_per_liter,
+                   potassium_estimate_mg_per_liter, ph,
                    light_ppfd_umol_m2_s
             FROM telemetry_samples
             WHERE zone_id = ? AND boot_id = ? AND sequence_number = ?
@@ -103,8 +119,14 @@ def _telemetry_from_row(row: tuple) -> TelemetrySample:
         temperature_c=row[7],
         air_humidity_percent=row[8],
         soil_moisture_percent=row[9],
-        ph=row[10],
-        light_ppfd_umol_m2_s=row[11],
+        soil_bulk_ec_ms_cm=row[10],
+        soil_ec_ms_cm=row[11],
+        fertilizer_concentration_mg_per_liter=row[12],
+        nitrogen_estimate_mg_per_liter=row[13],
+        phosphorus_estimate_mg_per_liter=row[14],
+        potassium_estimate_mg_per_liter=row[15],
+        ph=row[16],
+        light_ppfd_umol_m2_s=row[17],
     )
 
 
@@ -117,7 +139,12 @@ def get_latest_telemetry(
         """
         SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, temperature_c, air_humidity_percent,
-               soil_moisture_percent, ph, light_ppfd_umol_m2_s
+               soil_moisture_percent, soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+               fertilizer_concentration_mg_per_liter,
+               nitrogen_estimate_mg_per_liter,
+               phosphorus_estimate_mg_per_liter,
+               potassium_estimate_mg_per_liter,
+               ph, light_ppfd_umol_m2_s
         FROM telemetry_samples
         WHERE zone_id = ?
         ORDER BY recorded_at DESC, id DESC
@@ -152,7 +179,12 @@ def list_telemetry(
         f"""
         SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, temperature_c, air_humidity_percent,
-               soil_moisture_percent, ph, light_ppfd_umol_m2_s
+               soil_moisture_percent, soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+               fertilizer_concentration_mg_per_liter,
+               nitrogen_estimate_mg_per_liter,
+               phosphorus_estimate_mg_per_liter,
+               potassium_estimate_mg_per_liter,
+               ph, light_ppfd_umol_m2_s
         FROM telemetry_samples
         WHERE {" AND ".join(conditions)}
         ORDER BY recorded_at DESC, id DESC

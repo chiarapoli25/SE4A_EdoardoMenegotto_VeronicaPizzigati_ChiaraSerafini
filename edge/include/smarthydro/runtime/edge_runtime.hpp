@@ -65,10 +65,11 @@ public:
      * ambiente senza modificare il ciclo di controllo.
      *
      * @param recipe Ricetta validata da acquisire.
-     * @param sensors Cinque adapter non nulli, ordinati per SensorChannel.
+     * @param sensors Sei adapter non nulli, ordinati per SensorChannel.
      * @param actuators Driver aggregato non nullo degli attuatori.
      * @param environment Ambiente non nullo osservato e aggiornato dal runtime.
      * @param state_policy Soglie della macchina a stati operativa.
+     * @param soil_probe_model Calibrazione usata per fondere le due sonde.
      * @throws std::invalid_argument Se una dipendenza manca o un sensore si
      * trova in una posizione diversa dal proprio canale.
      */
@@ -77,7 +78,8 @@ public:
         SensorAdapterArray sensors,
         std::unique_ptr<IActuator> actuators,
         std::unique_ptr<IEnvironment> environment,
-        OperationalStatePolicy state_policy = {});
+        OperationalStatePolicy state_policy = {},
+        SoilProbeModelConfig soil_probe_model = {});
 
     /**
      * @brief Valida e conferma localmente tutte le configurazioni della ricetta.
@@ -247,6 +249,7 @@ private:
     RecipeControlSystem control_system_;
     std::unique_ptr<IActuator> actuators_;
     std::unique_ptr<IEnvironment> environment_;
+    SoilProbeModelConfig soil_probe_model_;
     SensorAdapterArray sensors_;
     WaterPumpAdapter water_pump_;
     LightingAdapter lighting_;

@@ -254,7 +254,10 @@ CsvLogger::CsvLogger(const std::string& file_path)
 void CsvLogger::write_header() {
     *output_
         << "timestamp,event_type,zone,state,temperature_c,"
-           "air_humidity_percent,soil_moisture_percent,ph,"
+           "air_humidity_percent,soil_moisture_percent,soil_bulk_ec_ms_cm,"
+           "soil_ec_ms_cm,fertilizer_concentration_mg_per_liter,"
+           "nitrogen_estimate_mg_per_liter,phosphorus_estimate_mg_per_liter,"
+           "potassium_estimate_mg_per_liter,ph,"
            "light_ppfd,detail\n";
 }
 
@@ -272,11 +275,26 @@ void CsvLogger::on_event(const EdgeDomainEvent& event) {
                    telemetry->readings.air_humidity_percent) << ','
             << optional_number(
                    telemetry->readings.soil_moisture_percent) << ','
+            << optional_number(
+                   telemetry->readings.soil_bulk_ec_ms_cm) << ','
+            << optional_number(telemetry->readings.soil_ec_ms_cm) << ','
+            << optional_number(
+                   telemetry->readings
+                       .fertilizer_concentration_mg_per_liter) << ','
+            << optional_number(
+                   telemetry->readings
+                       .nitrogen_estimate_mg_per_liter) << ','
+            << optional_number(
+                   telemetry->readings
+                       .phosphorus_estimate_mg_per_liter) << ','
+            << optional_number(
+                   telemetry->readings
+                       .potassium_estimate_mg_per_liter) << ','
             << optional_number(telemetry->readings.ph) << ','
             << optional_number(
                    telemetry->readings.light_ppfd_umol_m2_s) << ',';
     } else {
-        *output_ << ",,,,,,";
+        *output_ << ",,,,,,,,,,,,";
     }
     *output_ << csv_escape(event_detail(event)) << '\n';
 }

@@ -37,7 +37,7 @@ enum class SoilType {
  * @brief Composizione ed effetti didattici di un concentrato liquido.
  */
 struct FertilizerProfile {
-    /** Serbatoio al quale si applica il profilo. */
+    /** Contenitore di dosaggio al quale si applica il profilo. */
     FertilizerType type = FertilizerType::NITROGEN;
     /** Massa di azoto aggiunta da un millilitro di prodotto. */
     double nitrogen_milligrams_per_milliliter = 0.0;
@@ -80,17 +80,17 @@ struct EnvironmentConfig {
     /** Umidita relativa esterna diurna, nell'intervallo [0, 100]%. */
     double day_relative_humidity_percent = 65.0;
     /**
-     * pH iniziale della soluzione nei pori, nell'intervallo [0, 14].
+     * pH iniziale dell'acqua nei pori del terriccio, nell'intervallo [0, 14].
      * Funge anche da riferimento per l'equilibrio lento corretto dal terriccio.
      */
     double initial_ph = 6.3;
-    /** EC iniziale non negativa della soluzione nei pori, in mS/cm. */
+    /** EC iniziale non negativa dell'acqua nei pori, in mS/cm. */
     double initial_ec_ms_cm = 1.8;
-    /** Concentrazione iniziale di azoto nella soluzione radicale, in mg/L. */
+    /** Disponibilita iniziale di azoto nell'acqua radicale, in mg/L. */
     double initial_nitrogen_mg_per_liter = 150.0;
-    /** Concentrazione iniziale di fosforo nella soluzione radicale, in mg/L. */
+    /** Disponibilita iniziale di fosforo nell'acqua radicale, in mg/L. */
     double initial_phosphorus_mg_per_liter = 50.0;
-    /** Concentrazione iniziale di potassio nella soluzione radicale, in mg/L. */
+    /** Disponibilita iniziale di potassio nell'acqua radicale, in mg/L. */
     double initial_potassium_mg_per_liter = 200.0;
     /** Assorbimento nominale di azoto ad attivita unitaria, in mg/h. */
     double nitrogen_uptake_milligrams_per_hour = 1.5;
@@ -140,7 +140,7 @@ struct EnvironmentConfig {
      * elettrico delle lampade, in gradi Celsius per watt.
      */
     double lamp_heating_c_per_watt = 0.015;
-    /** Un profilo configurabile per ciascuno dei cinque serbatoi. */
+    /** Un profilo configurabile per ciascuno dei cinque contenitori. */
     FertilizerValues<FertilizerProfile> fertilizer_profiles{{
         {FertilizerType::NITROGEN, 50.0, 0.0, 0.0, 0.040, -0.001},
         {FertilizerType::PHOSPHORUS, 0.0, 20.0, 0.0, 0.030, -0.002},
@@ -163,15 +163,15 @@ struct EnvironmentState {
     double temperature_c = 18.0;
     /** Umidita relativa dell'aria, limitata dal modello tra 20% e 99%. */
     double air_humidity_percent = 80.0;
-    /** pH della soluzione nei pori, limitato dal modello tra 3 e 9. */
+    /** pH dell'acqua nei pori del terriccio, limitato tra 3 e 9. */
     double ph = 6.3;
-    /** EC della soluzione nei pori, limitata tra 0 e 8 mS/cm. */
+    /** EC dell'acqua nei pori del terriccio, limitata tra 0 e 8 mS/cm. */
     double ec_ms_cm = 1.8;
-    /** Concentrazione disponibile di azoto, in mg/L. */
+    /** Disponibilita stimata di azoto nell'acqua radicale, in mg/L. */
     double nitrogen_mg_per_liter = 150.0;
-    /** Concentrazione disponibile di fosforo, in mg/L. */
+    /** Disponibilita stimata di fosforo nell'acqua radicale, in mg/L. */
     double phosphorus_mg_per_liter = 50.0;
-    /** Concentrazione disponibile di potassio, in mg/L. */
+    /** Disponibilita stimata di potassio nell'acqua radicale, in mg/L. */
     double potassium_mg_per_liter = 200.0;
     /** Acqua disponibile rispetto alla capacita utile, nell'intervallo [0, 100]%. */
     double soil_moisture_percent = 75.0;
@@ -344,9 +344,9 @@ struct EnvironmentState {
  * EC \leftarrow EC+(0.60-EC)k_{\mathrm{leach}}V_w.
  * \f]
  *
- * I millilitri consegnati da ogni serbatoio aggiungono la massa N/P/K definita
+ * I millilitri consegnati da ogni contenitore aggiungono la massa N/P/K definita
  * dal relativo FertilizerProfile. L'irrigazione diluisce, l'evaporazione
- * concentra, il drenaggio rimuove soluzione miscelata e l'assorbimento
+ * concentra, il drenaggio rimuove acqua e massa disciolta e l'assorbimento
  * sottrae massa senza poterla rendere negativa. Gli intervalli superiori a
  * cinque minuti vengono suddivisi in sotto-passi; acqua e cinque concentrati
  * sono ripartiti proporzionalmente.

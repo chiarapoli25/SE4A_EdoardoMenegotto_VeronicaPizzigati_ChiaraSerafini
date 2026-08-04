@@ -407,7 +407,7 @@ TEST(EnvironmentSimulatorTest, DrainageRemovesMixedNutrientMass) {
 
     // Il terriccio drenante parte al 65% di 3 L: 292.5 mg di N.
     // Il prodotto ne aggiunge 50 mg; dopo il drenaggio deve rimanerne meno
-    // dei 342.5 mg disponibili prima della perdita di soluzione.
+    // dei 342.5 mg disponibili prima della perdita per drenaggio.
     environment.step(300.0, mixture);
     const double final_root_water_liters =
         environment.state().soil_moisture_percent / 100.0 * 3.0;

@@ -12,6 +12,18 @@ HTTP versionate, con consegna asincrona, outbox persistente, retry, comandi
 remoti e autenticazione Bearer opzionale. Non sono ancora presenti dispositivi
 reali o Docker.
 
+Il nome SmartHydro viene conservato come nome del progetto, ma il sistema non
+e idroponico. Il contratto formale delle grandezze e del bilancio fisico e
+descritto in [`doc/domain_model.md`](doc/domain_model.md). In sintesi:
+
+- umidita del terriccio, PPFD, pH dell'acqua interstiziale e disponibilita
+  stimata di N/P/K sono le sei variabili controllate;
+- temperatura e umidita relativa dell'aria sono solamente osservate;
+- l'umidita deriva da una sonda capacitiva simulata; una sonda resistiva misura
+  la EC apparente, poi corretta per stimare EC e fertilizzante nella zona radicale;
+- non esistono tre sensori fisici N/P/K: le quote sono ricavate dalla
+  concentrazione totale e dalla composizione nota al modello.
+
 ## Struttura del progetto
 
 ```text
@@ -20,7 +32,7 @@ reali o Docker.
 |-- config/        Ricette e configurazioni di esempio
 |-- dashboard/     Dashboard statica HTML, CSS e JavaScript
 |-- demo/          Spazio per futuri scenari dimostrativi
-|-- docs/          Documentazione di progetto
+|-- doc/           Documentazione di progetto e contratto del dominio
 |-- edge/          Edge Controller C++17 compilato con CMake
 |-- .gitignore
 `-- README.md
@@ -71,7 +83,7 @@ Avvio normale, con provisioning gestito dal backend:
 
 Quando una coltivazione e attiva, ogni ciclo:
 
-1. legge sensori e modelli N/P/K;
+1. legge i sensori fisici e le stime del modello N/P/K;
 2. calcola i comandi tramite `RecipeControlSystem`;
 3. applica i comandi sicuri a pompa, lampade e valvole;
 4. fa avanzare l'ambiente e aggiorna lo storico delle dosi;
@@ -106,13 +118,14 @@ inattive.
 
 `EdgeRuntime` dipende dalle interfacce `ISensor`, `IActuator` e `IEnvironment`,
 non dai simulatori concreti. Il costruttore normale crea automaticamente gli
-adapter simulati per temperatura, umidita dell'aria, umidita del substrato, pH,
-luce, pompa, lampade, valvole e ambiente.
+adapter simulati per temperatura, umidita dell'aria, sonda capacitiva del
+substrato, sonda resistiva di conducibilita, pH, luce, pompa, lampade, valvole
+e ambiente.
 
 Un secondo costruttore accetta gli adapter tramite `std::unique_ptr`. Un futuro
 driver GPIO, Modbus o MQTT puo quindi implementare le stesse interfacce ed
 essere inserito senza cambiare `EdgeRuntime`, `RecipeControlSystem` o gli
-algoritmi delle Strategy. I cinque adapter sensore simulati condividono un
+algoritmi delle Strategy. I sei adapter sensore simulati condividono un
 campione sincronizzato per ogni tick.
 
 ### Struttura dei sorgenti Edge
@@ -407,8 +420,8 @@ Esempio: illuminazione bloccata accesa fino al reset esplicito:
 }
 ```
 
-I target sensore sono `temperature`, `air_humidity`, `soil_moisture`, `ph` e
-`light`. I target attuatore sono `water_pump`, `lighting`,
+I target sensore sono `temperature`, `air_humidity`, `soil_moisture`,
+`soil_conductivity`, `ph` e `light`. I target attuatore sono `water_pump`, `lighting`,
 `nitrogen_valve`, `phosphorus_valve`, `potassium_valve`, `ph_up_valve` e
 `ph_down_valve`. Le modalita supportate sono:
 
@@ -459,14 +472,15 @@ separatamente.
 
 ### Ambiente e sensori simulati
 
-`EnvironmentSimulator` possiede lo stato fisico condiviso della serra. Il
+`EnvironmentSimulator` possiede lo stato fisico condiviso della serra in
+terriccio. Il sistema non modella vasche, livelli d'acqua o ricircolo. Il
 metodo `step(delta_time_seconds, actuator_output)` evolve gradualmente:
 
 - temperatura e umidita relativa, accoppiate al profilo esterno, alla luce,
   alla traspirazione e al ricambio d'aria;
-- pH ed EC della soluzione presente nei pori del terriccio;
-- concentrazioni disponibili di azoto, fosforo e potassio in mg/L, conservate
-  tramite un bilancio di massa;
+- pH ed EC dell'acqua presente nei pori del terriccio;
+- disponibilita stimata di azoto, fosforo e potassio in mg/L nell'acqua della
+  zona radicale, conservata tramite un bilancio di massa;
 - umidita del terriccio in percentuale, con ritenzione e drenaggio diversi per
   substrato universale aerato, drenante e organico ritentivo;
 - luce naturale e supplementare espressa come PPFD in `umol/(m2 s)`.
@@ -477,7 +491,12 @@ uno organico ritentivo. La dinamica ambientale non dipende dalla specie
 coltivata. I cinque profili liquidi predefiniti rappresentano azoto, fosforo,
 potassio, pH+ e pH-. I coefficienti sono didattici e possono essere sostituiti
 in `EnvironmentConfig` usando le schede tecniche dei prodotti. N/P/K
-appartengono allo stato fisico ma non sono letture di sensori.
+appartengono allo stato fisico interno ma non sono letture di tre sensori.
+
+La dose d'acqua viene applicata direttamente al substrato: una parte viene
+trattenuta, una parte e assorbita dalle radici, una parte evapora e l'eccesso
+viene drenato. I contenitori dei prodotti N, P, K, pH+ e pH- alimentano i soli
+dosatori e non costituiscono una vasca o una soluzione idroponica.
 
 | Prodotto | N (mg/mL) | P (mg/mL) | K (mg/mL) | Delta EC (mS/cm per mL) | Delta pH per mL |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -505,6 +524,15 @@ calibrazione, quantizzazione e possibili dropout. Le letture sono
 `std::nullopt`. I seed dell'ambiente e dei sensori sono distinti, cosi il
 rumore fisico e quello strumentale restano indipendenti.
 
+La sonda capacitiva restituisce la percentuale di umidita dopo la propria curva
+di calibrazione. La sonda resistiva viene convertita in EC apparente del
+terriccio; poiche la conducibilita cala quando il substrato si asciuga, il
+runtime la corregge con l'umidita capacitiva per stimare la EC dell'acqua nei
+pori. Dalla EC netta ricava il fertilizzante totale in mg/L con un coefficiente
+empirico. Le quote N/P/K sono infine ripartite secondo la composizione nota al
+bilancio di massa. Tutti questi valori vengono inviati e storicizzati nella
+telemetria del backend.
+
 Il modello ha finalita didattica ed e progettato per produrre dinamiche
 plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 
@@ -514,7 +542,7 @@ plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 fisica dell'attuatore. La configurazione predefinita rappresenta:
 
 - pompa ON/OFF con portata fissa di 2 L/h e dose massima di 5 L;
-- cinque serbatoi di concentrato liquido per N, P, K, pH+ e pH-;
+- cinque contenitori di concentrato liquido per N, P, K, pH+ e pH-;
 - cinque elettrovalvole ON/OFF da 20 mL/h collegate alla stessa pompa
   dell'acqua;
 - lampade LED con potenza elettrica massima di 200 W.
@@ -539,9 +567,9 @@ le riducono; pH+ e pH- correggono il pH. `EdgeRuntime` converte le dosi in mL
 nei tempi di apertura delle valvole e le chiude quando il volume richiesto e
 stato raggiunto.
 
-Il sensore di umidita del terriccio continua a restituire una percentuale:
-l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e il
-sensore osserva quel valore aggiungendo i soli errori strumentali configurati.
+La sonda capacitiva di umidita continua a restituire una percentuale:
+l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e la
+sonda ne produce una stima con gli errori strumentali configurati.
 
 ### Controllori
 
@@ -582,9 +610,12 @@ environment.step(delta_time_seconds, actuators.output());
 ### Ricette e conferma agronomica
 
 `RecipeControlSystem` associa una ricetta a sei variabili: umidita del
-terriccio, luce, pH, azoto, fosforo e potassio. Ogni fase contiene setpoint,
+terriccio, luce PPFD, pH dell'acqua interstiziale e disponibilita stimata di
+azoto, fosforo e potassio. Temperatura e umidita dell'aria restano telemetria
+osservata e non hanno controllori. Ogni fase contiene setpoint,
 intervallo ammesso, limiti di sicurezza, fotoperiodo e dosi N/P/K suggerite.
-Ogni `ControllerConfiguration` registra inoltre sensore o modello, attuatore,
+Ogni `ControllerConfiguration` registra inoltre `input_source` (sensore o
+modello), attuatore,
 Strategy predefinita e selezionata, parametri, unita, limiti d'uscita, stato di
 conferma e versione.
 
@@ -600,7 +631,7 @@ Le impostazioni predefinite sono:
 | Umidita del terreno | Threshold con isteresi | sensore di umidita |
 | Luce | Threshold con isteresi e fotoperiodo | sensore PPFD |
 | pH | PID bidirezionale con piccoli dosaggi | sensore pH |
-| N, P, K | Predictive | modello fisico e storico dosi |
+| N, P, K | Predictive | EC corretta, composizione del modello e storico dosi |
 
 L'agronomo puo sostituire una Strategy con Threshold, PID o Predictive e
 modificarne i parametri. Nessun comando viene calcolato prima della conferma.
@@ -608,10 +639,15 @@ Gli stati possibili sono `PENDING_CONFIRMATION`, `CONFIRMED`, `REJECTED` e
 `INVALID`. Un cambio di ricetta, Strategy o parametri invalida tutte le
 conferme; il passaggio automatico tra fasi della stessa versione le mantiene.
 
-N/P/K non espongono sensori inesistenti: usano le concentrazioni stimate dal
-modello, il target della fase, il substrato, l'acqua erogata e la dose
+N/P/K non espongono sensori selettivi inesistenti: usano la concentrazione
+totale stimata dalla EC, la composizione del modello, il target della fase, il
+substrato, l'acqua erogata e la dose
 cumulativa. Threshold e PID vengono quindi rifiutati per N/P/K come
 incompatibili con la sorgente disponibile.
+
+Il JSON canonico usa `input_source`. Il precedente campo `sensor` viene ancora
+accettato in lettura per compatibilita, ma ogni nuova serializzazione usa il
+nome non ambiguo.
 
 Prima dell'uscita, il supervisore applica con priorita:
 
@@ -746,7 +782,7 @@ sincronizzati sullo stesso asse temporale:
 - temperatura dell'aria in gradi Celsius;
 - umidita dell'aria e del terriccio nello stesso pannello, entrambe in
   percentuale e con colori distinti;
-- pH della soluzione presente nei pori del terriccio;
+- pH dell'acqua presente nei pori del terriccio;
 - luce espressa come PPFD in micromoli per metro quadrato al secondo.
 
 Temperatura e pH usano intervalli verticali adattati ai dati, le umidita

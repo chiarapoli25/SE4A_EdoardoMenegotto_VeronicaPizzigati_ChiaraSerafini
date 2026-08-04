@@ -114,7 +114,7 @@ void validate_config(const EnvironmentConfig& config) {
         const auto& profile = config.fertilizer_profiles[index];
         if (fertilizer_index(profile.type) != index) {
             throw std::invalid_argument(
-                "fertilizer profiles must match their reservoir index");
+                "fertilizer profiles must match their concentrate slot");
         }
         validate_non_negative(
             profile.nitrogen_milligrams_per_milliliter,
@@ -421,8 +421,8 @@ void EnvironmentSimulator::integrate_substep(
                            fertilizer_volume_milliliters;
     }
 
-    // Il drenaggio rimuove la stessa frazione di ogni massa presente nella
-    // soluzione ben miscelata. La massa non puo diventare negativa.
+    // Il drenaggio rimuove la stessa frazione di ogni massa disciolta
+    // nell'acqua radicale ben miscelata. La massa non puo diventare negativa.
     const double mixed_root_water_liters = std::max(
         root_water_liters_before_drainage,
         config_.minimum_effective_root_water_liters);

@@ -25,6 +25,7 @@ smarthydro::SensorConfig deterministic_sensors() {
              &config.temperature,
              &config.air_humidity,
              &config.soil_moisture,
+             &config.soil_conductivity,
              &config.ph,
              &config.light_ppfd}) {
         channel->bias = 0.0;
@@ -103,6 +104,10 @@ smarthydro::SensorAdapterArray constant_sensor_array() {
         sensors, smarthydro::SensorChannel::AIR_HUMIDITY, 60.0);
     set_constant_sensor(
         sensors, smarthydro::SensorChannel::SOIL_MOISTURE, 60.0);
+    set_constant_sensor(
+        sensors,
+        smarthydro::SensorChannel::SOIL_CONDUCTIVITY,
+        1.8 * std::pow(0.60, 1.30));
     set_constant_sensor(
         sensors, smarthydro::SensorChannel::PH, 6.2);
     set_constant_sensor(
@@ -210,6 +215,33 @@ TEST(EdgeRuntimeTest, ExecutesConfirmedRecipeOnPhysicalSimulators) {
     EXPECT_DOUBLE_EQ(
         result.environment_state.simulation_time_seconds,
         900.0);
+}
+
+TEST(EdgeRuntimeTest, NutrientControlRequiresTheResistiveProbeEstimate) {
+    auto sensor_config = deterministic_sensors();
+    sensor_config.soil_conductivity.dropout_probability = 1.0;
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(), {}, {}, sensor_config);
+    runtime.confirm_all_configurations();
+
+    const auto result = runtime.step(60.0);
+
+    EXPECT_FALSE(result.readings.soil_bulk_ec_ms_cm.has_value());
+    EXPECT_FALSE(
+        result.readings.fertilizer_concentration_mg_per_liter.has_value());
+    for (const auto variable : {
+             smarthydro::ControlledVariable::NITROGEN,
+             smarthydro::ControlledVariable::PHOSPHORUS,
+             smarthydro::ControlledVariable::POTASSIUM}) {
+        const auto& decision = result.decisions[
+            smarthydro::controlled_variable_index(variable)];
+        EXPECT_EQ(
+            decision.status,
+            smarthydro::ControlDecisionStatus::BLOCKED);
+        EXPECT_EQ(
+            decision.fault_severity,
+            smarthydro::ControlFaultSeverity::RECOVERABLE);
+    }
 }
 
 TEST(EdgeRuntimeTest, RejectsInvalidStepDuration) {

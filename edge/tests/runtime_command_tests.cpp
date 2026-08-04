@@ -22,6 +22,7 @@ smarthydro::SensorConfig deterministic_sensors() {
              &config.temperature,
              &config.air_humidity,
              &config.soil_moisture,
+             &config.soil_conductivity,
              &config.ph,
              &config.light_ppfd}) {
         channel->bias = 0.0;

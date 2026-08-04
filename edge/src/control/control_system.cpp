@@ -29,10 +29,10 @@ bool parameter_type_matches(
     return false;
 }
 
-bool is_model_sensor(SensorType sensor) noexcept {
-    return sensor == SensorType::NITROGEN_MODEL ||
-           sensor == SensorType::PHOSPHORUS_MODEL ||
-           sensor == SensorType::POTASSIUM_MODEL;
+bool is_model_source(ControlInputSource input_source) noexcept {
+    return input_source == ControlInputSource::NITROGEN_MODEL ||
+           input_source == ControlInputSource::PHOSPHORUS_MODEL ||
+           input_source == ControlInputSource::POTASSIUM_MODEL;
 }
 
 bool is_nutrient(ControlledVariable variable) noexcept {
@@ -55,20 +55,20 @@ StrategyType required_default_strategy(ControlledVariable variable) {
     return StrategyType::THRESHOLD;
 }
 
-SensorType required_sensor(ControlledVariable variable) {
+ControlInputSource required_input_source(ControlledVariable variable) {
     switch (variable) {
         case ControlledVariable::SOIL_MOISTURE:
-            return SensorType::SOIL_MOISTURE_SENSOR;
+            return ControlInputSource::SOIL_MOISTURE_SENSOR;
         case ControlledVariable::LIGHT:
-            return SensorType::LIGHT_SENSOR;
+            return ControlInputSource::LIGHT_SENSOR;
         case ControlledVariable::PH:
-            return SensorType::PH_SENSOR;
+            return ControlInputSource::PH_SENSOR;
         case ControlledVariable::NITROGEN:
-            return SensorType::NITROGEN_MODEL;
+            return ControlInputSource::NITROGEN_MODEL;
         case ControlledVariable::PHOSPHORUS:
-            return SensorType::PHOSPHORUS_MODEL;
+            return ControlInputSource::PHOSPHORUS_MODEL;
         case ControlledVariable::POTASSIUM:
-            return SensorType::POTASSIUM_MODEL;
+            return ControlInputSource::POTASSIUM_MODEL;
         case ControlledVariable::COUNT:
             break;
     }
@@ -144,9 +144,11 @@ bool hour_in_photoperiod(double hour, const Photoperiod& photoperiod) {
 }
 
 std::optional<double> source_value(
-    SensorType sensor,
+    ControlInputSource input_source,
     const ControllerInput& input) {
-    return is_model_sensor(sensor) ? input.model_estimate : input.measured_value;
+    return is_model_source(input_source)
+               ? input.model_estimate
+               : input.measured_value;
 }
 
 }  // namespace
@@ -179,19 +181,19 @@ const char* to_string(ControlledVariable variable) noexcept {
     return "unknown";
 }
 
-const char* to_string(SensorType sensor) noexcept {
-    switch (sensor) {
-        case SensorType::SOIL_MOISTURE_SENSOR:
+const char* to_string(ControlInputSource input_source) noexcept {
+    switch (input_source) {
+        case ControlInputSource::SOIL_MOISTURE_SENSOR:
             return "soil_moisture_sensor";
-        case SensorType::LIGHT_SENSOR:
+        case ControlInputSource::LIGHT_SENSOR:
             return "light_sensor";
-        case SensorType::PH_SENSOR:
+        case ControlInputSource::PH_SENSOR:
             return "ph_sensor";
-        case SensorType::NITROGEN_MODEL:
+        case ControlInputSource::NITROGEN_MODEL:
             return "nitrogen_model";
-        case SensorType::PHOSPHORUS_MODEL:
+        case ControlInputSource::PHOSPHORUS_MODEL:
             return "phosphorus_model";
-        case SensorType::POTASSIUM_MODEL:
+        case ControlInputSource::POTASSIUM_MODEL:
             return "potassium_model";
     }
     return "unknown";
@@ -269,7 +271,7 @@ ConfirmationResult RecipeControlSystem::confirm_configuration(
         configuration.confirmation_state = ConfirmationState::INVALID;
         return {false, "parameters do not match selected strategy"};
     }
-    if (is_model_sensor(configuration.sensor) &&
+    if (is_model_source(configuration.input_source) &&
         configuration.selected_strategy != StrategyType::PREDICTIVE) {
         configuration.confirmation_state = ConfirmationState::INVALID;
         return {
@@ -380,7 +382,7 @@ ControlDecision RecipeControlSystem::execute(
         decision.message = "sensor or model input is invalid";
         return decision;
     }
-    if (is_model_sensor(configuration.sensor) &&
+    if (is_model_source(configuration.input_source) &&
         configuration.selected_strategy != StrategyType::PREDICTIVE) {
         decision.safety_critical = true;
         decision.fault_severity = ControlFaultSeverity::CRITICAL;
@@ -428,7 +430,7 @@ ControlDecision RecipeControlSystem::execute(
     const auto& active = recipe_.phases[phase];
     const auto& target = active.targets[index];
     const auto value = source_value(
-        configuration.sensor, request.controller_input);
+        configuration.input_source, request.controller_input);
     if (!value.has_value() || !std::isfinite(*value)) {
         decision.safety_critical = true;
         decision.fault_severity = ControlFaultSeverity::RECOVERABLE;
@@ -451,7 +453,7 @@ ControlDecision RecipeControlSystem::execute(
     }
 
     auto controller_input = request.controller_input;
-    if (is_model_sensor(configuration.sensor)) {
+    if (is_model_source(configuration.input_source)) {
         controller_input.measured_value.reset();
     } else {
         controller_input.model_estimate.reset();
@@ -554,7 +556,7 @@ void RecipeControlSystem::validate_recipe(const Recipe& recipe) {
         const auto variable = static_cast<ControlledVariable>(index);
         const auto& configuration = recipe.controllers[index];
         if (configuration.variable != variable ||
-            configuration.sensor != required_sensor(variable) ||
+            configuration.input_source != required_input_source(variable) ||
             configuration.actuator != required_actuator(variable)) {
             throw std::invalid_argument(
                 "controller associations must match controlled variable");

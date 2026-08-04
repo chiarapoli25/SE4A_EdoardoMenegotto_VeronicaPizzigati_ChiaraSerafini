@@ -189,10 +189,10 @@ def _controller(
         ),
         "potassium": ("potassium_model", "potassium_valve", "Predictive"),
     }
-    sensor, actuator, strategy = associations[variable]
+    input_source, actuator, strategy = associations[variable]
     return {
         "variable": variable,
-        "sensor": sensor,
+        "input_source": input_source,
         "actuator": actuator,
         "default_strategy": strategy,
         "selected_strategy": strategy,

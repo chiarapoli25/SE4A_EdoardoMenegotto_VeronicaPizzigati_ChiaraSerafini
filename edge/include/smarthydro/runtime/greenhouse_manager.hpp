@@ -92,7 +92,7 @@ public:
      *
      * @param zone_id Identificatore univoco e non vuoto.
      * @param recipe Ricetta iniziale della zona.
-     * @param sensors Adapter dei cinque canali.
+     * @param sensors Adapter dei sei canali fisici.
      * @param actuators Driver aggregato degli attuatori.
      * @param environment Ambiente della zona.
      * @param state_policy Soglie della FSM operativa.

@@ -36,6 +36,7 @@ bool is_sensor_target(const std::string& target) noexcept {
     return target == "temperature" ||
            target == "air_humidity" ||
            target == "soil_moisture" ||
+           target == "soil_conductivity" ||
            target == "ph" ||
            target == "light";
 }
@@ -77,6 +78,9 @@ std::optional<double>* sensor_value(
     }
     if (target == "soil_moisture") {
         return &readings.soil_moisture_percent;
+    }
+    if (target == "soil_conductivity") {
+        return &readings.soil_bulk_ec_ms_cm;
     }
     if (target == "ph") {
         return &readings.ph;

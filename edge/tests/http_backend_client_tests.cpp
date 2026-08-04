@@ -86,6 +86,12 @@ smarthydro::TelemetrySample telemetry_event() {
     event.readings.temperature_c = 22.5;
     event.readings.air_humidity_percent = 60.0;
     event.readings.soil_moisture_percent = 55.0;
+    event.readings.soil_bulk_ec_ms_cm = 0.83;
+    event.readings.soil_ec_ms_cm = 1.8;
+    event.readings.fertilizer_concentration_mg_per_liter = 400.0;
+    event.readings.nitrogen_estimate_mg_per_liter = 150.0;
+    event.readings.phosphorus_estimate_mg_per_liter = 50.0;
+    event.readings.potassium_estimate_mg_per_liter = 200.0;
     event.readings.ph = 6.2;
     event.readings.light_ppfd_umol_m2_s = 450.0;
     event.actuator_command.lighting_percent = 25.0;
@@ -121,6 +127,10 @@ TEST(HttpBackendClientTest, SerializesTelemetryAndActuatorsAsynchronously) {
     const auto telemetry = nlohmann::json::parse(posts[0].second);
     EXPECT_EQ(telemetry.at("boot_id"), "boot-test");
     EXPECT_EQ(telemetry.at("sequence_number"), 7);
+    EXPECT_EQ(telemetry.at("soil_ec_ms_cm"), 1.8);
+    EXPECT_EQ(
+        telemetry.at("fertilizer_concentration_mg_per_liter"),
+        400.0);
     const auto actuators = nlohmann::json::parse(posts[1].second);
     EXPECT_EQ(actuators.at("command").at("lighting_percent"), 25.0);
     EXPECT_FALSE(std::filesystem::exists(outbox / "unused.json"));

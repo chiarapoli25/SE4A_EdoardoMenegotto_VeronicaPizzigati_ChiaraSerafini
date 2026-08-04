@@ -85,6 +85,21 @@ std::optional<double> SoilMoistureSensorAdapter::read(
     return sampler_->sample(environment_state).soil_moisture_percent;
 }
 
+SoilConductivitySensorAdapter::SoilConductivitySensorAdapter(
+    std::shared_ptr<SimulatedSensorSampler> sampler)
+    : sampler_(std::move(sampler)) {
+    require_sampler(sampler_);
+}
+
+SensorChannel SoilConductivitySensorAdapter::channel() const noexcept {
+    return SensorChannel::SOIL_CONDUCTIVITY;
+}
+
+std::optional<double> SoilConductivitySensorAdapter::read(
+    const EnvironmentState& environment_state) {
+    return sampler_->sample(environment_state).soil_bulk_ec_ms_cm;
+}
+
 PhSensorAdapter::PhSensorAdapter(
     std::shared_ptr<SimulatedSensorSampler> sampler)
     : sampler_(std::move(sampler)) {
@@ -127,6 +142,8 @@ SensorAdapterArray make_simulated_sensor_adapters(
         std::make_unique<AirHumiditySensorAdapter>(sampler);
     adapters[sensor_channel_index(SensorChannel::SOIL_MOISTURE)] =
         std::make_unique<SoilMoistureSensorAdapter>(sampler);
+    adapters[sensor_channel_index(SensorChannel::SOIL_CONDUCTIVITY)] =
+        std::make_unique<SoilConductivitySensorAdapter>(sampler);
     adapters[sensor_channel_index(SensorChannel::PH)] =
         std::make_unique<PhSensorAdapter>(sampler);
     adapters[sensor_channel_index(SensorChannel::LIGHT)] =

@@ -42,8 +42,8 @@ enum class FaultMode {
 /**
  * @brief Descrizione utente di un'anomalia da applicare alla simulazione.
  *
- * `target` usa i nomi stabili dei cinque sensori (`temperature`,
- * `air_humidity`, `soil_moisture`, `ph`, `light`) o degli attuatori
+ * `target` usa i nomi stabili dei sei sensori (`temperature`,
+ * `air_humidity`, `soil_moisture`, `soil_conductivity`, `ph`, `light`) o degli attuatori
  * (`water_pump`, `lighting`, `nitrogen_valve`, `phosphorus_valve`,
  * `potassium_valve`, `ph_up_valve`, `ph_down_valve`).
  *

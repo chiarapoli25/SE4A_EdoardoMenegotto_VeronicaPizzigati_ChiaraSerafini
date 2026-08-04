@@ -22,6 +22,7 @@ from ..features.plants.models import (
 from ..features.recipes.models import (
     ActuatorType,
     ConfirmationState,
+    ControlInputSource,
     ControlDirection,
     ControlledVariable,
     ControllerConfiguration,
@@ -60,6 +61,7 @@ __all__ = [
     "ActuatorSnapshotCreate",
     "ActuatorType",
     "ConfirmationState",
+    "ControlInputSource",
     "ControlDirection",
     "ControlledVariable",
     "ControllerConfiguration",

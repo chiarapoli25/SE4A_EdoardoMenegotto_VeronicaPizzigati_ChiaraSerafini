@@ -77,6 +77,32 @@ TEST(RecipeJsonTest, LoadsAndRoundTripsDemonstrationRecipe) {
         240.0);
 }
 
+TEST(RecipeJsonTest, SerializesCanonicalInputSourceAndReadsLegacySensor) {
+    const auto recipe = load_demo_recipe();
+    const auto canonical = smarthydro::recipe_to_json(recipe);
+
+    EXPECT_NE(canonical.find("\"input_source\""), std::string::npos);
+    EXPECT_EQ(canonical.find("\"sensor\":"), std::string::npos);
+
+    auto legacy = canonical;
+    const std::string canonical_key = "\"input_source\"";
+    const std::string legacy_key = "\"sensor\"";
+    std::size_t position = 0;
+    while ((position = legacy.find(canonical_key, position)) !=
+           std::string::npos) {
+        legacy.replace(position, canonical_key.size(), legacy_key);
+        position += legacy_key.size();
+    }
+
+    const auto loaded = smarthydro::recipe_from_json(legacy);
+    EXPECT_EQ(loaded.id, recipe.id);
+    EXPECT_EQ(
+        loaded.controllers[smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::NITROGEN)]
+            .input_source,
+        smarthydro::ControlInputSource::NITROGEN_MODEL);
+}
+
 TEST(RecipeJsonTest, RejectsRecipeWithoutExplicitSubstrate) {
     auto recipe = load_demo_recipe();
     auto json = smarthydro::recipe_to_json(recipe);
@@ -225,7 +251,7 @@ TEST(RecipeControlSystemTest, StrategyChangeInvalidatesPreviousConfirmation) {
     EXPECT_GT(decision.command, 0.0);
 }
 
-TEST(RecipeControlSystemTest, RejectsSensorIncompatibleNutrientStrategy) {
+TEST(RecipeControlSystemTest, RejectsInputSourceIncompatibleNutrientStrategy) {
     smarthydro::RecipeControlSystem system(load_demo_recipe());
     system.select_strategy(
         smarthydro::ControlledVariable::NITROGEN,

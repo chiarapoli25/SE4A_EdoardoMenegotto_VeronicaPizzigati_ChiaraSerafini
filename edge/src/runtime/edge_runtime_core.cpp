@@ -128,6 +128,7 @@ EdgeRuntime::EdgeRuntime(
               std::move(environment_config),
               control_system_.recipe()),
           environment_seed)),
+      soil_probe_model_(sensor_config.soil_probe_model),
       sensors_(make_simulated_sensor_adapters(
           std::move(sensor_config),
           sensor_seed)),
@@ -147,10 +148,12 @@ EdgeRuntime::EdgeRuntime(
     SensorAdapterArray sensors,
     std::unique_ptr<IActuator> actuators,
     std::unique_ptr<IEnvironment> environment,
-    OperationalStatePolicy state_policy)
+    OperationalStatePolicy state_policy,
+    SoilProbeModelConfig soil_probe_model)
     : control_system_(std::move(recipe)),
       actuators_(require_actuators(std::move(actuators))),
       environment_(require_environment(std::move(environment))),
+      soil_probe_model_(std::move(soil_probe_model)),
       sensors_(std::move(sensors)),
       water_pump_(*actuators_),
       lighting_(*actuators_),

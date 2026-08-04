@@ -252,6 +252,14 @@ void print_step(
         << smarthydro::to_string(result.operational_state)
         << "\nSensors: soil=";
     print_optional(result.readings.soil_moisture_percent, "%");
+    std::cout << "  EC terreno apparente: ";
+    print_optional(result.readings.soil_bulk_ec_ms_cm, " mS/cm");
+    std::cout << "  EC stimata acqua nei pori: ";
+    print_optional(result.readings.soil_ec_ms_cm, " mS/cm");
+    std::cout << "  fertilizzante totale stimato: ";
+    print_optional(
+        result.readings.fertilizer_concentration_mg_per_liter,
+        " mg/L");
     std::cout << ", light=";
     print_optional(
         result.readings.light_ppfd_umol_m2_s,

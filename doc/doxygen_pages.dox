@@ -16,6 +16,8 @@
  * | Backend | API per dashboard e integrazione futura | Endpoint base disponibili |
  *
  * Il controllo rimane nell'Edge anche quando il backend non e disponibile.
+ * SmartHydro conserva il proprio nome, ma il dominio implementato e una
+ * coltivazione in terriccio e non un impianto idroponico.
  */
 
 /**
@@ -39,6 +41,25 @@
  * | Eventi | @ref smarthydro::EventBus | Distribuisce telemetria e cambi di stato |
  * | Comandi | @ref smarthydro::RuntimeCommandProcessor | Esegue richieste idempotenti |
  *
+ * @section edge_domain Contratto delle grandezze
+ *
+ * | Grandezza | Ruolo | Unita e sorgente |
+ * | ---------- | ----- | ---------------- |
+ * | Umidita del terriccio | Controllata | Percentuale, sonda capacitiva simulata |
+ * | Luce | Controllata | PPFD in umol/(m2 s), sensore PAR simulato |
+ * | pH | Controllata | Acqua interstiziale del terriccio, elettrodo simulato |
+ * | N/P/K | Controllate tramite stima | EC corretta e composizione del modello |
+ * | Temperatura dell'aria | Osservata | Gradi Celsius, nessun controllore |
+ * | Umidita relativa | Osservata | Percentuale, nessun controllore |
+ * | EC apparente | Misurata | mS/cm, sonda resistiva simulata |
+ * | EC nei pori e fertilizzante totale | Derivate | Correzione con umidita e calibrazione empirica |
+ *
+ * L'acqua viene erogata al terriccio e puo essere trattenuta, assorbita dalle
+ * radici, drenata o persa per evaporazione. Non sono modellati vasche, livelli
+ * d'acqua o ricircolo. N/P/K sono stime fuse sensore-modello, non tre sensori fisici.
+ * Il contratto ricetta usa `input_source`; `sensor` e accettato soltanto come
+ * campo legacy in ingresso.
+ *
  * @section edge_source_layout Struttura dei sorgenti
  *
  * Gli header in `edge/include/smarthydro` e le implementazioni in `edge/src`
@@ -61,7 +82,7 @@
  * Ogni chiamata a EdgeRuntime::step():
  *
  * 1. determina la fase della ricetta;
- * 2. legge i sensori e i modelli N/P/K;
+ * 2. legge i sensori e le stime del modello N/P/K;
  * 3. calcola le sei @ref smarthydro::ControlDecision;
  * 4. verifica fault e stato operativo;
  * 5. applica i comandi e aggiorna l'ambiente;

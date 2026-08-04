@@ -1031,6 +1031,7 @@ INPUT                  = edge/include \
                          backend/__init__.py \
                          backend/app \
                          doc/doxygen_pages.dox \
+                         doc/domain_model.md \
                          README.md
 
 # This tag can be used to specify the character encoding of the source files

@@ -19,7 +19,7 @@ quando la ricetta viene letta da JSON, e non sono quindi replicati qui.
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, computed_field, model_validator
 
 from ...greenhouse_layout import PRODUCTION_DEPARTMENT_NAMES, department_name
 
@@ -45,20 +45,20 @@ class ControlledVariable(str, Enum):
     SOIL_MOISTURE = "soil_moisture"
     ## @brief Intensita luminosa PPFD.
     LIGHT = "light"
-    ## @brief pH della soluzione nel terriccio.
+    ## @brief pH dell'acqua presente nei pori del terriccio.
     PH = "ph"
-    ## @brief Concentrazione di azoto.
+    ## @brief Disponibilita stimata di azoto nella zona radicale.
     NITROGEN = "nitrogen"
-    ## @brief Concentrazione di fosforo.
+    ## @brief Disponibilita stimata di fosforo nella zona radicale.
     PHOSPHORUS = "phosphorus"
-    ## @brief Concentrazione di potassio.
+    ## @brief Disponibilita stimata di potassio nella zona radicale.
     POTASSIUM = "potassium"
 
 
-class SensorType(str, Enum):
+class ControlInputSource(str, Enum):
     """@brief Origine del valore usato dal controllo.
 
-    @details I valori corrispondono a `smarthydro::SensorType`.
+    @details I valori corrispondono a `smarthydro::ControlInputSource`.
     `NITROGEN_MODEL`, `PHOSPHORUS_MODEL` e `POTASSIUM_MODEL` non sono sensori
     fisici: N/P/K non hanno un canale in ``GreenhouseTelemetry`` perche
     l'Edge li stima dal proprio modello di bilancio di massa, non li misura.
@@ -76,6 +76,13 @@ class SensorType(str, Enum):
     PHOSPHORUS_MODEL = "phosphorus_model"
     ## @brief Stima del potassio prodotta dal modello Edge.
     POTASSIUM_MODEL = "potassium_model"
+
+
+## @brief Alias mantenuto per gli import Python precedenti.
+#
+# Il contratto JSON canonico usa il nome semanticamente corretto
+# `input_source`.
+SensorType = ControlInputSource
 
 
 class ActuatorType(str, Enum):
@@ -359,14 +366,14 @@ class RecipeCareProfile(BaseModel):
     fertilization: str = Field(min_length=1)
 
 
-## @brief Sensore o modello obbligatorio per ogni variabile controllata.
-_REQUIRED_SENSOR: dict[ControlledVariable, SensorType] = {
-    ControlledVariable.SOIL_MOISTURE: SensorType.SOIL_MOISTURE_SENSOR,
-    ControlledVariable.LIGHT: SensorType.LIGHT_SENSOR,
-    ControlledVariable.PH: SensorType.PH_SENSOR,
-    ControlledVariable.NITROGEN: SensorType.NITROGEN_MODEL,
-    ControlledVariable.PHOSPHORUS: SensorType.PHOSPHORUS_MODEL,
-    ControlledVariable.POTASSIUM: SensorType.POTASSIUM_MODEL,
+## @brief Sorgente obbligatoria per ogni variabile controllata.
+_REQUIRED_INPUT_SOURCE: dict[ControlledVariable, ControlInputSource] = {
+    ControlledVariable.SOIL_MOISTURE: ControlInputSource.SOIL_MOISTURE_SENSOR,
+    ControlledVariable.LIGHT: ControlInputSource.LIGHT_SENSOR,
+    ControlledVariable.PH: ControlInputSource.PH_SENSOR,
+    ControlledVariable.NITROGEN: ControlInputSource.NITROGEN_MODEL,
+    ControlledVariable.PHOSPHORUS: ControlInputSource.PHOSPHORUS_MODEL,
+    ControlledVariable.POTASSIUM: ControlInputSource.POTASSIUM_MODEL,
 }
 
 ## @brief Attuatore obbligatorio per ogni variabile controllata.
@@ -405,7 +412,7 @@ class ControllerConfiguration(BaseModel):
     """@brief Configurazione completa di un controllore.
 
     @details Il modello corrisponde a `smarthydro::ControllerConfiguration`.
-    `sensor`, `actuator` e `default_strategy` sono vincolati da `variable`
+    `input_source`, `actuator` e `default_strategy` sono vincolati da `variable`
     come imposto da `RecipeControlSystem::validate_recipe()`. La forma di
     `parameters` dipende da `selected_strategy`, come nella funzione
     `parameters_from_json()` lato Edge.
@@ -414,7 +421,9 @@ class ControllerConfiguration(BaseModel):
     ## @brief Variabile regolata dal controllore.
     variable: ControlledVariable
     ## @brief Sensore fisico o modello che fornisce il valore di processo.
-    sensor: SensorType
+    input_source: ControlInputSource = Field(
+        validation_alias=AliasChoices("input_source", "sensor")
+    )
     ## @brief Attuatore comandato dal controllore.
     actuator: ActuatorType
     ## @brief Strategia predefinita imposta per la variabile.
@@ -450,6 +459,14 @@ class ControllerConfiguration(BaseModel):
         """
         if not isinstance(data, dict):
             return data
+        if (
+            "input_source" in data
+            and "sensor" in data
+            and data["input_source"] != data["sensor"]
+        ):
+            raise ValueError(
+                "input_source conflicts with legacy sensor"
+            )
         strategy = data.get("selected_strategy")
         parameters = data.get("parameters")
         if isinstance(parameters, dict) and strategy is not None:
@@ -466,9 +483,10 @@ class ControllerConfiguration(BaseModel):
         @throws ValueError Se sensore, attuatore o strategia predefinita non
             corrispondono alla variabile.
         """
-        if self.sensor != _REQUIRED_SENSOR[self.variable]:
+        if self.input_source != _REQUIRED_INPUT_SOURCE[self.variable]:
             raise ValueError(
-                f"sensor must be {_REQUIRED_SENSOR[self.variable].value} "
+                "input_source must be "
+                f"{_REQUIRED_INPUT_SOURCE[self.variable].value} "
                 f"for variable {self.variable.value}")
         if self.actuator != _REQUIRED_ACTUATOR[self.variable]:
             raise ValueError(
