@@ -30,7 +30,11 @@ def get_connection(
     """
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(database_path)
+    # FastAPI puo creare la dipendenza sincrona e invocare l'endpoint in due
+    # worker thread differenti. La connessione resta comunque confinata alla
+    # singola richiesta, ma SQLite deve consentirne l'uso sequenziale fra i due
+    # thread gestiti da Starlette.
+    return sqlite3.connect(database_path, check_same_thread=False)
 
 
 def get_db() -> Generator[sqlite3.Connection, None, None]:

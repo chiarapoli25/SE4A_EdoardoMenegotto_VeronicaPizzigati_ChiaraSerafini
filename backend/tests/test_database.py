@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -149,6 +150,26 @@ def test_get_connection_creates_parent_directory(tmp_path: Path) -> None:
         assert database_path.exists()
     finally:
         new_connection.close()
+
+
+def test_get_connection_supports_fastapi_thread_handoff(tmp_path: Path) -> None:
+    new_connection = get_connection(tmp_path / "thread-handoff.db")
+    observed: list[int] = []
+    errors: list[Exception] = []
+
+    def use_connection() -> None:
+        try:
+            observed.append(new_connection.execute("SELECT 1").fetchone()[0])
+        except Exception as error:  # pragma: no cover - asserted below
+            errors.append(error)
+
+    worker = threading.Thread(target=use_connection)
+    worker.start()
+    worker.join()
+    new_connection.close()
+
+    assert errors == []
+    assert observed == [1]
 
 
 def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:

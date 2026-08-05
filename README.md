@@ -1,9 +1,9 @@
 # SmartHydro
 
 SmartHydro e un progetto per il monitoraggio e il controllo di una coltivazione
-in terriccio. Questa Fase 0 prepara una base di lavoro avviabile composta da un
-Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
-una ricetta di coltivazione di esempio.
+in terriccio. Il repository comprende un Edge Controller multi-zona in C++17,
+un backend HTTP in Python, un catalogo persistente di ricette multifase, una
+dashboard statica e uno scenario end-to-end automatizzato.
 
 L'area Edge include un simulatore dinamico della serra, sensori con errori
 strumentali, attuatori e un sistema di controllo configurabile basato su
@@ -31,7 +31,7 @@ descritto in [`doc/domain_model.md`](doc/domain_model.md). In sintesi:
 |-- backend/       Backend FastAPI e test automatici
 |-- config/        Ricette e configurazioni di esempio
 |-- dashboard/     Dashboard statica HTML, CSS e JavaScript
-|-- demo/          Spazio per futuri scenari dimostrativi
+|-- demo/          Scenario end-to-end Edge-backend ripetibile
 |-- doc/           Documentazione di progetto e contratto del dominio
 |-- edge/          Edge Controller C++17 compilato con CMake
 |-- .gitignore
@@ -48,6 +48,27 @@ descritto in [`doc/domain_model.md`](doc/domain_model.md). In sintesi:
 - Un browser web moderno
 
 Tutti i comandi seguenti devono essere eseguiti dalla radice del repository.
+
+## Demo end-to-end automatizzata
+
+Dopo aver creato l'ambiente Python e installato le dipendenze del backend come
+descritto piu avanti, l'intero scenario Edge-backend si esegue con un comando:
+
+```bash
+.venv/bin/python demo/run_end_to_end.py
+```
+
+La demo configura e compila l'Edge, avvia un backend con database temporaneo e
+verifica automaticamente due zone con ricette diverse, telemetria, cambio
+Strategy, cambio fase, fault recuperabile, ritorno a `Nominal` e rimozione di
+una zona dall'Edge. In caso di successo termina entrambi i processi e rimuove
+gli artefatti temporanei; in caso di errore conserva database, outbox e log e
+ne stampa il percorso. `--keep-artifacts` conserva gli artefatti anche dopo un
+successo, mentre `--skip-build` riusa `edge/build/bin/edge`.
+
+Lo scenario modificabile e in `demo/end_to_end_scenario.json`; il comportamento
+atteso e documentato in `demo/README.md`. Non serve un reset manuale tra due
+esecuzioni, perche ogni avvio crea un database e una cache Edge nuovi.
 
 ## Compilazione dell'Edge Controller
 

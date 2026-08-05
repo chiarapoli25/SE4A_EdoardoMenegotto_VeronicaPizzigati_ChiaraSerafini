@@ -1,0 +1,57 @@
+{
+  "edge_id": "demo-edge-1",
+  "zones": [
+    {
+      "id": "demo-calathea",
+      "name": "Demo - Calathea",
+      "department_number": 1,
+      "sector_number": 1,
+      "plant_species": "Calathea",
+      "recipe_id": "recipe-calathea",
+      "cultivation_id": "cultivation-calathea"
+    },
+    {
+      "id": "demo-pomodorino",
+      "name": "Demo - Pomodorino",
+      "department_number": 4,
+      "sector_number": 1,
+      "plant_species": "Pomodorino",
+      "recipe_id": "recipe-pomodorino",
+      "cultivation_id": "cultivation-pomodorino"
+    }
+  ],
+  "strategy_change": {
+    "zone_id": "demo-calathea",
+    "command_id": "demo-change-soil-strategy",
+    "variable": "soil_moisture",
+    "strategy": "PID",
+    "parameters": {
+      "setpoint": 64.0,
+      "proportional_gain": 0.1,
+      "integral_gain": 0.001,
+      "derivative_gain": 0.0,
+      "command_minimum": 0.0,
+      "command_maximum": 0.9,
+      "direction": "increases"
+    }
+  },
+  "phase_advance": {
+    "zone_id": "demo-pomodorino",
+    "command_id": "demo-advance-phase"
+  },
+  "recoverable_fault": {
+    "zone_id": "demo-calathea",
+    "command_id": "demo-inject-soil-moisture-offset",
+    "fault_id": "demo-temporary-soil-moisture-offset",
+    "target_type": "sensor",
+    "target": "soil_moisture",
+    "mode": "sensor_offset",
+    "value": 6.0,
+    "duration_seconds": 1.0
+  },
+  "remove_zone": {
+    "zone_id": "demo-pomodorino",
+    "pause_command_id": "demo-pause-before-removal",
+    "ignored_command_id": "demo-command-after-removal"
+  }
+}
