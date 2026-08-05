@@ -200,6 +200,15 @@ def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
     assert "assigned_edge_id" in columns
     assert "administrative_status" in columns
     assert "cultivation_completed" in columns
+    assert {
+        "lifecycle_state",
+        "operational_state",
+        "active_recipe_version",
+        "current_strategies",
+        "current_setpoints",
+        "time_scale",
+        "projection_updated_at",
+    } <= columns
     assert "zone_type" not in columns
     assert assignment == (None, "active", 0)
 
@@ -286,4 +295,12 @@ def test_init_db_adds_soil_probe_telemetry_to_existing_schema() -> None:
         "nitrogen_estimate_mg_per_liter",
         "phosphorus_estimate_mg_per_liter",
         "potassium_estimate_mg_per_liter",
+        "active_recipe_id",
+        "active_recipe_version",
+        "current_phase",
+        "operational_state",
+        "lifecycle_state",
+        "current_strategies",
+        "current_setpoints",
+        "time_scale",
     } <= columns

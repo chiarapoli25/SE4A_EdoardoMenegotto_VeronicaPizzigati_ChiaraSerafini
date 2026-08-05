@@ -4,6 +4,13 @@
 
 from pydantic import AwareDatetime, BaseModel, Field
 
+from ..zones.models import (
+    ControlSetpoints,
+    ControlStrategies,
+    OperationalState,
+    ZoneLifecycleState,
+)
+
 
 class GreenhouseTelemetry(BaseModel):
     """@brief Campione sincronizzato dei sensori inviato dalla serra.
@@ -43,6 +50,22 @@ class GreenhouseTelemetry(BaseModel):
         ge=0.0,
         le=3000.0,
     )
+    ## @brief Identificativo della ricetta attualmente eseguita.
+    active_recipe_id: str = Field(min_length=1, max_length=64)
+    ## @brief Versione invalidante della ricetta attualmente eseguita.
+    active_recipe_version: int = Field(ge=1)
+    ## @brief Fase corrente della ricetta.
+    current_phase: str = Field(min_length=1, max_length=100)
+    ## @brief Stato della FSM operativa dell'Edge.
+    operational_state: OperationalState
+    ## @brief Stato applicativo del ciclo della zona.
+    lifecycle_state: ZoneLifecycleState
+    ## @brief Strategy selezionata per ogni variabile controllata.
+    current_strategies: ControlStrategies
+    ## @brief Setpoint della fase corrente per ogni variabile controllata.
+    current_setpoints: ControlSetpoints
+    ## @brief Rapporto fra tempo simulato e tempo reale.
+    time_scale: float = Field(ge=1.0, le=60.0)
 
 
 class TelemetryCreate(GreenhouseTelemetry):

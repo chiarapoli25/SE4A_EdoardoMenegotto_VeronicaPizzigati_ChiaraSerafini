@@ -55,6 +55,59 @@ def test_event_is_idempotent_and_available_on_versioned_api(
     assert replay.status_code == 201
     assert replay.json() == first.json()
     assert [event["event_id"] for event in events.json()] == ["event-1"]
+    assert client.get("/zones/zone-1").json()["operational_state"] == "Degraded"
+
+
+def test_operational_events_update_projection_without_history_rebuild(
+    client: TestClient,
+) -> None:
+    base = {
+        "edge_id": "edge-1",
+        "boot_id": "boot-1",
+        "timestamp_seconds": 60,
+        "recorded_at": "2026-07-30T12:00:00Z",
+    }
+    events = (
+        (
+            "lifecycle-paused",
+            "ZoneLifecycleChanged",
+            {
+                "previous_state": "Running",
+                "current_state": "Paused",
+                "reason": "operator request",
+            },
+        ),
+        (
+            "speed-changed",
+            "SimulationSpeedChanged",
+            {"previous_time_scale": 1.0, "current_time_scale": 10.0},
+        ),
+        (
+            "strategy-changed",
+            "StrategyChanged",
+            {
+                "variable": "soil_moisture",
+                "previous_strategy": "Threshold",
+                "current_strategy": "PID",
+            },
+        ),
+    )
+    for event_id, event_type, payload in events:
+        response = client.post(
+            "/api/v1/zones/zone-1/events",
+            json={
+                **base,
+                "event_id": event_id,
+                "event_type": event_type,
+                "payload": payload,
+            },
+        )
+        assert response.status_code == 201
+
+    zone = client.get("/zones/zone-1").json()
+    assert zone["lifecycle_state"] == "Paused"
+    assert zone["time_scale"] == 10.0
+    assert zone["current_strategies"]["soil_moisture"] == "PID"
 
 
 def test_recipe_events_update_phase_and_completion_state(

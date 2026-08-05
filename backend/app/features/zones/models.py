@@ -25,6 +25,81 @@ class ZoneStatus(str, Enum):
     ONLINE = "online"
 
 
+class ZoneLifecycleState(str, Enum):
+    """Stato applicativo corrente pubblicato dall'Edge."""
+
+    IDLE = "Idle"
+    RUNNING = "Running"
+    PAUSED = "Paused"
+    ERROR = "Error"
+
+
+class OperationalState(str, Enum):
+    """Stato corrente della FSM di sicurezza dell'Edge."""
+
+    NOMINAL = "Nominal"
+    DEGRADED = "Degraded"
+    EMERGENCY_LOCKDOWN = "EmergencyLockdown"
+
+
+class StrategyName(str, Enum):
+    """Nomi stabili delle Strategy disponibili sull'Edge."""
+
+    THRESHOLD = "Threshold"
+    PID = "PID"
+    PREDICTIVE = "Predictive"
+
+
+class ControlStrategies(BaseModel):
+    """Strategia selezionata per ognuna delle sei variabili controllate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    soil_moisture: StrategyName
+    light: StrategyName
+    ph: StrategyName
+    nitrogen: StrategyName
+    phosphorus: StrategyName
+    potassium: StrategyName
+
+    @classmethod
+    def defaults(cls) -> "ControlStrategies":
+        """Configurazione iniziale prima del primo snapshot Edge."""
+        return cls(
+            soil_moisture=StrategyName.THRESHOLD,
+            light=StrategyName.THRESHOLD,
+            ph=StrategyName.PID,
+            nitrogen=StrategyName.PREDICTIVE,
+            phosphorus=StrategyName.PREDICTIVE,
+            potassium=StrategyName.PREDICTIVE,
+        )
+
+
+class ControlSetpoints(BaseModel):
+    """Setpoint correnti della fase, indicizzati per variabile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    soil_moisture: float = Field(allow_inf_nan=False)
+    light: float = Field(allow_inf_nan=False)
+    ph: float = Field(allow_inf_nan=False)
+    nitrogen: float = Field(allow_inf_nan=False)
+    phosphorus: float = Field(allow_inf_nan=False)
+    potassium: float = Field(allow_inf_nan=False)
+
+    @classmethod
+    def zeros(cls) -> "ControlSetpoints":
+        """Valori neutri usati finche l'Edge non invia la prima fase."""
+        return cls(
+            soil_moisture=0.0,
+            light=0.0,
+            ph=0.0,
+            nitrogen=0.0,
+            phosphorus=0.0,
+            potassium=0.0,
+        )
+
+
 class ZoneAdministrativeStatus(str, Enum):
     """@brief Disponibilita amministrativa di un settore."""
 
@@ -107,6 +182,22 @@ class Zone(ZoneCreate):
     status: ZoneStatus = ZoneStatus.OFFLINE
     ## @brief Timestamp UTC dell'ultimo contatto Edge, oppure `None`.
     last_edge_contact: AwareDatetime | None = None
+    ## @brief Lifecycle applicativo corrente, persistito senza rileggere eventi.
+    lifecycle_state: ZoneLifecycleState = ZoneLifecycleState.IDLE
+    ## @brief Stato corrente della FSM di sicurezza.
+    operational_state: OperationalState = OperationalState.NOMINAL
+    ## @brief Versione della ricetta attiva osservata dall'Edge.
+    active_recipe_version: int | None = Field(default=None, ge=1)
+    ## @brief Strategy correnti per tutte le variabili controllate.
+    current_strategies: ControlStrategies = Field(
+        default_factory=ControlStrategies.defaults
+    )
+    ## @brief Setpoint correnti della fase attiva.
+    current_setpoints: ControlSetpoints = Field(
+        default_factory=ControlSetpoints.zeros
+    )
+    ## @brief Rapporto corrente fra tempo simulato e reale.
+    time_scale: float = Field(default=1.0, ge=1.0, le=60.0)
 
 
 class ZoneUpdate(BaseModel):

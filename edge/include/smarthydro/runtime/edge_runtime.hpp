@@ -192,6 +192,16 @@ public:
     void detach_event_bus() noexcept;
     /** @brief Restituisce l'identificatore usato negli eventi di dominio. */
     const std::string& zone_id() const noexcept;
+    /**
+     * @brief Aggiorna il contesto esterno incluso nello snapshot telemetrico.
+     *
+     * Il lifecycle appartiene a ZoneController, mentre il runtime conosce la
+     * FSM operativa. Il metodo mantiene separate le due responsabilita e
+     * consente di produrre un unico campione atomico per il backend.
+     */
+    void set_snapshot_context(
+        std::string lifecycle_state,
+        double time_scale);
     /** @brief Dose cumulativa realmente erogata nella fase corrente. */
     double cumulative_phase_dose_milliliters(
         ControlledVariable variable) const;
@@ -277,6 +287,8 @@ private:
     ActuatorOutput effective_actuator_output_;
     std::shared_ptr<EventBus> event_bus_;
     std::string zone_id_ = "zone-1";
+    std::string snapshot_lifecycle_state_ = "Running";
+    double snapshot_time_scale_ = 1.0;
 };
 
 }  // namespace smarthydro

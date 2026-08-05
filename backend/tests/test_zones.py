@@ -52,6 +52,26 @@ def test_create_and_read_zone(client: TestClient) -> None:
         "administrative_status": "active",
         "status": "offline",
         "last_edge_contact": None,
+        "lifecycle_state": "Idle",
+        "operational_state": "Nominal",
+        "active_recipe_version": None,
+        "current_strategies": {
+            "soil_moisture": "Threshold",
+            "light": "Threshold",
+            "ph": "PID",
+            "nitrogen": "Predictive",
+            "phosphorus": "Predictive",
+            "potassium": "Predictive",
+        },
+        "current_setpoints": {
+            "soil_moisture": 0.0,
+            "light": 0.0,
+            "ph": 0.0,
+            "nitrogen": 0.0,
+            "phosphorus": 0.0,
+            "potassium": 0.0,
+        },
+        "time_scale": 1.0,
     }
 
     read = client.get("/zones/r1-s1")

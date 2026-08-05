@@ -257,6 +257,35 @@ la ricetta validata con
 `GET /api/v1/recipes/{recipe_id}` prima dell'esecuzione. Per l'attivazione il
 payload deve includere anche `cultivation_id`.
 
+Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
+canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del
+terriccio, `active_recipe_id`, `active_recipe_version`, `current_phase`,
+`operational_state`, `lifecycle_state`, `current_strategies`,
+`current_setpoints` e `time_scale`. Strategie e setpoint sono oggetti con le
+sei chiavi `soil_moisture`, `light`, `ph`, `nitrogen`, `phosphorus` e
+`potassium`.
+
+Il backend conserva lo storico completo in `telemetry_samples`, ma aggiorna
+anche direttamente la proiezione corrente nella riga `zones`. La lettura di
+una zona non ricostruisce quindi ricetta, fase o FSM scorrendo `edge_events`.
+Un campione arrivato in ritardo viene archiviato senza sovrascrivere la
+proiezione prodotta da un campione cronologicamente piu recente.
+
+`status` e calcolato da `last_edge_contact`: la zona e `online` soltanto se il
+contatto rientra nella soglia configurata. Il valore predefinito e 60 secondi
+e si modifica prima dell'avvio del backend:
+
+```bash
+export SMARTHYDRO_OFFLINE_THRESHOLD_SECONDS=90
+```
+
+Il ricalcolo viene applicato durante le letture delle zone e da uno sweep
+asincrono avviato con FastAPI, quindi l'offline viene persistito anche senza
+richieste API. Telemetria, attuatori ed eventi validi aggiornano immediatamente
+`last_edge_contact`. Gli eventi continuano a essere memorizzati come audit
+storico e aggiornano la stessa proiezione quando rappresentano transizioni
+immediate, per esempio pausa, errore, cambio Strategy o cambio velocita.
+
 Per creare dal backend un settore assegnato all'Edge:
 
 ```bash
@@ -319,7 +348,7 @@ curl -X PATCH http://127.0.0.1:8000/api/v1/zones/r1-s1 \
 
 La ricetta deve essere gia presente nel backend; la specie non puo diventare
 incompatibile con le piante registrate; il reparto 5 continua a non avere una
-specie unica. Una zona il cui ultimo evento lifecycle la dichiara `Running`
+specie unica. Una zona la cui proiezione `lifecycle_state` e `Running`
 deve essere arrestata o messa in pausa prima di cambiare Edge.
 
 La quarantena e una proprieta della singola pianta, non del settore. Ogni

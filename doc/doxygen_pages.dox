@@ -197,9 +197,9 @@
  * | POST | `/zones` | backend.app.features.zones.routes.register_zone() | Registrazione di un settore della serra |
  * | GET | `/zones` | backend.app.features.zones.routes.read_zones() | Elenco dei settori ordinati per reparto |
  * | GET | `/zones/{zone_id}` | backend.app.features.zones.routes.read_zone() | Lettura di un settore tramite identificativo |
- * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
- * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo campione sensori disponibile |
- * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato dei sensori |
+ * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione dello snapshot completo dall'Edge |
+ * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo snapshot completo disponibile |
+ * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato della telemetria |
  * | POST | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
  * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.features.actuators.routes.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
  * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
@@ -280,8 +280,10 @@
  * delegano il salvataggio al relativo repository. Un worker HTTP nell'Edge
  * usa timeout brevi, outbox persistente e retry con backoff. In senso opposto
  * interroga `commands`, esegue il comando fra due cicli e pubblica l'esito.
- * Le transazioni portano il settore nello stato `online` e aggiornano
- * `last_edge_contact`.
+ * Le transazioni aggiornano `last_edge_contact`; `status` viene ricalcolato
+ * come online/offline usando la soglia configurabile
+ * `SMARTHYDRO_OFFLINE_THRESHOLD_SECONDS`. Uno sweep asincrono nel lifespan
+ * FastAPI persiste il passaggio offline anche in assenza di letture API.
  *
  * @code{.txt}
  * Edge -> features/telemetry/routes.py
@@ -295,6 +297,22 @@
  * Backend <- risultato comando <- Edge runtime
  * Dashboard <- features/actuators/routes.py <- repository.py <- SQLite
  * @endcode
+ *
+ * @section backend_zone_projection Proiezione corrente della zona
+ *
+ * Il campione telemetrico include sensori, stime N/P/K, EC del terriccio,
+ * ricetta e versione, fase, FSM operativa, lifecycle, Strategy, setpoint e
+ * scala temporale. `telemetry/repository.py` conserva il campione storico e,
+ * nella stessa transazione, aggiorna nella tabella `zones` i campi
+ * `lifecycle_state`, `operational_state`, `active_recipe_id`,
+ * `active_recipe_version`, `current_phase`, `current_strategies`,
+ * `current_setpoints`, `time_scale` e `last_edge_contact`.
+ *
+ * Gli eventi restano un audit append-only ma le API delle zone non devono
+ * rileggerli per ricostruire lo stato corrente. Anche il vincolo che impedisce
+ * di riassegnare una zona Running consulta direttamente la proiezione. Un
+ * campione fuori ordine viene conservato senza riportare indietro lo stato
+ * sintetico corrente.
  *
  * @section backend_actuator_contract Contratto degli attuatori
  *

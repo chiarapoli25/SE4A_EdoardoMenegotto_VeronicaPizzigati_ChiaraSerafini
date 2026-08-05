@@ -94,6 +94,18 @@ smarthydro::TelemetrySample telemetry_event() {
     event.readings.potassium_estimate_mg_per_liter = 200.0;
     event.readings.ph = 6.2;
     event.readings.light_ppfd_umol_m2_s = 450.0;
+    event.active_recipe_id = "recipe-tomato";
+    event.active_recipe_version = 4;
+    event.current_phase = "Crescita vegetativa";
+    event.lifecycle_state = "Running";
+    event.time_scale = 10.0;
+    event.current_strategies.fill(
+        smarthydro::StrategyType::THRESHOLD);
+    event.current_strategies[
+        smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::PH)] =
+        smarthydro::StrategyType::PID;
+    event.current_setpoints = {55.0, 500.0, 6.2, 150.0, 50.0, 200.0};
     event.actuator_command.lighting_percent = 25.0;
     event.actuator_output.lighting_power_watts = 50.0;
     return event;
@@ -131,6 +143,14 @@ TEST(HttpBackendClientTest, SerializesTelemetryAndActuatorsAsynchronously) {
     EXPECT_EQ(
         telemetry.at("fertilizer_concentration_mg_per_liter"),
         400.0);
+    EXPECT_EQ(telemetry.at("active_recipe_id"), "recipe-tomato");
+    EXPECT_EQ(telemetry.at("active_recipe_version"), 4);
+    EXPECT_EQ(telemetry.at("current_phase"), "Crescita vegetativa");
+    EXPECT_EQ(telemetry.at("operational_state"), "Nominal");
+    EXPECT_EQ(telemetry.at("lifecycle_state"), "Running");
+    EXPECT_EQ(telemetry.at("current_strategies").at("ph"), "PID");
+    EXPECT_EQ(telemetry.at("current_setpoints").at("nitrogen"), 150.0);
+    EXPECT_EQ(telemetry.at("time_scale"), 10.0);
     const auto actuators = nlohmann::json::parse(posts[1].second);
     EXPECT_EQ(actuators.at("command").at("lighting_percent"), 25.0);
     EXPECT_FALSE(std::filesystem::exists(outbox / "unused.json"));

@@ -5,11 +5,13 @@
 Modelli, query SQLite ed endpoint sono definiti nei rispettivi package.
 """
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
 
 from .core.database import get_connection, get_db, init_db
+from .core.config import offline_threshold_seconds
 from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
 from .features.commands.routes import router as command_router
@@ -22,17 +24,40 @@ from .features.zones.routes import (
     edge_router,
     router as zone_router,
 )
+from .features.zones.repository import refresh_zone_connectivity
+
+
+async def _connectivity_sweep() -> None:
+    """Persiste periodicamente lo stato offline anche senza richieste API."""
+    while True:
+        threshold = offline_threshold_seconds()
+        await asyncio.sleep(min(max(threshold / 4.0, 0.25), 5.0))
+        connection = get_connection()
+        try:
+            refresh_zone_connectivity(
+                connection,
+                threshold_seconds=threshold,
+            )
+        finally:
+            connection.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """@brief Inizializza lo schema SQLite all'avvio dell'applicazione."""
+    offline_threshold_seconds()
     connection = get_connection()
     try:
         init_db(connection)
     finally:
         connection.close()
-    yield
+    connectivity_task = asyncio.create_task(_connectivity_sweep())
+    try:
+        yield
+    finally:
+        connectivity_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await connectivity_task
 
 
 ## @brief Applicazione ASGI principale esposta al server Uvicorn.

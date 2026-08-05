@@ -172,6 +172,45 @@ def _migrate_soil_probe_columns(connection: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_telemetry_state_columns(connection: sqlite3.Connection) -> None:
+    """Aggiunge lo snapshot operativo completo ai campioni precedenti."""
+    columns = _table_columns(connection, "telemetry_samples")
+    additions = {
+        "active_recipe_id": "TEXT NOT NULL DEFAULT 'legacy-unknown'",
+        "active_recipe_version": "INTEGER NOT NULL DEFAULT 1",
+        "current_phase": "TEXT NOT NULL DEFAULT 'legacy-unknown'",
+        "operational_state": "TEXT NOT NULL DEFAULT 'Nominal'",
+        "lifecycle_state": "TEXT NOT NULL DEFAULT 'Running'",
+        "current_strategies": "TEXT NOT NULL DEFAULT '{}'",
+        "current_setpoints": "TEXT NOT NULL DEFAULT '{}'",
+        "time_scale": "REAL NOT NULL DEFAULT 1.0",
+    }
+    for column, declaration in additions.items():
+        if columns and column not in columns:
+            connection.execute(
+                f"ALTER TABLE telemetry_samples ADD COLUMN {column} {declaration}"
+            )
+
+
+def _migrate_zone_projection_columns(connection: sqlite3.Connection) -> None:
+    """Aggiunge la proiezione corrente senza derivarla dallo storico eventi."""
+    columns = _table_columns(connection, "zones")
+    additions = {
+        "lifecycle_state": "TEXT NOT NULL DEFAULT 'Idle'",
+        "operational_state": "TEXT NOT NULL DEFAULT 'Nominal'",
+        "active_recipe_version": "INTEGER",
+        "current_strategies": "TEXT NOT NULL DEFAULT '{}'",
+        "current_setpoints": "TEXT NOT NULL DEFAULT '{}'",
+        "time_scale": "REAL NOT NULL DEFAULT 1.0",
+        "projection_updated_at": "TEXT",
+    }
+    for column, declaration in additions.items():
+        if columns and column not in columns:
+            connection.execute(
+                f"ALTER TABLE zones ADD COLUMN {column} {declaration}"
+            )
+
+
 def _migrate_recipe_catalog_version(connection: sqlite3.Connection) -> None:
     """Versiona il bootstrap senza trasformare i JSON in sorgente runtime."""
     columns = _table_columns(connection, "recipe_catalog_imports")
@@ -326,6 +365,17 @@ def init_db(connection: sqlite3.Connection) -> None:
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            lifecycle_state TEXT NOT NULL DEFAULT 'Idle'
+                CHECK (lifecycle_state IN ('Idle', 'Running', 'Paused', 'Error')),
+            operational_state TEXT NOT NULL DEFAULT 'Nominal'
+                CHECK (operational_state IN
+                       ('Nominal', 'Degraded', 'EmergencyLockdown')),
+            active_recipe_version INTEGER,
+            current_strategies TEXT NOT NULL DEFAULT '{}',
+            current_setpoints TEXT NOT NULL DEFAULT '{}',
+            time_scale REAL NOT NULL DEFAULT 1.0
+                CHECK (time_scale BETWEEN 1.0 AND 60.0),
+            projection_updated_at TEXT,
             cultivation_completed INTEGER NOT NULL DEFAULT 0
                 CHECK (cultivation_completed IN (0, 1)),
             administrative_status TEXT NOT NULL DEFAULT 'active'
@@ -346,6 +396,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     _migrate_fifth_department_schema(connection)
     _migrate_zone_administrative_status_column(connection)
     _migrate_cultivation_completed_column(connection)
+    _migrate_zone_projection_columns(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plants (
@@ -423,6 +474,14 @@ def init_db(connection: sqlite3.Connection) -> None:
             potassium_estimate_mg_per_liter REAL,
             ph REAL,
             light_ppfd_umol_m2_s REAL,
+            active_recipe_id TEXT NOT NULL,
+            active_recipe_version INTEGER NOT NULL,
+            current_phase TEXT NOT NULL,
+            operational_state TEXT NOT NULL,
+            lifecycle_state TEXT NOT NULL,
+            current_strategies TEXT NOT NULL,
+            current_setpoints TEXT NOT NULL,
+            time_scale REAL NOT NULL,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
             UNIQUE (zone_id, boot_id, sequence_number)
         )
@@ -504,6 +563,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     )
     _migrate_edge_session_columns(connection)
     _migrate_soil_probe_columns(connection)
+    _migrate_telemetry_state_columns(connection)
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_telemetry_zone_recorded_at

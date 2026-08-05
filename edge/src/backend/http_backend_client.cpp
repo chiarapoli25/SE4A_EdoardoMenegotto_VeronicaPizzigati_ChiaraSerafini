@@ -168,6 +168,18 @@ std::vector<PendingUpload> uploads_from_event(
                 const auto recorded_at = utc_now();
                 const auto telemetry_id = generated_identifier();
                 const auto actuator_id = generated_identifier();
+                Json current_strategies = Json::object();
+                Json current_setpoints = Json::object();
+                for (std::size_t index = 0;
+                     index < kControlledVariableCount;
+                     ++index) {
+                    const auto variable =
+                        static_cast<ControlledVariable>(index);
+                    current_strategies[to_string(variable)] =
+                        to_string(value.current_strategies[index]);
+                    current_setpoints[to_string(variable)] =
+                        value.current_setpoints[index];
+                }
                 Json telemetry = {
                     {"boot_id", config.boot_id},
                     {"sequence_number", value.sequence_number},
@@ -200,6 +212,17 @@ std::vector<PendingUpload> uploads_from_event(
                     {"light_ppfd_umol_m2_s",
                      optional_json(
                          value.readings.light_ppfd_umol_m2_s)},
+                    {"active_recipe_id", value.active_recipe_id},
+                    {"active_recipe_version",
+                     value.active_recipe_version},
+                    {"current_phase", value.current_phase},
+                    {"operational_state",
+                     to_string(value.operational_state)},
+                    {"lifecycle_state", value.lifecycle_state},
+                    {"current_strategies",
+                     std::move(current_strategies)},
+                    {"current_setpoints", std::move(current_setpoints)},
+                    {"time_scale", value.time_scale},
                 };
                 Json actuators = {
                     {"boot_id", config.boot_id},

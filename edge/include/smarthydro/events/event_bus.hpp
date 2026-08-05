@@ -38,6 +38,20 @@ struct TelemetrySample {
     ActuatorOutput actuator_output;
     /** Stato ambientale raggiunto. */
     EnvironmentState environment_state;
+    /** Identificativo della ricetta attualmente eseguita. */
+    std::string active_recipe_id;
+    /** Versione completa della ricetta attualmente eseguita. */
+    std::uint64_t active_recipe_version = 0;
+    /** Fase della ricetta usata nel ciclo. */
+    std::string current_phase;
+    /** Lifecycle applicativo della zona: Idle, Running, Paused o Error. */
+    std::string lifecycle_state = "Running";
+    /** Strategia selezionata per ciascuna variabile controllata. */
+    ControlledValues<StrategyType> current_strategies{};
+    /** Setpoint della fase corrente per ciascuna variabile controllata. */
+    ControlledValues<double> current_setpoints{};
+    /** Rapporto fra tempo simulato e tempo reale. */
+    double time_scale = 1.0;
 };
 
 /** @brief Transizione del lifecycle applicativo di una zona. */

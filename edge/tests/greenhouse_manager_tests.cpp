@@ -775,16 +775,20 @@ TEST(GreenhouseManagerTest, SharedBusKeepsTelemetryTaggedAndSequenced) {
         manager.add_simulated_zone("zone-b", load_demo_recipe());
     zone_a.confirm_all_configurations();
     zone_b.confirm_all_configurations();
+    zone_a.set_time_scale(10.0);
 
     manager.step_all(60.0);
     manager.step_all(60.0);
 
     std::map<std::string, std::vector<std::uint64_t>> sequences;
+    std::map<std::string, double> time_scales;
     for (const auto& event : observer->events) {
         if (const auto* telemetry =
                 std::get_if<smarthydro::TelemetrySample>(&event)) {
             sequences[telemetry->zone_id].push_back(
                 telemetry->sequence_number);
+            time_scales[telemetry->zone_id] = telemetry->time_scale;
+            EXPECT_EQ(telemetry->lifecycle_state, "Running");
         }
     }
     EXPECT_EQ(
@@ -793,6 +797,8 @@ TEST(GreenhouseManagerTest, SharedBusKeepsTelemetryTaggedAndSequenced) {
     EXPECT_EQ(
         sequences["zone-b"],
         (std::vector<std::uint64_t>{0U, 1U}));
+    EXPECT_DOUBLE_EQ(time_scales["zone-a"], 10.0);
+    EXPECT_DOUBLE_EQ(time_scales["zone-b"], 1.0);
 }
 
 TEST(GreenhouseManagerTest, RejectsDuplicateAndUnknownZones) {

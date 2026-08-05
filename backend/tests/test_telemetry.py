@@ -1,4 +1,5 @@
 import sqlite3
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,6 +55,28 @@ def telemetry_payload(
         "potassium_estimate_mg_per_liter": 194.5,
         "ph": 6.4,
         "light_ppfd_umol_m2_s": 520.0,
+        "active_recipe_id": "recipe-pomodoro",
+        "active_recipe_version": 3,
+        "current_phase": "Crescita vegetativa",
+        "operational_state": "Nominal",
+        "lifecycle_state": "Running",
+        "current_strategies": {
+            "soil_moisture": "Threshold",
+            "light": "Threshold",
+            "ph": "PID",
+            "nitrogen": "Predictive",
+            "phosphorus": "Predictive",
+            "potassium": "Predictive",
+        },
+        "current_setpoints": {
+            "soil_moisture": 52.0,
+            "light": 520.0,
+            "ph": 6.4,
+            "nitrogen": 145.8,
+            "phosphorus": 48.6,
+            "potassium": 194.5,
+        },
+        "time_scale": 10.0,
     }
 
 
@@ -82,6 +105,34 @@ def test_ingest_marks_zone_online(client: TestClient) -> None:
     zone = client.get("/zones/r1-s1").json()
     assert zone["status"] == "online"
     assert zone["last_edge_contact"] == response.json()["received_at"]
+
+
+def test_ingest_updates_persistent_zone_projection(client: TestClient) -> None:
+    response = client.post("/zones/r1-s1/telemetry", json=telemetry_payload())
+    assert response.status_code == 201
+
+    zone = client.get("/zones/r1-s1").json()
+    assert zone["lifecycle_state"] == "Running"
+    assert zone["operational_state"] == "Nominal"
+    assert zone["active_recipe_id"] == "recipe-pomodoro"
+    assert zone["active_recipe_version"] == 3
+    assert zone["current_phase"] == "Crescita vegetativa"
+    assert zone["current_strategies"]["ph"] == "PID"
+    assert zone["current_setpoints"]["soil_moisture"] == 52.0
+    assert zone["time_scale"] == 10.0
+
+
+def test_zone_becomes_offline_after_configured_threshold(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SMARTHYDRO_OFFLINE_THRESHOLD_SECONDS", "0.001")
+    response = client.post("/zones/r1-s1/telemetry", json=telemetry_payload())
+    assert response.status_code == 201
+    time.sleep(0.01)
+
+    zone = client.get("/zones/r1-s1").json()
+    assert zone["status"] == "offline"
 
 
 def test_sensor_dropout_accepts_null_values(client: TestClient) -> None:
@@ -145,6 +196,27 @@ def test_history_filters_dates_and_orders_results(client: TestClient) -> None:
     assert [sample["sequence_number"] for sample in response.json()] == [2, 3]
 
 
+def test_older_sample_does_not_roll_back_current_projection(
+    client: TestClient,
+) -> None:
+    newest = {
+        **telemetry_payload(1, "2026-07-29T10:10:00Z"),
+        "current_phase": "Fioritura",
+        "active_recipe_version": 4,
+    }
+    older = {
+        **telemetry_payload(2, "2026-07-29T10:00:00Z"),
+        "current_phase": "Attecchimento",
+        "active_recipe_version": 2,
+    }
+    assert client.post("/zones/r1-s1/telemetry", json=newest).status_code == 201
+    assert client.post("/zones/r1-s1/telemetry", json=older).status_code == 201
+
+    zone = client.get("/zones/r1-s1").json()
+    assert zone["current_phase"] == "Fioritura"
+    assert zone["active_recipe_version"] == 4
+
+
 def test_invalid_sensor_value_is_rejected(client: TestClient) -> None:
     response = client.post(
         "/zones/r1-s1/telemetry",
@@ -162,6 +234,17 @@ def test_negative_fertilizer_estimate_is_rejected(client: TestClient) -> None:
             "fertilizer_concentration_mg_per_liter": -1.0,
         },
     )
+
+    assert response.status_code == 422
+
+
+def test_snapshot_requires_strategy_for_every_controlled_variable(
+    client: TestClient,
+) -> None:
+    payload = telemetry_payload()
+    del payload["current_strategies"]["potassium"]
+
+    response = client.post("/zones/r1-s1/telemetry", json=payload)
 
     assert response.status_code == 422
 

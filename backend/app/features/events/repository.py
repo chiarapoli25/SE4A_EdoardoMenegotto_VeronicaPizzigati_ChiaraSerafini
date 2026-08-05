@@ -24,10 +24,29 @@ def _apply_recipe_state(
     zone_id: str,
     event: EdgeEventCreate,
 ) -> None:
-    """Proietta gli eventi della ricetta nello stato sintetico della zona."""
+    """Aggiorna subito la proiezione corrente, mantenendo l'evento storico."""
+    projection_time = event.recorded_at.astimezone(timezone.utc).isoformat()
+    stored_projection = connection.execute(
+        "SELECT projection_updated_at FROM zones WHERE id = ?",
+        (zone_id,),
+    ).fetchone()
+    if (
+        stored_projection is not None
+        and stored_projection[0] is not None
+        and stored_projection[0] > projection_time
+    ):
+        return
+
+    projected = False
     if event.event_type == "ZoneLifecycleChanged":
         previous_state = event.payload.get("previous_state")
         current_state = event.payload.get("current_state")
+        if current_state in {"Idle", "Running", "Paused", "Error"}:
+            connection.execute(
+                "UPDATE zones SET lifecycle_state = ? WHERE id = ?",
+                (current_state, zone_id),
+            )
+            projected = True
         if previous_state == "Starting" and current_state == "Running":
             connection.execute(
                 """
@@ -37,6 +56,60 @@ def _apply_recipe_state(
                 """,
                 (zone_id,),
             )
+            projected = True
+        elif current_state == "Idle":
+            connection.execute(
+                """
+                UPDATE zones
+                SET active_recipe_id = NULL, active_recipe_version = NULL,
+                    current_phase = NULL, cultivation_completed = 0,
+                    time_scale = 1.0
+                WHERE id = ?
+                """,
+                (zone_id,),
+            )
+            projected = True
+    elif event.event_type == "StateChanged":
+        current_state = event.payload.get("current_state")
+        if current_state in {"Nominal", "Degraded", "EmergencyLockdown"}:
+            connection.execute(
+                "UPDATE zones SET operational_state = ? WHERE id = ?",
+                (current_state, zone_id),
+            )
+            projected = True
+    elif event.event_type == "SimulationSpeedChanged":
+        current_scale = event.payload.get("current_time_scale")
+        if (
+            isinstance(current_scale, (int, float))
+            and 1.0 <= current_scale <= 60.0
+        ):
+            connection.execute(
+                "UPDATE zones SET time_scale = ? WHERE id = ?",
+                (float(current_scale), zone_id),
+            )
+            projected = True
+    elif event.event_type == "StrategyChanged":
+        variable = event.payload.get("variable")
+        current_strategy = event.payload.get("current_strategy")
+        if variable in {
+            "soil_moisture",
+            "light",
+            "ph",
+            "nitrogen",
+            "phosphorus",
+            "potassium",
+        } and current_strategy in {"Threshold", "PID", "Predictive"}:
+            row = connection.execute(
+                "SELECT current_strategies FROM zones WHERE id = ?",
+                (zone_id,),
+            ).fetchone()
+            strategies = json.loads(row[0]) if row is not None else {}
+            strategies[variable] = current_strategy
+            connection.execute(
+                "UPDATE zones SET current_strategies = ? WHERE id = ?",
+                (json.dumps(strategies, sort_keys=True), zone_id),
+            )
+            projected = True
     elif event.event_type == "RecipePhaseChanged":
         current_phase = _phase_name(event.payload, "current_phase")
         if current_phase is not None:
@@ -48,6 +121,7 @@ def _apply_recipe_state(
                 """,
                 (current_phase, zone_id),
             )
+            projected = True
     elif event.event_type == "RecipeCompleted":
         final_phase = _phase_name(event.payload, "final_phase")
         if final_phase is not None:
@@ -59,6 +133,13 @@ def _apply_recipe_state(
                 """,
                 (final_phase, zone_id),
             )
+            projected = True
+
+    if projected:
+        connection.execute(
+            "UPDATE zones SET projection_updated_at = ? WHERE id = ?",
+            (projection_time, zone_id),
+        )
 
 
 def _event_from_row(row: tuple) -> EdgeEvent:

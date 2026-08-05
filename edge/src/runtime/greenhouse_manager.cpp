@@ -281,6 +281,9 @@ EdgeStepResult ZoneController::step(double delta_time_seconds) {
             "greenhouse zone is not running: " +
             std::string(to_string(lifecycle_state_)));
     }
+    runtime().set_snapshot_context(
+        to_string(lifecycle_state_),
+        time_scale_);
     return runtime().step(delta_time_seconds);
 }
 

@@ -277,13 +277,30 @@ TEST(EventBusTest, RuntimePublishesTelemetryAndExecutedCommands) {
         count_events<smarthydro::CommandExecuted>(
             recorder->events),
         1U);
+    const smarthydro::TelemetrySample* telemetry = nullptr;
     for (const auto& event : recorder->events) {
+        if (const auto* sample =
+                std::get_if<smarthydro::TelemetrySample>(&event)) {
+            telemetry = sample;
+        }
         std::visit(
             [](const auto& value) {
                 EXPECT_EQ(value.zone_id, "greenhouse-1");
             },
             event);
     }
+    ASSERT_NE(telemetry, nullptr);
+    EXPECT_EQ(telemetry->active_recipe_id, "tomato_demo_v1");
+    EXPECT_EQ(telemetry->active_recipe_version, 1U);
+    EXPECT_EQ(telemetry->current_phase, "VegetativeGrowth");
+    EXPECT_EQ(telemetry->lifecycle_state, "Running");
+    EXPECT_DOUBLE_EQ(telemetry->time_scale, 1.0);
+    const auto ph_index = smarthydro::controlled_variable_index(
+        smarthydro::ControlledVariable::PH);
+    EXPECT_EQ(
+        telemetry->current_strategies[ph_index],
+        smarthydro::StrategyType::PID);
+    EXPECT_DOUBLE_EQ(telemetry->current_setpoints[ph_index], 6.2);
 }
 
 TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
