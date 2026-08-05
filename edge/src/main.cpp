@@ -360,6 +360,16 @@ int main(int argc, char* argv[]) {
             const auto now = Clock::now();
             scheduler.accrue(now);
             for (auto& zone_id :
+                 backend_client->take_removed_zone_ids()) {
+                if (!greenhouse.remove_zone(zone_id)) {
+                    continue;
+                }
+                std::cout
+                    << "Decommissioned unassigned backend zone "
+                    << zone_id << " from Edge "
+                    << options.edge_id << '\n';
+            }
+            for (auto& zone_id :
                  backend_client->take_discovered_zone_ids()) {
                 if (greenhouse.contains(zone_id)) {
                     continue;
@@ -370,6 +380,9 @@ int main(int argc, char* argv[]) {
                     << " on Edge " << options.edge_id << '\n';
             }
             for (auto& remote : backend_client->take_commands()) {
+                if (!greenhouse.contains(remote.zone_id)) {
+                    continue;
+                }
                 const auto result = greenhouse.execute_command(
                     remote.zone_id,
                     remote.envelope);

@@ -107,6 +107,7 @@ private:
         const std::string& zone_id,
         ZoneSchedule& schedule,
         bool lagging) noexcept;
+    void prune_removed_zones() noexcept;
 
     GreenhouseManager& greenhouse_;
     SimulationSchedulerConfig config_;

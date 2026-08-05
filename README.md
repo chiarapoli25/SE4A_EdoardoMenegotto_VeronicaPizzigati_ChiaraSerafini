@@ -248,7 +248,22 @@ Il client esegue `POST` di telemetria, snapshot degli attuatori ed eventi,
 sincronizza le zone assegnate, interroga la coda comandi con `GET` e invia
 l'esito di ogni comando. Le assegnazioni apprese vengono salvate in
 `assigned-zones.json` nella directory dell'outbox: un riavvio con backend
-offline ripristina quindi le zone gia note. I progressivi sono idempotenti per
+offline ripristina quindi le zone gia note.
+
+La discovery esegue una riconciliazione completa a ogni polling valido: valida
+l'intero manifesto restituito da `GET /api/v1/edges/{edge_id}/zones`, calcola
+aggiunte e rimozioni rispetto all'insieme locale e persiste la nuova lista
+prima di applicarla. Una zona rimossa viene decommissionata: attuatori spenti,
+runtime e backlog dello scheduler eliminati, comandi pendenti scartati e ID
+rimosso dal manager e da `assigned-zones.json`. Dopo la rimozione l'Edge non
+accetta piu comandi per quell'ID.
+
+Una risposta HTTP non 2xx, un JSON malformato o un manifesto non valido non
+sono mai interpretati come lista vuota: in questi casi insieme locale e cache
+restano invariati. Soltanto una risposta 2xx contenente un array valido, anche
+se realmente vuoto, puo autorizzare una rimozione.
+
+I progressivi sono idempotenti per
 `(zone_id, boot_id, sequence_number)`; gli eventi e i comandi hanno un
 identificativo idempotente proprio. I file dell'outbox vengono riletti al
 riavvio e rimossi soltanto dopo una risposta HTTP 2xx. I comandi `LoadRecipe` e

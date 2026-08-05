@@ -285,6 +285,20 @@
  * `SMARTHYDRO_OFFLINE_THRESHOLD_SECONDS`. Uno sweep asincrono nel lifespan
  * FastAPI persiste il passaggio offline anche in assenza di letture API.
  *
+ * @section edge_zone_reconciliation Riconciliazione Edge-zona
+ *
+ * Il worker Edge interroga periodicamente
+ * `/api/v1/edges/{edge_id}/zones`, valida completamente l'array e confronta
+ * l'insieme autorevole con gli ID locali. La nuova cache
+ * `assigned-zones.json` viene scritta prima di pubblicare aggiunte e
+ * rimozioni. Per ogni rimozione `GreenhouseManager::remove_zone()` arresta gli
+ * attuatori e distrugge runtime e processore comandi; lo scheduler elimina il
+ * backlog associato e il client scarta eventuali comandi non ancora estratti.
+ *
+ * Risposte HTTP non riuscite e manifesti JSON non validi non modificano
+ * insieme locale o cache. Un array 2xx valido e realmente vuoto e invece una
+ * riconciliazione autorevole e puo rimuovere tutte le zone assegnate.
+ *
  * @code{.txt}
  * Edge -> features/telemetry/routes.py
  *      -> features/telemetry/repository.py -> SQLite

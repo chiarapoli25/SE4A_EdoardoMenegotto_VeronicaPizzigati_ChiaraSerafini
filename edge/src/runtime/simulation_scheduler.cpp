@@ -31,7 +31,22 @@ SimulationScheduler::SimulationScheduler(
     }
 }
 
+void SimulationScheduler::prune_removed_zones() noexcept {
+    for (auto schedule = schedules_.begin();
+         schedule != schedules_.end();) {
+        if (!greenhouse_.contains(schedule->first)) {
+            schedule = schedules_.erase(schedule);
+        } else {
+            ++schedule;
+        }
+    }
+    if (round_robin_cursor_ >= greenhouse_.size()) {
+        round_robin_cursor_ = 0;
+    }
+}
+
 void SimulationScheduler::accrue(TimePoint now) {
+    prune_removed_zones();
     for (const auto& zone_id : greenhouse_.zone_ids()) {
         const auto state =
             greenhouse_.zone(zone_id).lifecycle_state();
@@ -68,6 +83,7 @@ void SimulationScheduler::accrue(TimePoint now) {
 }
 
 void SimulationScheduler::synchronize(TimePoint now) {
+    prune_removed_zones();
     for (const auto& zone_id : greenhouse_.zone_ids()) {
         const auto state =
             greenhouse_.zone(zone_id).lifecycle_state();
@@ -83,9 +99,6 @@ void SimulationScheduler::synchronize(TimePoint now) {
                 zone_id,
                 ZoneSchedule{now, 0.0, false});
         }
-    }
-    if (round_robin_cursor_ >= greenhouse_.size()) {
-        round_robin_cursor_ = 0;
     }
 }
 

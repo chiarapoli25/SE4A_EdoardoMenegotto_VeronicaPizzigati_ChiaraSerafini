@@ -1,8 +1,10 @@
 #include <smarthydro/recipes/recipe_json.hpp>
 #include <smarthydro/runtime/greenhouse_manager.hpp>
+#include <smarthydro/runtime/simulation_scheduler.hpp>
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <map>
 #include <limits>
 #include <memory>
@@ -76,6 +78,45 @@ TEST(GreenhouseManagerTest, InactiveZoneHasNoRuntimeAndProducesNoSteps) {
     EXPECT_THROW(
         manager.step_zone("zone-1", 60.0),
         std::logic_error);
+}
+
+TEST(GreenhouseManagerTest, RemovalDecommissionsZoneAndSchedulerState) {
+    smarthydro::GreenhouseManager manager;
+    auto& zone = manager.add_inactive_zone("zone-1");
+    ASSERT_TRUE(
+        manager.execute_command(
+            "zone-1",
+            {
+                "activate-before-removal",
+                smarthydro::ActivateCultivationCommand{
+                    "cultivation-1",
+                    load_demo_recipe(),
+                },
+            })
+            .success());
+    EXPECT_TRUE(zone.is_running());
+
+    smarthydro::SimulationScheduler scheduler(
+        manager,
+        {1.0, 4U});
+    const auto start = smarthydro::SimulationScheduler::TimePoint{};
+    scheduler.accrue(start);
+    scheduler.accrue(start + std::chrono::seconds(2));
+    EXPECT_EQ(scheduler.pending_step_count("zone-1"), 2U);
+
+    EXPECT_TRUE(manager.remove_zone("zone-1"));
+    EXPECT_FALSE(manager.contains("zone-1"));
+    EXPECT_EQ(manager.size(), 0U);
+    EXPECT_FALSE(manager.remove_zone("zone-1"));
+    EXPECT_THROW(
+        manager.execute_command(
+            "zone-1",
+            {"stale-command", smarthydro::EmergencyStopCommand{}}),
+        std::out_of_range);
+
+    scheduler.synchronize(start + std::chrono::seconds(2));
+    EXPECT_EQ(scheduler.pending_step_count("zone-1"), 0U);
+    EXPECT_TRUE(scheduler.run_due_steps().empty());
 }
 
 TEST(GreenhouseManagerTest, ActivationCreatesAndConfirmsRuntimeOnlyOnce) {

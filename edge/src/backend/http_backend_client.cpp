@@ -13,6 +13,7 @@
 #include <deque>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <mutex>
 #include <random>
 #include <set>
@@ -820,6 +821,17 @@ public:
         return result;
     }
 
+    std::vector<std::string> take_removed_zone_ids() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result;
+        result.reserve(removed_zone_ids_.size());
+        while (!removed_zone_ids_.empty()) {
+            result.push_back(std::move(removed_zone_ids_.front()));
+            removed_zone_ids_.pop_front();
+        }
+        return result;
+    }
+
     void submit_result(
         const std::string& zone_id,
         const RuntimeCommandResult& result) {
@@ -883,7 +895,8 @@ private:
         }
     }
 
-    void persist_zone_assignments() const {
+    void persist_zone_assignments(
+        const std::vector<std::string>& zone_ids) const {
         const auto final_path = zone_assignments_path();
         const auto temporary_path =
             final_path.string() + ".tmp";
@@ -894,7 +907,7 @@ private:
             throw std::runtime_error(
                 "cannot persist backend zone assignments");
         }
-        output << Json(zone_ids_).dump(2) << '\n';
+        output << Json(zone_ids).dump(2) << '\n';
         output.close();
         std::filesystem::rename(temporary_path, final_path);
     }
@@ -1112,7 +1125,7 @@ private:
             throw std::invalid_argument(
                 "backend zone assignment response must be an array");
         }
-        bool changed = false;
+        std::set<std::string> assigned_zone_ids;
         for (const auto& assignment : assignments) {
             const auto zone_id =
                 assignment.at("id").get<std::string>();
@@ -1120,19 +1133,67 @@ private:
                 throw std::invalid_argument(
                     "backend returned an empty zone identifier");
             }
-            if (!known_zone_ids_.insert(zone_id).second) {
-                continue;
+            if (!assigned_zone_ids.insert(zone_id).second) {
+                throw std::invalid_argument(
+                    "backend returned a duplicate zone identifier");
             }
-            zone_ids_.push_back(zone_id);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
+        }
+
+        std::vector<std::string> added;
+        std::vector<std::string> removed;
+        std::set_difference(
+            assigned_zone_ids.begin(),
+            assigned_zone_ids.end(),
+            known_zone_ids_.begin(),
+            known_zone_ids_.end(),
+            std::back_inserter(added));
+        std::set_difference(
+            known_zone_ids_.begin(),
+            known_zone_ids_.end(),
+            assigned_zone_ids.begin(),
+            assigned_zone_ids.end(),
+            std::back_inserter(removed));
+        if (added.empty() && removed.empty()) {
+            if (!std::filesystem::exists(zone_assignments_path())) {
+                persist_zone_assignments(
+                    std::vector<std::string>(
+                        assigned_zone_ids.begin(),
+                        assigned_zone_ids.end()));
+            }
+            outage_reported_ = false;
+            return;
+        }
+
+        const std::vector<std::string> authoritative_zone_ids(
+            assigned_zone_ids.begin(),
+            assigned_zone_ids.end());
+        persist_zone_assignments(authoritative_zone_ids);
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& zone_id : removed) {
+                discovered_zone_ids_.erase(
+                    std::remove(
+                        discovered_zone_ids_.begin(),
+                        discovered_zone_ids_.end(),
+                        zone_id),
+                    discovered_zone_ids_.end());
+                commands_.erase(
+                    std::remove_if(
+                        commands_.begin(),
+                        commands_.end(),
+                        [&zone_id](const RemoteRuntimeCommand& command) {
+                            return command.zone_id == zone_id;
+                        }),
+                    commands_.end());
+                removed_zone_ids_.push_back(zone_id);
+            }
+            for (const auto& zone_id : added) {
                 discovered_zone_ids_.push_back(zone_id);
             }
-            changed = true;
         }
-        if (changed) {
-            persist_zone_assignments();
-        }
+        zone_ids_ = authoritative_zone_ids;
+        known_zone_ids_ = std::move(assigned_zone_ids);
         outage_reported_ = false;
     }
 
@@ -1261,6 +1322,7 @@ private:
     std::size_t in_flight_uploads_ = 0;
     std::deque<RemoteRuntimeCommand> commands_;
     std::deque<std::string> discovered_zone_ids_;
+    std::deque<std::string> removed_zone_ids_;
     std::set<std::string> known_command_ids_;
     std::thread worker_;
     bool running_ = false;
@@ -1301,6 +1363,11 @@ HttpBackendClient::take_commands() {
 std::vector<std::string>
 HttpBackendClient::take_discovered_zone_ids() {
     return impl_->take_discovered_zone_ids();
+}
+
+std::vector<std::string>
+HttpBackendClient::take_removed_zone_ids() {
+    return impl_->take_removed_zone_ids();
 }
 
 void HttpBackendClient::submit_command_result(

@@ -171,6 +171,15 @@ public:
     /** @brief Collega la zona al bus indicato. */
     void attach_event_bus(std::shared_ptr<EventBus> event_bus);
 
+    /**
+     * @brief Arresta definitivamente la zona prima della deallocazione.
+     *
+     * Metodo destinato alla riconciliazione delle assegnazioni: spegne gli
+     * attuatori, rilascia runtime e processore comandi senza pubblicare nuove
+     * transizioni verso un backend che ha gia riassegnato la zona.
+     */
+    void decommission_for_removal() noexcept;
+
 private:
     static std::string require_zone_id(std::string zone_id);
     void transition_lifecycle(
@@ -249,6 +258,12 @@ public:
      * @throws std::invalid_argument Se la zona e nulla o duplicata.
      */
     ZoneController& add_zone(std::unique_ptr<ZoneController> zone);
+
+    /**
+     * @brief Arresta e rimuove una zona dal registro locale.
+     * @return true se la zona era presente; false per un ID gia assente.
+     */
+    bool remove_zone(const std::string& zone_id) noexcept;
 
     /** @brief Indica se l'identificatore e registrato. */
     bool contains(const std::string& zone_id) const noexcept;

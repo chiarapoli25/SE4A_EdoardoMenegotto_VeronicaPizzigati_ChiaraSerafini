@@ -49,7 +49,10 @@ public:
 
     smarthydro::HttpResponse post_response{201, "{}"};
     std::string command_response = "[]";
-    smarthydro::HttpResponse zone_assignment_response{200, "[]"};
+    smarthydro::HttpResponse zone_assignment_response{
+        503,
+        "zone manifest not configured",
+    };
     std::string recipe_response = "{}";
     std::vector<std::string> get_paths;
 
@@ -313,6 +316,151 @@ TEST(HttpBackendClientTest, RestoresDiscoveredZonesWhileBackendIsOffline) {
 
     ASSERT_EQ(restored.size(), 1U);
     EXPECT_EQ(restored.front(), "cached-zone");
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, ReconcilesAddedAndRemovedZonesAtomically) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("zone-reconciliation");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->zone_assignment_response = {
+        200,
+        R"json([
+            {"id": "kept-zone"},
+            {"id": "added-zone"}
+        ])json",
+    };
+    smarthydro::HttpBackendConfig config;
+    config.edge_id = "edge-test";
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    smarthydro::HttpBackendClient client(
+        bus,
+        {"kept-zone", "removed-zone"},
+        config,
+        transport);
+    client.start();
+
+    std::vector<std::string> added;
+    std::vector<std::string> removed;
+    ASSERT_TRUE(wait_until([&] {
+        auto new_added = client.take_discovered_zone_ids();
+        auto new_removed = client.take_removed_zone_ids();
+        added.insert(added.end(), new_added.begin(), new_added.end());
+        removed.insert(
+            removed.end(), new_removed.begin(), new_removed.end());
+        return !added.empty() && !removed.empty();
+    }));
+    client.stop();
+
+    EXPECT_EQ(added, (std::vector<std::string>{"added-zone"}));
+    EXPECT_EQ(removed, (std::vector<std::string>{"removed-zone"}));
+    std::ifstream cache(outbox / "assigned-zones.json");
+    const auto cached = nlohmann::json::parse(cache);
+    EXPECT_EQ(
+        cached,
+        nlohmann::json::array({"added-zone", "kept-zone"}));
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, ValidEmptyManifestRemovesCachedAssignments) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("empty-zone-reconciliation");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->zone_assignment_response = {200, "[]"};
+    transport->command_response = R"json([
+        {
+            "command_id": "stale-command",
+            "command_type": "EmergencyStop",
+            "payload": {"reason": "must not execute"}
+        }
+    ])json";
+    smarthydro::HttpBackendConfig config;
+    config.edge_id = "edge-test";
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    smarthydro::HttpBackendClient client(
+        bus, {"removed-zone"}, config, transport);
+    client.start();
+
+    std::vector<std::string> removed;
+    ASSERT_TRUE(wait_until([&] {
+        removed = client.take_removed_zone_ids();
+        return !removed.empty();
+    }));
+    client.stop();
+
+    EXPECT_EQ(removed, (std::vector<std::string>{"removed-zone"}));
+    EXPECT_TRUE(client.take_commands().empty());
+    std::ifstream cache(outbox / "assigned-zones.json");
+    EXPECT_EQ(nlohmann::json::parse(cache), nlohmann::json::array());
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, HttpErrorNeverRemovesKnownAssignments) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("failed-zone-reconciliation");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->zone_assignment_response = {503, "backend offline"};
+    std::filesystem::create_directories(outbox);
+    {
+        std::ofstream cache(outbox / "assigned-zones.json");
+        cache << R"json(["known-zone"])json";
+    }
+    smarthydro::HttpBackendConfig config;
+    config.edge_id = "edge-test";
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    smarthydro::HttpBackendClient client(
+        bus, {"known-zone"}, config, transport);
+    client.start();
+
+    ASSERT_TRUE(wait_until([&] {
+        return std::find(
+                   transport->get_paths.begin(),
+                   transport->get_paths.end(),
+                   "/api/v1/edges/edge-test/zones") !=
+               transport->get_paths.end();
+    }));
+    client.stop();
+
+    EXPECT_TRUE(client.take_removed_zone_ids().empty());
+    std::ifstream cache(outbox / "assigned-zones.json");
+    EXPECT_EQ(
+        nlohmann::json::parse(cache),
+        nlohmann::json::array({"known-zone"}));
+    std::filesystem::remove_all(outbox);
+}
+
+TEST(HttpBackendClientTest, InvalidManifestNeverRemovesKnownAssignments) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("invalid-zone-reconciliation");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->zone_assignment_response = {200, R"json({"id":"zone-1"})json"};
+    smarthydro::HttpBackendConfig config;
+    config.edge_id = "edge-test";
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    smarthydro::HttpBackendClient client(
+        bus, {"known-zone"}, config, transport);
+    client.start();
+
+    ASSERT_TRUE(wait_until([&] {
+        return std::find(
+                   transport->get_paths.begin(),
+                   transport->get_paths.end(),
+                   "/api/v1/edges/edge-test/zones") !=
+               transport->get_paths.end();
+    }));
+    client.stop();
+
+    EXPECT_TRUE(client.take_removed_zone_ids().empty());
+    EXPECT_FALSE(std::filesystem::exists(
+        outbox / "assigned-zones.json"));
     std::filesystem::remove_all(outbox);
 }
 
