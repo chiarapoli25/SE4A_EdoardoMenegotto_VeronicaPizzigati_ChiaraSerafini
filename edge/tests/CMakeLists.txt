@@ -67,6 +67,17 @@ target_compile_features(io_adapter_tests PRIVATE cxx_std_17)
 set_target_properties(io_adapter_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(io_adapter_tests)
 
+# Test unitari della separazione tra injector e detector osservazionale.
+add_executable(fault_detector_tests fault_detector_tests.cpp)
+target_link_libraries(fault_detector_tests
+    PRIVATE
+        fault_management
+        GTest::gtest_main
+)
+target_compile_features(fault_detector_tests PRIVATE cxx_std_17)
+set_target_properties(fault_detector_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(fault_detector_tests)
+
 # Test del pattern Observer, dei logger e dell'integrazione col runtime.
 add_executable(event_bus_tests event_bus_tests.cpp)
 target_link_libraries(event_bus_tests

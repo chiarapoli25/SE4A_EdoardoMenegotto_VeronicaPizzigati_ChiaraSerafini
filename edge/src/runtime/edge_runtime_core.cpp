@@ -121,7 +121,8 @@ EdgeRuntime::EdgeRuntime(
     SensorConfig sensor_config,
     std::uint32_t environment_seed,
     std::uint32_t sensor_seed,
-    OperationalStatePolicy state_policy)
+    OperationalStatePolicy state_policy,
+    FaultDetectorConfig detector_config)
     : control_system_(std::move(recipe)),
       actuators_(std::make_unique<ActuatorSimulatorAdapter>(
           std::move(actuator_config))),
@@ -137,7 +138,8 @@ EdgeRuntime::EdgeRuntime(
       water_pump_(*actuators_),
       lighting_(*actuators_),
       fertilizer_valves_(*actuators_),
-      state_policy_(require_valid_state_policy(state_policy)) {
+      state_policy_(require_valid_state_policy(state_policy)),
+      fault_detector_(std::move(detector_config)) {
     recipe_start_time_seconds_ =
         environment_->state().simulation_time_seconds;
     active_substrate_ = *control_system_.recipe().substrate;
@@ -151,7 +153,8 @@ EdgeRuntime::EdgeRuntime(
     std::unique_ptr<IActuator> actuators,
     std::unique_ptr<IEnvironment> environment,
     OperationalStatePolicy state_policy,
-    SoilProbeModelConfig soil_probe_model)
+    SoilProbeModelConfig soil_probe_model,
+    FaultDetectorConfig detector_config)
     : control_system_(std::move(recipe)),
       actuators_(require_actuators(std::move(actuators))),
       environment_(require_environment(std::move(environment))),
@@ -160,7 +163,8 @@ EdgeRuntime::EdgeRuntime(
       water_pump_(*actuators_),
       lighting_(*actuators_),
       fertilizer_valves_(*actuators_),
-      state_policy_(require_valid_state_policy(state_policy)) {
+      state_policy_(require_valid_state_policy(state_policy)),
+      fault_detector_(std::move(detector_config)) {
     for (std::size_t index = 0;
          index < kSensorChannelCount;
          ++index) {

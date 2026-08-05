@@ -125,14 +125,16 @@ struct StateChanged {
     std::string reason;
 };
 
-/** @brief Guasto strutturato prodotto da un detector presente o futuro. */
+/** @brief Guasto strutturato prodotto dal FaultDetector osservazionale. */
 struct FaultDetected {
     /** Zona nella quale e stato rilevato il guasto. */
     std::string zone_id;
     /** Timestamp simulato del rilevamento, in secondi. */
     double timestamp_seconds = 0.0;
-    /** Tipo stabile del guasto. */
-    std::string fault_type;
+    /** Sensore, modello o attuatore che ha prodotto l'evidenza. */
+    std::string component;
+    /** Regola stabile violata dal componente. */
+    std::string rule;
     /** Severita usata dalla FSM. */
     ControlFaultSeverity severity = ControlFaultSeverity::NONE;
     /** Diagnostica leggibile e contestuale. */

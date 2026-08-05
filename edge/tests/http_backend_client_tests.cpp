@@ -613,13 +613,22 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
             2,
             10.0,
         });
+    bus.publish(
+        smarthydro::FaultDetected{
+            "zone-1",
+            910.0,
+            "water_pump",
+            "active_without_command",
+            smarthydro::ControlFaultSeverity::CRITICAL,
+            "pump is physically active without a command",
+        });
 
     ASSERT_TRUE(wait_until([&] {
-        return transport->post_count() >= 5;
+        return transport->post_count() >= 6;
     }));
     client->stop();
     const auto posts = transport->post_snapshot();
-    ASSERT_EQ(posts.size(), 5U);
+    ASSERT_EQ(posts.size(), 6U);
 
     const auto speed = nlohmann::json::parse(posts[0].second);
     EXPECT_EQ(speed.at("event_type"), "SimulationSpeedChanged");
@@ -667,6 +676,14 @@ TEST(HttpBackendClientTest, SerializesTemporalEvents) {
         lag.at("payload").at("pending_simulation_seconds"),
         1800.0);
     EXPECT_EQ(lag.at("payload").at("time_scale"), 10.0);
+
+    const auto fault = nlohmann::json::parse(posts[5].second);
+    EXPECT_EQ(fault.at("event_type"), "FaultDetected");
+    EXPECT_EQ(fault.at("payload").at("component"), "water_pump");
+    EXPECT_EQ(
+        fault.at("payload").at("rule"),
+        "active_without_command");
+    EXPECT_EQ(fault.at("payload").at("severity"), "Critical");
     std::filesystem::remove_all(outbox);
 }
 

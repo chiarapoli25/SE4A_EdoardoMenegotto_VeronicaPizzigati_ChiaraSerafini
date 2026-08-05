@@ -70,6 +70,7 @@
  * - `control/`: Strategy e orchestrazione della ricetta;
  * - `recipes/`: serializzazione JSON;
  * - `events/`: EventBus e observer;
+ * - `faults/`: Fault Injector e Fault Detector indipendenti;
  * - `runtime/`: ciclo operativo, FSM, comandi e gestione multi-zona.
  *
  * L'implementazione di @ref smarthydro::EdgeRuntime e divisa in file
@@ -83,10 +84,12 @@
  *
  * 1. determina la fase della ricetta;
  * 2. legge i sensori e le stime del modello N/P/K;
- * 3. calcola le sei @ref smarthydro::ControlDecision;
- * 4. verifica fault e stato operativo;
- * 5. applica i comandi e aggiorna l'ambiente;
- * 6. restituisce @ref smarthydro::EdgeStepResult e pubblica gli eventi.
+ * 3. @ref smarthydro::FaultDetector osserva le letture;
+ * 4. calcola le sei @ref smarthydro::ControlDecision;
+ * 5. applica i comandi e osserva le risposte degli attuatori;
+ * 6. la FSM reagisce alle sole evidenze @ref smarthydro::DetectedFault;
+ * 7. aggiorna l'ambiente, restituisce @ref smarthydro::EdgeStepResult e
+ *    pubblica gli eventi.
  *
  * `EdgeStepResult` contiene progressivo, letture, decisioni, quantita
  * erogate, stato degli attuatori, ambiente ed eventi del ciclo.
@@ -107,13 +110,22 @@
  * | Stato | Comportamento |
  * | ----- | ------------- |
  * | `Nominal` | Il controllo applica normalmente i comandi |
- * | `Degraded` | Gli attuatori restano fermi durante la verifica |
+ * | `Degraded` | Viene isolato il controllo dipendente dal componente guasto |
  * | `EmergencyLockdown` | Tutte le uscite restano in stato sicuro |
+ *
+ * @ref smarthydro::FaultInjector altera esclusivamente sensori e attuatori
+ * simulati. Non pubblica eventi e non modifica la FSM. Il componente separato
+ * @ref smarthydro::FaultDetector osserva letture, comandi e uscite e applica
+ * soglie configurabili per assenza, range fisico, velocita, congelamento,
+ * risposta assente o insufficiente, uscita senza comando e validita N/P/K.
+ * Ogni evidenza pubblicata come @ref smarthydro::FaultDetected contiene
+ * componente, regola, severita e diagnostica.
  *
  * Un fault recuperabile porta a `Degraded`; se persiste puo causare
  * `EmergencyLockdown`. Un fault critico provoca il blocco immediato.
  * @ref smarthydro::OperationalStatePolicy configura le soglie di escalation e
- * recovery. L'uscita dall'emergenza richiede un reset manuale e cicli sani.
+ * recovery. L'uscita dall'emergenza richiede un reset manuale e una nuova
+ * osservazione sana anche delle uscite fisiche.
  *
  * @section edge_recipes Ricette e Strategy
  *

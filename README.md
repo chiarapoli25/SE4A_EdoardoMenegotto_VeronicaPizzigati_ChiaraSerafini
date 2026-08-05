@@ -141,6 +141,7 @@ edge/
 │   ├── adapters/    interfacce e adapter
 │   ├── control/     Strategy e controllo della ricetta
 │   ├── events/      EventBus e observer
+│   ├── faults/      iniezione e rilevamento separati dei guasti
 │   ├── recipes/     caricamento delle ricette
 │   ├── runtime/     runtime, FSM, comandi e gestione multi-zona
 │   └── simulation/  simulatori
@@ -387,8 +388,18 @@ trasporto HTTP o MQTT.
 
 L'utente non sceglie direttamente la gravita o lo stato della FSM. Invia invece
 un comando `InjectFault` che descrive un componente e un comportamento fisico
-anomalo. L'Edge altera letture o uscite, rileva il sintomo osservabile, pubblica
-`FaultDetected` e decide autonomamente la reazione operativa.
+anomalo. La gestione e divisa in tre componenti indipendenti:
+
+1. `FaultInjector` altera soltanto letture o uscite della simulazione; non
+   assegna severita, non pubblica eventi e non modifica la FSM;
+2. `FaultDetector` osserva letture, comandi e uscite senza modificarli e produce
+   evidenze `DetectedFault`;
+3. la FSM operativa consuma esclusivamente le evidenze e applica la politica di
+   `Degraded`, escalation, recovery e lockdown.
+
+Il detector non conosce ID, durata o modalita dei fault iniettati: la stessa
+anomalia proveniente da un adapter hardware viene quindi trattata nello stesso
+modo di quella simulata.
 
 Esempio: offset di pH attivo per 30 minuti simulati:
 
@@ -438,6 +449,24 @@ I target sensore sono `temperature`, `air_humidity`, `soil_moisture`,
 | Attuatore | `actuator_stuck_on` | nessuno |
 | Attuatore | `actuator_slow_response` | fattore obbligatorio strettamente fra 0 e 1 |
 
+Le regole osservazionali minime sono:
+
+| Regola | Componente | Comportamento |
+| --- | --- | --- |
+| `missing_value` | sensore o valore derivato | scatta dopo `missing_cycles` consecutivi |
+| `outside_physical_range` | sensore o modello | valore impossibile rispetto ai limiti fisici |
+| `maximum_rate_exceeded` | sensore o modello | variazione/secondo superiore alla politica del canale |
+| `frozen_value` | sensore abilitato | valore invariato per `frozen_cycles` |
+| `model_limit_incompatible` | N/P/K | stima esterna ai limiti della fase della ricetta |
+| `non_finite_model_value` | N/P/K | stima NaN o infinita |
+| `commanded_without_response` | attuatore | comando presente ma nessuna uscita osservata |
+| `active_without_command` | attuatore | uscita attiva senza comando; severita critica |
+| `persistent_low_response` | attuatore | rapporto uscita/valore nominale troppo basso per piu cicli |
+
+`FaultDetectorConfig` rende configurabili conteggi, rapporto minimo di risposta,
+tolleranze, range fisici e velocita massime dei singoli canali. I limiti N/P/K
+della fase attiva vengono invece letti direttamente dalla ricetta runtime.
+
 `duration_seconds` e opzionale ed e espresso in tempo simulato. Alla scadenza
 il fault viene rimosso automaticamente. In alternativa l'utente invia:
 
@@ -455,7 +484,13 @@ persiste per il numero di cicli configurato, passa a `EmergencyLockdown`.
 Un attuatore rilevato attivo senza comando e invece critico e causa il lockdown
 immediato. Dopo un fault temporaneo la zona recupera automaticamente da
 `Degraded` dopo campioni sani; dopo un lockdown servono sia `ResetFault` sia
-`ResetEmergency`, seguiti dal periodo di verifica gia previsto dalla FSM.
+`ResetEmergency`, seguiti dal periodo di verifica gia previsto dalla FSM. Il
+reset manuale non viene accettato se il detector continua a osservare un'uscita
+fisica guasta.
+
+Ogni nuova violazione pubblica `FaultDetected` con `component`, `rule`,
+`severity` e `diagnostic`. Nel payload HTTP resta anche `fault_type`, come alias
+compatibile di `rule` per i consumer precedenti.
 
 Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
 della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla

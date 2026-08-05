@@ -6,13 +6,14 @@
  */
 
 #include <smarthydro/runtime/edge_runtime_types.hpp>
+#include <smarthydro/faults/fault_detector.hpp>
+#include <smarthydro/faults/fault_injector.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 
 namespace smarthydro {
@@ -48,6 +49,7 @@ public:
      * @param environment_seed Seed riproducibile dell'ambiente.
      * @param sensor_seed Seed riproducibile dei sensori.
      * @param state_policy Soglie della macchina a stati operativa.
+     * @param detector_config Regole e soglie del FaultDetector.
      */
     explicit EdgeRuntime(
         Recipe recipe,
@@ -56,7 +58,8 @@ public:
         SensorConfig sensor_config = {},
         std::uint32_t environment_seed = 0x53484D31U,
         std::uint32_t sensor_seed = 0x53484D32U,
-        OperationalStatePolicy state_policy = {});
+        OperationalStatePolicy state_policy = {},
+        FaultDetectorConfig detector_config = {});
 
     /**
      * @brief Costruisce il runtime con dipendenze conformi agli Adapter.
@@ -70,6 +73,7 @@ public:
      * @param environment Ambiente non nullo osservato e aggiornato dal runtime.
      * @param state_policy Soglie della macchina a stati operativa.
      * @param soil_probe_model Calibrazione usata per fondere le due sonde.
+     * @param detector_config Regole e soglie del FaultDetector.
      * @throws std::invalid_argument Se una dipendenza manca o un sensore si
      * trova in una posizione diversa dal proprio canale.
      */
@@ -79,7 +83,8 @@ public:
         std::unique_ptr<IActuator> actuators,
         std::unique_ptr<IEnvironment> environment,
         OperationalStatePolicy state_policy = {},
-        SoilProbeModelConfig soil_probe_model = {});
+        SoilProbeModelConfig soil_probe_model = {},
+        FaultDetectorConfig detector_config = {});
 
     /**
      * @brief Valida e conferma localmente tutte le configurazioni della ricetta.
@@ -194,37 +199,27 @@ public:
     double daily_dose_milliliters(ControlledVariable variable) const;
 
 private:
-    struct InjectedFault {
-        FaultSpecification specification;
-        double injected_at_seconds = 0.0;
-        std::optional<double> expires_at_seconds;
-        std::optional<double> latched_sensor_value;
-        std::size_t observation_count = 0;
-        bool detected = false;
-        ControlFaultSeverity detected_severity =
-            ControlFaultSeverity::NONE;
-        std::string diagnostic;
-    };
-
     ControlRequest base_request(double delta_time_seconds) const;
     double elapsed_recipe_seconds() const noexcept;
     std::size_t active_phase_index(double elapsed_recipe_hours) const;
     double total_recipe_duration_hours() const noexcept;
+    ControlledValues<ValueRange> active_safety_ranges() const;
     void reset_histories_if_needed();
     SensorReadings read_sensors();
-    void expire_injected_faults(double timestamp_seconds);
-    void apply_sensor_faults(SensorReadings& readings);
-    ActuatorOutput apply_actuator_faults(
+    void reset_actuator_observation() noexcept;
+    void record_actuator_observation(
         const ActuatorCommand& command,
-        const ActuatorOutput& raw_output,
-        double delta_time_seconds);
-    void mark_fault_detected(
-        InjectedFault& fault,
-        ControlFaultSeverity severity,
-        std::string diagnostic);
-    void apply_degraded_isolation(EdgeStepResult& result);
-    void apply_post_actuation_fault_state(EdgeStepResult& result);
-    bool update_operational_state(EdgeStepResult& result);
+        const ActuatorOutput& output) noexcept;
+    void publish_detected_faults(
+        const std::vector<DetectedFault>& faults,
+        double timestamp_seconds);
+    void apply_degraded_isolation(
+        EdgeStepResult& result,
+        const std::vector<DetectedFault>& faults);
+    bool update_operational_state(
+        EdgeStepResult& result,
+        const std::vector<DetectedFault>& faults,
+        bool count_recoverable_cycle = true);
     void transition_operational_state(
         OperationalState next_state,
         const std::string& reason,
@@ -258,6 +253,8 @@ private:
     LightingAdapter lighting_;
     FertilizerValveAdapter fertilizer_valves_;
     OperationalStatePolicy state_policy_;
+    FaultInjector fault_injector_;
+    FaultDetector fault_detector_;
     ControlledValues<double> cumulative_phase_dose_milliliters_{};
     ControlledValues<double> daily_dose_milliliters_{};
     ControlledValues<double> seconds_since_last_dose_{};
@@ -273,8 +270,10 @@ private:
     double recipe_time_offset_seconds_ = 0.0;
     bool recipe_completed_ = false;
     SoilType active_substrate_ = SoilType::AERATED_UNIVERSAL;
-    std::unordered_map<std::string, InjectedFault> injected_faults_;
     std::unordered_set<std::string> reported_runtime_faults_;
+    ActuatorCommand detector_command_observation_;
+    ActuatorOutput detector_output_observation_;
+    std::vector<DetectedFault> previous_actuator_faults_;
     ActuatorOutput effective_actuator_output_;
     std::shared_ptr<EventBus> event_bus_;
     std::string zone_id_ = "zone-1";

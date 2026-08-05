@@ -109,7 +109,8 @@ std::string event_detail(const EdgeDomainEvent& event) {
                        " -> " + state_name(value.current_state) +
                        ": " + value.reason;
             } else if constexpr (std::is_same_v<Event, FaultDetected>) {
-                return value.fault_type + ": " + value.diagnostic;
+                return value.component + " / " + value.rule + ": " +
+                       value.diagnostic;
             } else if constexpr (std::is_same_v<Event, StrategyChanged>) {
                 return std::string(to_string(value.variable)) +
                        " strategy changed";

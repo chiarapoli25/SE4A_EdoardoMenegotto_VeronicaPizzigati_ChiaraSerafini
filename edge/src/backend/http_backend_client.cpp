@@ -270,7 +270,9 @@ std::vector<PendingUpload> uploads_from_event(
                     };
                 } else if constexpr (std::is_same_v<Event, FaultDetected>) {
                     payload = {
-                        {"fault_type", value.fault_type},
+                        {"component", value.component},
+                        {"rule", value.rule},
+                        {"fault_type", value.rule},
                         {"severity", severity_name(value.severity)},
                         {"diagnostic", value.diagnostic},
                     };
