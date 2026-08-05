@@ -1,0 +1,11 @@
+{
+  "id": "recipe-peperoncino",
+  "plant_type": "Peperoncino",
+  "department_number": 4,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Pieno sole", "watering": "Regolare (no ristagni)", "temperature": "Caldo", "fertilization": "Potassio ai fiori"},
+  "light_profile": "full_sun",
+  "water_profile": "regular",
+  "feed_profile": "potassium_rich",
+  "ph_setpoint": 6.2
+}

@@ -11,7 +11,7 @@
 namespace smarthydro {
 
 /**
- * @brief Liquidi concentrati disponibili nei cinque serbatoi.
+ * @brief Liquidi concentrati disponibili nei cinque contenitori di dosaggio.
  *
  * I valori sono stabili e vengono usati come indici nelle collezioni
  * FertilizerValues. COUNT non identifica un prodotto valido.
@@ -25,11 +25,11 @@ enum class FertilizerType : std::size_t {
     COUNT,
 };
 
-/** Numero dei serbatoi di concentrato supportati. */
+/** Numero dei contenitori di concentrato supportati. */
 constexpr std::size_t kFertilizerTypeCount =
     static_cast<std::size_t>(FertilizerType::COUNT);
 
-/** Collezione con un valore per ciascuno dei cinque serbatoi. */
+/** Collezione con un valore per ciascuno dei cinque contenitori. */
 template <typename T>
 using FertilizerValues = std::array<T, kFertilizerTypeCount>;
 

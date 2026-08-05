@@ -1,9 +1,9 @@
 # SmartHydro
 
 SmartHydro e un progetto per il monitoraggio e il controllo di una coltivazione
-in terriccio. Questa Fase 0 prepara una base di lavoro avviabile composta da un
-Edge Controller in C++17, un backend HTTP in Python, una dashboard statica e
-una ricetta di coltivazione di esempio.
+in terriccio. Il repository comprende un Edge Controller multi-zona in C++17,
+un backend HTTP in Python, un catalogo persistente di ricette multifase, una
+dashboard statica e uno scenario end-to-end automatizzato.
 
 L'area Edge include un simulatore dinamico della serra, sensori con errori
 strumentali, attuatori e un sistema di controllo configurabile basato su
@@ -12,6 +12,18 @@ HTTP versionate, con consegna asincrona, outbox persistente, retry, comandi
 remoti e autenticazione Bearer opzionale. Non sono ancora presenti dispositivi
 reali o Docker.
 
+Il nome SmartHydro viene conservato come nome del progetto, ma il sistema non
+e idroponico. Il contratto formale delle grandezze e del bilancio fisico e
+descritto in [`doc/domain_model.md`](doc/domain_model.md). In sintesi:
+
+- umidita del terriccio, PPFD, pH dell'acqua interstiziale e disponibilita
+  stimata di N/P/K sono le sei variabili controllate;
+- temperatura e umidita relativa dell'aria sono solamente osservate;
+- l'umidita deriva da una sonda capacitiva simulata; una sonda resistiva misura
+  la EC apparente, poi corretta per stimare EC e fertilizzante nella zona radicale;
+- non esistono tre sensori fisici N/P/K: le quote sono ricavate dalla
+  concentrazione totale e dalla composizione nota al modello.
+
 ## Struttura del progetto
 
 ```text
@@ -19,8 +31,8 @@ reali o Docker.
 |-- backend/       Backend FastAPI e test automatici
 |-- config/        Ricette e configurazioni di esempio
 |-- dashboard/     Dashboard statica HTML, CSS e JavaScript
-|-- demo/          Spazio per futuri scenari dimostrativi
-|-- docs/          Documentazione di progetto
+|-- demo/          Scenario end-to-end Edge-backend ripetibile
+|-- doc/           Documentazione di progetto e contratto del dominio
 |-- edge/          Edge Controller C++17 compilato con CMake
 |-- .gitignore
 `-- README.md
@@ -36,6 +48,27 @@ reali o Docker.
 - Un browser web moderno
 
 Tutti i comandi seguenti devono essere eseguiti dalla radice del repository.
+
+## Demo end-to-end automatizzata
+
+Dopo aver creato l'ambiente Python e installato le dipendenze del backend come
+descritto piu avanti, l'intero scenario Edge-backend si esegue con un comando:
+
+```bash
+.venv/bin/python demo/run_end_to_end.py
+```
+
+La demo configura e compila l'Edge, avvia un backend con database temporaneo e
+verifica automaticamente due zone con ricette diverse, telemetria, cambio
+Strategy, cambio fase, fault recuperabile, ritorno a `Nominal` e rimozione di
+una zona dall'Edge. In caso di successo termina entrambi i processi e rimuove
+gli artefatti temporanei; in caso di errore conserva database, outbox e log e
+ne stampa il percorso. `--keep-artifacts` conserva gli artefatti anche dopo un
+successo, mentre `--skip-build` riusa `edge/build/bin/edge`.
+
+Lo scenario modificabile e in `demo/end_to_end_scenario.json`; il comportamento
+atteso e documentato in `demo/README.md`. Non serve un reset manuale tra due
+esecuzioni, perche ogni avvio crea un database e una cache Edge nuovi.
 
 ## Compilazione dell'Edge Controller
 
@@ -87,7 +120,7 @@ anche `SMARTHYDRO_EDGE_EXECUTABLE`.
 
 Quando una coltivazione e attiva, ogni ciclo:
 
-1. legge sensori e modelli N/P/K;
+1. legge i sensori fisici e le stime del modello N/P/K;
 2. calcola i comandi tramite `RecipeControlSystem`;
 3. applica i comandi sicuri a pompa, lampade e valvole;
 4. fa avanzare l'ambiente e aggiorna lo storico delle dosi;
@@ -110,9 +143,12 @@ stato e causa. L'ingresso in emergenza produce anche
 `EmergencyLockdownEntered`. I normali vincoli di dose bloccano invece soltanto
 il comando interessato.
 
-Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico di
-fase produce `RecipePhaseChanged`. `--step-seconds` definisce il quantum fisso
-del controllo simulato; il valore predefinito e 900 secondi. Lo scheduler
+Il primo ciclo produce `RuntimeStarted`, mentre ogni passaggio automatico o
+manuale di fase produce `RecipePhaseChanged`. Quando termina anche la durata
+dell'ultima fase, l'Edge pubblica una sola volta `RecipeCompleted`, mantiene
+l'ultima fase attiva e imposta `recipe_completed=true`: la sequenza non torna
+mai automaticamente alla prima fase. `--step-seconds` definisce il quantum
+fisso del controllo simulato; il valore predefinito e 900 secondi. Lo scheduler
 misura il tempo reale con `std::chrono::steady_clock` e, per ogni zona, accumula
 il tempo simulato moltiplicandolo per la velocita configurata. Il polling dei
 comandi resta indipendente e continua anche mentre tutte le zone sono
@@ -122,13 +158,14 @@ inattive.
 
 `EdgeRuntime` dipende dalle interfacce `ISensor`, `IActuator` e `IEnvironment`,
 non dai simulatori concreti. Il costruttore normale crea automaticamente gli
-adapter simulati per temperatura, umidita dell'aria, umidita del substrato, pH,
-luce, pompa, lampade, valvole e ambiente.
+adapter simulati per temperatura, umidita dell'aria, sonda capacitiva del
+substrato, sonda resistiva di conducibilita, pH, luce, pompa, lampade, valvole
+e ambiente.
 
 Un secondo costruttore accetta gli adapter tramite `std::unique_ptr`. Un futuro
 driver GPIO, Modbus o MQTT puo quindi implementare le stesse interfacce ed
 essere inserito senza cambiare `EdgeRuntime`, `RecipeControlSystem` o gli
-algoritmi delle Strategy. I cinque adapter sensore simulati condividono un
+algoritmi delle Strategy. I sei adapter sensore simulati condividono un
 campione sincronizzato per ogni tick.
 
 ### Struttura dei sorgenti Edge
@@ -141,6 +178,7 @@ edge/
 │   ├── adapters/    interfacce e adapter
 │   ├── control/     Strategy e controllo della ricetta
 │   ├── events/      EventBus e observer
+│   ├── faults/      iniezione e rilevamento separati dei guasti
 │   ├── recipes/     caricamento delle ricette
 │   ├── runtime/     runtime, FSM, comandi e gestione multi-zona
 │   └── simulation/  simulatori
@@ -217,6 +255,7 @@ dipendente da console, file o rete. Il runtime pubblica automaticamente:
 - `TelemetrySample`;
 - `StateChanged` e `EmergencyTriggered`;
 - `RecipePhaseChanged`;
+- `RecipeCompleted`;
 - `SimulationSpeedChanged`, `SimulationDurationChanged`,
   `SimulationDurationCompleted` e `SchedulerLagStateChanged`;
 - `CommandExecuted` e `CommandFailed`.
@@ -246,7 +285,22 @@ Il client esegue `POST` di telemetria, snapshot degli attuatori ed eventi,
 sincronizza le zone assegnate, interroga la coda comandi con `GET` e invia
 l'esito di ogni comando. Le assegnazioni apprese vengono salvate in
 `assigned-zones.json` nella directory dell'outbox: un riavvio con backend
-offline ripristina quindi le zone gia note. I progressivi sono idempotenti per
+offline ripristina quindi le zone gia note.
+
+La discovery esegue una riconciliazione completa a ogni polling valido: valida
+l'intero manifesto restituito da `GET /api/v1/edges/{edge_id}/zones`, calcola
+aggiunte e rimozioni rispetto all'insieme locale e persiste la nuova lista
+prima di applicarla. Una zona rimossa viene decommissionata: attuatori spenti,
+runtime e backlog dello scheduler eliminati, comandi pendenti scartati e ID
+rimosso dal manager e da `assigned-zones.json`. Dopo la rimozione l'Edge non
+accetta piu comandi per quell'ID.
+
+Una risposta HTTP non 2xx, un JSON malformato o un manifesto non valido non
+sono mai interpretati come lista vuota: in questi casi insieme locale e cache
+restano invariati. Soltanto una risposta 2xx contenente un array valido, anche
+se realmente vuoto, puo autorizzare una rimozione.
+
+I progressivi sono idempotenti per
 `(zone_id, boot_id, sequence_number)`; gli eventi e i comandi hanno un
 identificativo idempotente proprio. I file dell'outbox vengono riletti al
 riavvio e rimossi soltanto dopo una risposta HTTP 2xx. I comandi `LoadRecipe` e
@@ -255,6 +309,35 @@ la ricetta validata con
 `GET /api/v1/recipes/{recipe_id}` prima dell'esecuzione. Per l'attivazione il
 payload deve includere anche `cultivation_id`.
 
+Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
+canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del
+terriccio, `active_recipe_id`, `active_recipe_version`, `current_phase`,
+`operational_state`, `lifecycle_state`, `current_strategies`,
+`current_setpoints` e `time_scale`. Strategie e setpoint sono oggetti con le
+sei chiavi `soil_moisture`, `light`, `ph`, `nitrogen`, `phosphorus` e
+`potassium`.
+
+Il backend conserva lo storico completo in `telemetry_samples`, ma aggiorna
+anche direttamente la proiezione corrente nella riga `zones`. La lettura di
+una zona non ricostruisce quindi ricetta, fase o FSM scorrendo `edge_events`.
+Un campione arrivato in ritardo viene archiviato senza sovrascrivere la
+proiezione prodotta da un campione cronologicamente piu recente.
+
+`status` e calcolato da `last_edge_contact`: la zona e `online` soltanto se il
+contatto rientra nella soglia configurata. Il valore predefinito e 60 secondi
+e si modifica prima dell'avvio del backend:
+
+```bash
+export SMARTHYDRO_OFFLINE_THRESHOLD_SECONDS=90
+```
+
+Il ricalcolo viene applicato durante le letture delle zone e da uno sweep
+asincrono avviato con FastAPI, quindi l'offline viene persistito anche senza
+richieste API. Telemetria, attuatori ed eventi validi aggiornano immediatamente
+`last_edge_contact`. Gli eventi continuano a essere memorizzati come audit
+storico e aggiornano la stessa proiezione quando rappresentano transizioni
+immediate, per esempio pausa, errore, cambio Strategy o cambio velocita.
+
 Per creare dal backend un settore assegnato all'Edge:
 
 ```bash
@@ -262,11 +345,90 @@ curl -X POST http://127.0.0.1:8000/api/v1/zones \
   -H 'Content-Type: application/json' \
   -d '{
     "id": "r1-s1",
-    "name": "Reparto 1 - Settore 1",
+    "name": "Piante Tropicali e da Fogliame - Settore 1",
     "department_number": 1,
     "sector_number": 1,
-    "plant_species": "Pomodoro",
+    "plant_species": "Calathea",
+    "active_recipe_id": "recipe-calathea",
     "assigned_edge_id": "edge-serra-1"
+  }'
+```
+
+La serra comprende quattro reparti produttivi e un quinto reparto nel quale
+vengono spostate le piante in quarantena. I reparti da 1 a 4 dichiarano una
+sola `plant_species`; il reparto 5 usa `plant_species: null`, perche puo
+accogliere contemporaneamente esemplari di specie diverse. Ogni risposta zona
+espone anche `department_name`, calcolato dal numero con questa configurazione
+fissa:
+
+1. `Piante Tropicali e da Fogliame`;
+2. `Piante da Fiore`;
+3. `Piante Grasse e Succulente`;
+4. `Piante da Frutto e Ortaggi`;
+5. `Quarantena`.
+
+Il quinto nome descrive soltanto la destinazione fisica: la quarantena rimane
+il flag temporaneo `is_quarantined` della singola pianta.
+
+Per registrare uno dei settori misti di quarantena:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/zones \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "quarantena-1",
+    "name": "Quarantena - Settore 1",
+    "department_number": 5,
+    "sector_number": 1,
+    "plant_species": null
+  }'
+```
+
+I dati configurabili di un settore si aggiornano in modo parziale con
+`PATCH /api/v1/zones/{zone_id}`. Sono ammessi soltanto `name`,
+`plant_species`, `assigned_edge_id`, `active_recipe_id` e
+`administrative_status` (`active`, `inactive` oppure `maintenance`):
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/api/v1/zones/r1-s1 \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "assigned_edge_id": "edge-serra-2",
+    "administrative_status": "maintenance"
+  }'
+```
+
+La ricetta deve essere gia presente nel backend; la specie non puo diventare
+incompatibile con le piante registrate; il reparto 5 continua a non avere una
+specie unica. Una zona la cui proiezione `lifecycle_state` e `Running`
+deve essere arrestata o messa in pausa prima di cambiare Edge.
+
+La quarantena e una proprieta della singola pianta, non del settore. Ogni
+esemplare conserva specie, settore di origine, settore corrente e il flag
+`is_quarantined`. Prima si registra la pianta nel reparto produttivo:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/plants \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "pomodoro-001",
+    "species": "Pomodoro",
+    "home_zone_id": "r1-s1"
+  }'
+```
+
+Impostando il flag, il backend sposta la pianta nel reparto 5 e registra il
+movimento. Impostandolo nuovamente a `false`, la pianta torna nel settore di
+origine:
+
+```bash
+curl -X PATCH \
+  http://127.0.0.1:8000/api/v1/plants/pomodoro-001/quarantine \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "is_quarantined": true,
+    "quarantine_zone_id": "quarantena-1",
+    "reason": "foglie con sintomi sospetti"
   }'
 ```
 
@@ -307,8 +469,18 @@ trasporto HTTP o MQTT.
 
 L'utente non sceglie direttamente la gravita o lo stato della FSM. Invia invece
 un comando `InjectFault` che descrive un componente e un comportamento fisico
-anomalo. L'Edge altera letture o uscite, rileva il sintomo osservabile, pubblica
-`FaultDetected` e decide autonomamente la reazione operativa.
+anomalo. La gestione e divisa in tre componenti indipendenti:
+
+1. `FaultInjector` altera soltanto letture o uscite della simulazione; non
+   assegna severita, non pubblica eventi e non modifica la FSM;
+2. `FaultDetector` osserva letture, comandi e uscite senza modificarli e produce
+   evidenze `DetectedFault`;
+3. la FSM operativa consuma esclusivamente le evidenze e applica la politica di
+   `Degraded`, escalation, recovery e lockdown.
+
+Il detector non conosce ID, durata o modalita dei fault iniettati: la stessa
+anomalia proveniente da un adapter hardware viene quindi trattata nello stesso
+modo di quella simulata.
 
 Esempio: offset di pH attivo per 30 minuti simulati:
 
@@ -344,8 +516,8 @@ Esempio: illuminazione bloccata accesa fino al reset esplicito:
 }
 ```
 
-I target sensore sono `temperature`, `air_humidity`, `soil_moisture`, `ph` e
-`light`. I target attuatore sono `water_pump`, `lighting`,
+I target sensore sono `temperature`, `air_humidity`, `soil_moisture`,
+`soil_conductivity`, `ph` e `light`. I target attuatore sono `water_pump`, `lighting`,
 `nitrogen_valve`, `phosphorus_valve`, `potassium_valve`, `ph_up_valve` e
 `ph_down_valve`. Le modalita supportate sono:
 
@@ -357,6 +529,24 @@ I target sensore sono `temperature`, `air_humidity`, `soil_moisture`, `ph` e
 | Attuatore | `actuator_stuck_off` | nessuno |
 | Attuatore | `actuator_stuck_on` | nessuno |
 | Attuatore | `actuator_slow_response` | fattore obbligatorio strettamente fra 0 e 1 |
+
+Le regole osservazionali minime sono:
+
+| Regola | Componente | Comportamento |
+| --- | --- | --- |
+| `missing_value` | sensore o valore derivato | scatta dopo `missing_cycles` consecutivi |
+| `outside_physical_range` | sensore o modello | valore impossibile rispetto ai limiti fisici |
+| `maximum_rate_exceeded` | sensore o modello | variazione/secondo superiore alla politica del canale |
+| `frozen_value` | sensore abilitato | valore invariato per `frozen_cycles` |
+| `model_limit_incompatible` | N/P/K | stima esterna ai limiti della fase della ricetta |
+| `non_finite_model_value` | N/P/K | stima NaN o infinita |
+| `commanded_without_response` | attuatore | comando presente ma nessuna uscita osservata |
+| `active_without_command` | attuatore | uscita attiva senza comando; severita critica |
+| `persistent_low_response` | attuatore | rapporto uscita/valore nominale troppo basso per piu cicli |
+
+`FaultDetectorConfig` rende configurabili conteggi, rapporto minimo di risposta,
+tolleranze, range fisici e velocita massime dei singoli canali. I limiti N/P/K
+della fase attiva vengono invece letti direttamente dalla ricetta runtime.
 
 `duration_seconds` e opzionale ed e espresso in tempo simulato. Alla scadenza
 il fault viene rimosso automaticamente. In alternativa l'utente invia:
@@ -375,7 +565,13 @@ persiste per il numero di cicli configurato, passa a `EmergencyLockdown`.
 Un attuatore rilevato attivo senza comando e invece critico e causa il lockdown
 immediato. Dopo un fault temporaneo la zona recupera automaticamente da
 `Degraded` dopo campioni sani; dopo un lockdown servono sia `ResetFault` sia
-`ResetEmergency`, seguiti dal periodo di verifica gia previsto dalla FSM.
+`ResetEmergency`, seguiti dal periodo di verifica gia previsto dalla FSM. Il
+reset manuale non viene accettato se il detector continua a osservare un'uscita
+fisica guasta.
+
+Ogni nuova violazione pubblica `FaultDetected` con `component`, `rule`,
+`severity` e `diagnostic`. Nel payload HTTP resta anche `fault_type`, come alias
+compatibile di `rule` per i consumer precedenti.
 
 Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
 della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla
@@ -396,14 +592,15 @@ separatamente.
 
 ### Ambiente e sensori simulati
 
-`EnvironmentSimulator` possiede lo stato fisico condiviso della serra. Il
+`EnvironmentSimulator` possiede lo stato fisico condiviso della serra in
+terriccio. Il sistema non modella vasche, livelli d'acqua o ricircolo. Il
 metodo `step(delta_time_seconds, actuator_output)` evolve gradualmente:
 
 - temperatura e umidita relativa, accoppiate al profilo esterno, alla luce,
   alla traspirazione e al ricambio d'aria;
-- pH ed EC della soluzione presente nei pori del terriccio;
-- concentrazioni disponibili di azoto, fosforo e potassio in mg/L, conservate
-  tramite un bilancio di massa;
+- pH ed EC dell'acqua presente nei pori del terriccio;
+- disponibilita stimata di azoto, fosforo e potassio in mg/L nell'acqua della
+  zona radicale, conservata tramite un bilancio di massa;
 - umidita del terriccio in percentuale, con ritenzione e drenaggio diversi per
   substrato universale aerato, drenante e organico ritentivo;
 - luce naturale e supplementare espressa come PPFD in `umol/(m2 s)`.
@@ -414,7 +611,12 @@ uno organico ritentivo. La dinamica ambientale non dipende dalla specie
 coltivata. I cinque profili liquidi predefiniti rappresentano azoto, fosforo,
 potassio, pH+ e pH-. I coefficienti sono didattici e possono essere sostituiti
 in `EnvironmentConfig` usando le schede tecniche dei prodotti. N/P/K
-appartengono allo stato fisico ma non sono letture di sensori.
+appartengono allo stato fisico interno ma non sono letture di tre sensori.
+
+La dose d'acqua viene applicata direttamente al substrato: una parte viene
+trattenuta, una parte e assorbita dalle radici, una parte evapora e l'eccesso
+viene drenato. I contenitori dei prodotti N, P, K, pH+ e pH- alimentano i soli
+dosatori e non costituiscono una vasca o una soluzione idroponica.
 
 | Prodotto | N (mg/mL) | P (mg/mL) | K (mg/mL) | Delta EC (mS/cm per mL) | Delta pH per mL |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -442,6 +644,15 @@ calibrazione, quantizzazione e possibili dropout. Le letture sono
 `std::nullopt`. I seed dell'ambiente e dei sensori sono distinti, cosi il
 rumore fisico e quello strumentale restano indipendenti.
 
+La sonda capacitiva restituisce la percentuale di umidita dopo la propria curva
+di calibrazione. La sonda resistiva viene convertita in EC apparente del
+terriccio; poiche la conducibilita cala quando il substrato si asciuga, il
+runtime la corregge con l'umidita capacitiva per stimare la EC dell'acqua nei
+pori. Dalla EC netta ricava il fertilizzante totale in mg/L con un coefficiente
+empirico. Le quote N/P/K sono infine ripartite secondo la composizione nota al
+bilancio di massa. Tutti questi valori vengono inviati e storicizzati nella
+telemetria del backend.
+
 Il modello ha finalita didattica ed e progettato per produrre dinamiche
 plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 
@@ -451,7 +662,7 @@ plausibili e confronti causali. Non e calibrato per decisioni agronomiche reali.
 fisica dell'attuatore. La configurazione predefinita rappresenta:
 
 - pompa ON/OFF con portata fissa di 2 L/h e dose massima di 5 L;
-- cinque serbatoi di concentrato liquido per N, P, K, pH+ e pH-;
+- cinque contenitori di concentrato liquido per N, P, K, pH+ e pH-;
 - cinque elettrovalvole ON/OFF da 20 mL/h collegate alla stessa pompa
   dell'acqua;
 - lampade LED con potenza elettrica massima di 200 W.
@@ -476,9 +687,9 @@ le riducono; pH+ e pH- correggono il pH. `EdgeRuntime` converte le dosi in mL
 nei tempi di apertura delle valvole e le chiude quando il volume richiesto e
 stato raggiunto.
 
-Il sensore di umidita del terriccio continua a restituire una percentuale:
-l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e il
-sensore osserva quel valore aggiungendo i soli errori strumentali configurati.
+La sonda capacitiva di umidita continua a restituire una percentuale:
+l'attuatore eroga una dose in litri, l'ambiente aggiorna l'umidita fisica e la
+sonda ne produce una stima con gli errori strumentali configurati.
 
 ### Controllori
 
@@ -519,9 +730,12 @@ environment.step(delta_time_seconds, actuators.output());
 ### Ricette e conferma agronomica
 
 `RecipeControlSystem` associa una ricetta a sei variabili: umidita del
-terriccio, luce, pH, azoto, fosforo e potassio. Ogni fase contiene setpoint,
+terriccio, luce PPFD, pH dell'acqua interstiziale e disponibilita stimata di
+azoto, fosforo e potassio. Temperatura e umidita dell'aria restano telemetria
+osservata e non hanno controllori. Ogni fase contiene setpoint,
 intervallo ammesso, limiti di sicurezza, fotoperiodo e dosi N/P/K suggerite.
-Ogni `ControllerConfiguration` registra inoltre sensore o modello, attuatore,
+Ogni `ControllerConfiguration` registra inoltre `input_source` (sensore o
+modello), attuatore,
 Strategy predefinita e selezionata, parametri, unita, limiti d'uscita, stato di
 conferma e versione.
 
@@ -537,7 +751,7 @@ Le impostazioni predefinite sono:
 | Umidita del terreno | Threshold con isteresi | sensore di umidita |
 | Luce | Threshold con isteresi e fotoperiodo | sensore PPFD |
 | pH | PID bidirezionale con piccoli dosaggi | sensore pH |
-| N, P, K | Predictive | modello fisico e storico dosi |
+| N, P, K | Predictive | EC corretta, composizione del modello e storico dosi |
 
 L'agronomo puo sostituire una Strategy con Threshold, PID o Predictive e
 modificarne i parametri. Nessun comando viene calcolato prima della conferma.
@@ -545,10 +759,15 @@ Gli stati possibili sono `PENDING_CONFIRMATION`, `CONFIRMED`, `REJECTED` e
 `INVALID`. Un cambio di ricetta, Strategy o parametri invalida tutte le
 conferme; il passaggio automatico tra fasi della stessa versione le mantiene.
 
-N/P/K non espongono sensori inesistenti: usano le concentrazioni stimate dal
-modello, il target della fase, il substrato, l'acqua erogata e la dose
+N/P/K non espongono sensori selettivi inesistenti: usano la concentrazione
+totale stimata dalla EC, la composizione del modello, il target della fase, il
+substrato, l'acqua erogata e la dose
 cumulativa. Threshold e PID vengono quindi rifiutati per N/P/K come
 incompatibili con la sorgente disponibile.
+
+Il JSON canonico usa `input_source`. Il precedente campo `sensor` viene ancora
+accettato in lettura per compatibilita, ma ogni nuova serializzazione usa il
+nome non ambiguo.
 
 Prima dell'uscita, il supervisore applica con priorita:
 
@@ -563,6 +782,46 @@ Prima dell'uscita, il supervisore applica con priorita:
 `load_recipe_json()` e `save_recipe_json()` serializzano l'intero modello. La
 ricetta dimostrativa e in `config/example_recipe.json` e descrive due fasi del
 pomodoro su substrato universale aerato. I coefficienti sono didattici.
+
+La directory `config/recipe_catalog/recipes/` contiene un file JSON di
+bootstrap per ciascuna delle 20 piante, cinque per ognuno dei quattro reparti
+produttivi. `config/recipe_catalog/profiles.json` raccoglie i profili condivisi
+di luce, irrigazione e concimazione e quattro sequenze di fasi riutilizzabili:
+fogliame, fioritura, succulente e produzione. Ogni file pianta puo scegliere
+una sequenza diversa e sovrascrivere durata, fotoperiodo, fattori dei setpoint o
+uno dei profili soltanto per una fase; `recipe-pomodorino` contiene un override
+della fase di produzione come esempio.
+
+Durante `init_db()` il bootstrap viene validato ed espanso in una ricetta
+completa di quattro fasi. L'intero contratto risultante, inclusi tutti i target
+di ogni fase e i controllori, viene serializzato nella colonna `recipes.data`
+di SQLite. `recipe_catalog_imports.catalog_version` permette la migrazione del
+vecchio catalogo monofase v1 al catalogo v2 senza rendere i JSON una sorgente
+runtime. Dopo l'importazione, repository, API ed Edge leggono esclusivamente
+SQLite; `GET /api/v1/recipes/{recipe_id}` e il canale usato dall'Edge. Gli
+eventuali JSON prodotti tramite l'utilita di export separata sono soltanto
+snapshot espliciti per avvio offline: `POST /recipes` non li genera e il
+normale runtime non li legge. Ogni ricetta include
+`department_number`,
+il `department_name` calcolato e un `care_profile` che conserva testualmente
+luce, irrigazione, temperatura e concimazione del ricettario. I target
+numerici di luce, umidita del terreno, pH e N/P/K sono una traduzione
+operativa prudenziale delle indicazioni qualitative e richiedono comunque la
+conferma dell'agronomo.
+
+L'elenco si puo restringere, per esempio, con
+`GET /api/v1/recipes?department_number=3`. Il backend impedisce di assegnare
+una ricetta di catalogo a un reparto diverso o a una zona con una specie
+diversa da `plant_type`; le ricette personalizzate prive dei metadati di
+catalogo mantengono il comportamento precedente.
+
+Una ricetta iniziale del catalogo e alla versione 2. Puo essere personalizzata tramite
+`POST /api/v1/recipes` usando lo stesso identificativo e una versione
+superiore; la copia salvata nel database prende allora il posto di quella
+iniziale. Le inizializzazioni successive non rileggono il bootstrap della
+stessa versione e non sovrascrivono ricette SQLite con versione uguale o
+superiore; una nuova versione dello schema di catalogo abilita invece una
+migrazione esplicita dei soli record piu vecchi.
 
 ## Experiments C++
 
@@ -655,7 +914,7 @@ sincronizzati sullo stesso asse temporale:
 - temperatura dell'aria in gradi Celsius;
 - umidita dell'aria e del terriccio nello stesso pannello, entrambe in
   percentuale e con colori distinti;
-- pH della soluzione presente nei pori del terriccio;
+- pH dell'acqua presente nei pori del terriccio;
 - luce espressa come PPFD in micromoli per metro quadrato al secondo.
 
 Temperatura e pH usano intervalli verticali adattati ai dati, le umidita
@@ -755,6 +1014,7 @@ Le API Edge sono disponibili anche con prefisso `/api/v1`. Comprendono:
 - telemetria e snapshot degli attuatori per zona;
 - eventi Edge;
 - elenco e distribuzione delle ricette;
+- anagrafica delle piante, flag di quarantena e storico degli spostamenti;
 - accodamento, polling e conferma dei comandi runtime.
 
 Gli endpoint senza prefisso rimangono disponibili per compatibilita.
@@ -778,3 +1038,14 @@ controllo Edge e dall'experiment dedicato. Contiene le fasi
 `VegetativeGrowth` e `Flowering`, i target delle sei variabili, le
 configurazioni Strategy e tutti i limiti prioritari. I valori hanno finalita
 dimostrativa e non sostituiscono la validazione di un agronomo.
+
+Il catalogo iniziale modificabile e organizzato in
+`config/recipe_catalog/profiles.json` e
+`config/recipe_catalog/recipes/<pianta>.json`. Per aggiungere una pianta basta
+aggiungere un file valido nella directory `recipes`, senza modificare Python.
+Il modulo `backend/app/features/recipes/catalog.py` valida profili e ricette,
+segnala il percorso esatto dei file errati, applica la sequenza condivisa della
+categoria e gli override della singola pianta, quindi costruisce il contratto
+multifase richiesto dall'Edge. I JSON sono input di bootstrap: il repository
+non possiede fallback in memoria e, terminata l'inizializzazione, elenco,
+lettura, transizioni e versionamento usano la ricetta completa in `recipes`.

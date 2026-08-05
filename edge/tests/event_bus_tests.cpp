@@ -36,6 +36,7 @@ smarthydro::SensorConfig deterministic_sensors() {
              &config.temperature,
              &config.air_humidity,
              &config.soil_moisture,
+             &config.soil_conductivity,
              &config.ph,
              &config.light_ppfd}) {
         channel->bias = 0.0;
@@ -153,6 +154,14 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
             3900.0,
             3600.0,
         };
+    const smarthydro::EdgeDomainEvent recipe_completed =
+        smarthydro::RecipeCompleted{
+            "zone-time",
+            5000.0,
+            "recipe-test",
+            "Maturazione",
+            1200.0,
+        };
 
     EXPECT_STREQ(
         smarthydro::event_type_name(speed),
@@ -166,12 +175,16 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
     EXPECT_STREQ(
         smarthydro::event_type_name(completed),
         "SimulationDurationCompleted");
+    EXPECT_STREQ(
+        smarthydro::event_type_name(recipe_completed),
+        "RecipeCompleted");
 
     std::ostringstream console_output;
     smarthydro::ConsoleLogger console(console_output);
     console.on_event(speed);
     console.on_event(duration);
     console.on_event(completed);
+    console.on_event(recipe_completed);
     console.on_event(lag);
     EXPECT_NE(
         console_output.str().find("1.000000x -> 10.000000x"),
@@ -185,12 +198,16 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
     EXPECT_NE(
         console_output.str().find("completed duration=3600.000000s"),
         std::string::npos);
+    EXPECT_NE(
+        console_output.str().find("recipe-test completed in Maturazione"),
+        std::string::npos);
 
     std::ostringstream csv_output;
     smarthydro::CsvLogger csv(csv_output);
     csv.on_event(speed);
     csv.on_event(duration);
     csv.on_event(completed);
+    csv.on_event(recipe_completed);
     csv.on_event(lag);
     EXPECT_NE(
         csv_output.str().find("SimulationSpeedChanged"),
@@ -203,6 +220,9 @@ TEST(EventBusTest, LoggersRenderTemporalEvents) {
         std::string::npos);
     EXPECT_NE(
         csv_output.str().find("SimulationDurationCompleted"),
+        std::string::npos);
+    EXPECT_NE(
+        csv_output.str().find("RecipeCompleted"),
         std::string::npos);
 }
 
@@ -257,13 +277,30 @@ TEST(EventBusTest, RuntimePublishesTelemetryAndExecutedCommands) {
         count_events<smarthydro::CommandExecuted>(
             recorder->events),
         1U);
+    const smarthydro::TelemetrySample* telemetry = nullptr;
     for (const auto& event : recorder->events) {
+        if (const auto* sample =
+                std::get_if<smarthydro::TelemetrySample>(&event)) {
+            telemetry = sample;
+        }
         std::visit(
             [](const auto& value) {
                 EXPECT_EQ(value.zone_id, "greenhouse-1");
             },
             event);
     }
+    ASSERT_NE(telemetry, nullptr);
+    EXPECT_EQ(telemetry->active_recipe_id, "tomato_demo_v1");
+    EXPECT_EQ(telemetry->active_recipe_version, 1U);
+    EXPECT_EQ(telemetry->current_phase, "VegetativeGrowth");
+    EXPECT_EQ(telemetry->lifecycle_state, "Running");
+    EXPECT_DOUBLE_EQ(telemetry->time_scale, 1.0);
+    const auto ph_index = smarthydro::controlled_variable_index(
+        smarthydro::ControlledVariable::PH);
+    EXPECT_EQ(
+        telemetry->current_strategies[ph_index],
+        smarthydro::StrategyType::PID);
+    EXPECT_DOUBLE_EQ(telemetry->current_setpoints[ph_index], 6.2);
 }
 
 TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {

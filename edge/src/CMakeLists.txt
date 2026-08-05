@@ -112,6 +112,23 @@ target_link_libraries(recipe_json
 )
 set_target_properties(recipe_json PROPERTIES CXX_EXTENSIONS OFF)
 
+# Injector simulativo e detector osservazionale, indipendenti dalla FSM.
+add_library(
+    fault_management
+    faults/fault_detector.cpp
+    faults/fault_injector.cpp
+)
+target_include_directories(fault_management
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(fault_management PUBLIC cxx_std_17)
+target_link_libraries(fault_management
+    PUBLIC
+        control_system
+        io_adapters
+)
+set_target_properties(fault_management PROPERTIES CXX_EXTENSIONS OFF)
+
 # Ciclo operativo che collega ricetta, sensori, attuatori e ambiente.
 add_library(
     edge_runtime
@@ -131,6 +148,7 @@ target_link_libraries(edge_runtime
         control_system
         io_adapters
         event_bus
+        fault_management
 )
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 

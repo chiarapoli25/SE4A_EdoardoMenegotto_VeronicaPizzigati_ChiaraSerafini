@@ -1,0 +1,11 @@
+{
+  "id": "recipe-lithops",
+  "plant_type": "Lithops",
+  "department_number": 3,
+  "substrate": "draining",
+  "care_profile": {"light": "Pieno sole", "watering": "Irrisoria (autunno/prim.)", "temperature": "Caldo", "fertilization": "Nessuno"},
+  "light_profile": "full_sun",
+  "water_profile": "minimal",
+  "feed_profile": "none",
+  "ph_setpoint": 6.5
+}

@@ -11,6 +11,137 @@ class EdgeEventConflict(Exception):
     """Segnala il riuso di un event_id con contenuto differente."""
 
 
+def _phase_name(payload: dict, key: str) -> str | None:
+    """Estrae un nome fase sicuro dai payload Edge non tipizzati."""
+    value = payload.get(key)
+    if isinstance(value, str) and 0 < len(value) <= 100:
+        return value
+    return None
+
+
+def _apply_recipe_state(
+    connection: sqlite3.Connection,
+    zone_id: str,
+    event: EdgeEventCreate,
+) -> None:
+    """Aggiorna subito la proiezione corrente, mantenendo l'evento storico."""
+    projection_time = event.recorded_at.astimezone(timezone.utc).isoformat()
+    stored_projection = connection.execute(
+        "SELECT projection_updated_at FROM zones WHERE id = ?",
+        (zone_id,),
+    ).fetchone()
+    if (
+        stored_projection is not None
+        and stored_projection[0] is not None
+        and stored_projection[0] > projection_time
+    ):
+        return
+
+    projected = False
+    if event.event_type == "ZoneLifecycleChanged":
+        previous_state = event.payload.get("previous_state")
+        current_state = event.payload.get("current_state")
+        if current_state in {"Idle", "Running", "Paused", "Error"}:
+            connection.execute(
+                "UPDATE zones SET lifecycle_state = ? WHERE id = ?",
+                (current_state, zone_id),
+            )
+            projected = True
+        if previous_state == "Starting" and current_state == "Running":
+            connection.execute(
+                """
+                UPDATE zones
+                SET current_phase = NULL, cultivation_completed = 0
+                WHERE id = ?
+                """,
+                (zone_id,),
+            )
+            projected = True
+        elif current_state == "Idle":
+            connection.execute(
+                """
+                UPDATE zones
+                SET active_recipe_id = NULL, active_recipe_version = NULL,
+                    current_phase = NULL, cultivation_completed = 0,
+                    time_scale = 1.0
+                WHERE id = ?
+                """,
+                (zone_id,),
+            )
+            projected = True
+    elif event.event_type == "StateChanged":
+        current_state = event.payload.get("current_state")
+        if current_state in {"Nominal", "Degraded", "EmergencyLockdown"}:
+            connection.execute(
+                "UPDATE zones SET operational_state = ? WHERE id = ?",
+                (current_state, zone_id),
+            )
+            projected = True
+    elif event.event_type == "SimulationSpeedChanged":
+        current_scale = event.payload.get("current_time_scale")
+        if (
+            isinstance(current_scale, (int, float))
+            and 1.0 <= current_scale <= 60.0
+        ):
+            connection.execute(
+                "UPDATE zones SET time_scale = ? WHERE id = ?",
+                (float(current_scale), zone_id),
+            )
+            projected = True
+    elif event.event_type == "StrategyChanged":
+        variable = event.payload.get("variable")
+        current_strategy = event.payload.get("current_strategy")
+        if variable in {
+            "soil_moisture",
+            "light",
+            "ph",
+            "nitrogen",
+            "phosphorus",
+            "potassium",
+        } and current_strategy in {"Threshold", "PID", "Predictive"}:
+            row = connection.execute(
+                "SELECT current_strategies FROM zones WHERE id = ?",
+                (zone_id,),
+            ).fetchone()
+            strategies = json.loads(row[0]) if row is not None else {}
+            strategies[variable] = current_strategy
+            connection.execute(
+                "UPDATE zones SET current_strategies = ? WHERE id = ?",
+                (json.dumps(strategies, sort_keys=True), zone_id),
+            )
+            projected = True
+    elif event.event_type == "RecipePhaseChanged":
+        current_phase = _phase_name(event.payload, "current_phase")
+        if current_phase is not None:
+            connection.execute(
+                """
+                UPDATE zones
+                SET current_phase = ?, cultivation_completed = 0
+                WHERE id = ?
+                """,
+                (current_phase, zone_id),
+            )
+            projected = True
+    elif event.event_type == "RecipeCompleted":
+        final_phase = _phase_name(event.payload, "final_phase")
+        if final_phase is not None:
+            connection.execute(
+                """
+                UPDATE zones
+                SET current_phase = ?, cultivation_completed = 1
+                WHERE id = ?
+                """,
+                (final_phase, zone_id),
+            )
+            projected = True
+
+    if projected:
+        connection.execute(
+            "UPDATE zones SET projection_updated_at = ? WHERE id = ?",
+            (projection_time, zone_id),
+        )
+
+
 def _event_from_row(row: tuple) -> EdgeEvent:
     return EdgeEvent(
         event_id=row[0],
@@ -71,29 +202,15 @@ def save_event(
             f"event_id {event.event_id!r} already exists with different data"
         ) from error
 
-    current_phase = event.payload.get("current_phase")
-    if (
-        event.event_type == "RecipePhaseChanged"
-        and isinstance(current_phase, str)
-        and current_phase.strip()
-    ):
-        connection.execute(
-            """
-            UPDATE zones
-            SET status = 'online', last_edge_contact = ?, current_phase = ?
-            WHERE id = ?
-            """,
-            (received_at.isoformat(), current_phase, zone_id),
-        )
-    else:
-        connection.execute(
-            """
-            UPDATE zones
-            SET status = 'online', last_edge_contact = ?
-            WHERE id = ?
-            """,
-            (received_at.isoformat(), zone_id),
-        )
+    _apply_recipe_state(connection, zone_id, event)
+    connection.execute(
+        """
+        UPDATE zones
+        SET status = 'online', last_edge_contact = ?
+        WHERE id = ?
+        """,
+        (received_at.isoformat(), zone_id),
+    )
     connection.commit()
     stored_data = event.model_dump()
     stored_data["recorded_at"] = recorded_at

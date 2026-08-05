@@ -37,8 +37,14 @@ constexpr std::size_t kControlledVariableCount =
 template <typename T>
 using ControlledValues = std::array<T, kControlledVariableCount>;
 
-/** @brief Origine del valore usato dal controllo. */
-enum class SensorType {
+/**
+ * @brief Sorgente del valore usato da un controllore.
+ *
+ * Le prime tre sorgenti sono sensori fisici simulati. Le sorgenti N/P/K sono
+ * stime ottenute fondendo EC, umidita e composizione del bilancio radicale;
+ * non rappresentano tre sensori selettivi di nutrienti.
+ */
+enum class ControlInputSource {
     SOIL_MOISTURE_SENSOR,
     LIGHT_SENSOR,
     PH_SENSOR,
@@ -46,6 +52,9 @@ enum class SensorType {
     PHOSPHORUS_MODEL,
     POTASSIUM_MODEL,
 };
+
+/** @brief Alias sorgente mantenuto per compatibilita con il codice precedente. */
+using SensorType = ControlInputSource;
 
 /** @brief Attuatore comandato dalla configurazione. */
 enum class ActuatorType {
@@ -120,7 +129,8 @@ struct ControllerConfiguration {
     /** Variabile governata dalla configurazione. */
     ControlledVariable variable = ControlledVariable::SOIL_MOISTURE;
     /** Sensore fisico o modello che fornisce il valore corrente. */
-    SensorType sensor = SensorType::SOIL_MOISTURE_SENSOR;
+    ControlInputSource input_source =
+        ControlInputSource::SOIL_MOISTURE_SENSOR;
     /** Attuatore destinatario del comando. */
     ActuatorType actuator = ActuatorType::WATER_PUMP;
     /** Strategia raccomandata dalla ricetta. */
@@ -311,7 +321,7 @@ std::size_t controlled_variable_index(ControlledVariable variable);
 /** @brief Nome JSON stabile della variabile. */
 const char* to_string(ControlledVariable variable) noexcept;
 /** @brief Nome JSON stabile del sensore o modello. */
-const char* to_string(SensorType sensor) noexcept;
+const char* to_string(ControlInputSource input_source) noexcept;
 /** @brief Nome JSON stabile dell'attuatore. */
 const char* to_string(ActuatorType actuator) noexcept;
 /** @brief Nome JSON stabile dello stato di conferma. */

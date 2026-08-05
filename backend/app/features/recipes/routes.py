@@ -3,17 +3,10 @@
 """
 
 import sqlite3
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
-from .export import (
-    DEFAULT_EXPORT_DIRECTORY,
-    UnsafeRecipeId,
-    assert_safe_recipe_id,
-    export_recipe_for_edge,
-)
 from .models import Recipe
 from .repository import (
     RecipeVersionConflict,
@@ -27,38 +20,38 @@ from .repository import (
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
-def get_export_directory() -> Path:
-    """@brief Restituisce la directory dei JSON destinati all'Edge."""
-    return DEFAULT_EXPORT_DIRECTORY
-
-
 @router.post("", response_model=Recipe, status_code=201)
 def create_recipe(
     recipe: Recipe,
     connection: sqlite3.Connection = Depends(get_db),
-    export_directory: Path = Depends(get_export_directory),
 ) -> Recipe:
-    """@brief Valida, salva ed esporta una ricetta."""
-    try:
-        assert_safe_recipe_id(recipe.id, export_directory)
-    except UnsafeRecipeId as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-
+    """Valida e salva integralmente la ricetta in SQLite."""
     try:
         save_recipe(connection, recipe)
     except RecipeVersionConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
-    export_recipe_for_edge(recipe, export_directory)
     return recipe
 
 
 @router.get("", response_model=list[Recipe])
 def read_recipes(
+    department_number: int | None = None,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[Recipe]:
-    """Elenca tutte le ricette disponibili per gli Edge."""
-    return list_recipes(connection)
+    """Elenca le ricette, eventualmente filtrate per reparto produttivo."""
+    recipes = list_recipes(connection)
+    if department_number is None:
+        return recipes
+    if department_number not in range(1, 5):
+        raise HTTPException(
+            status_code=422,
+            detail="department_number must be between 1 and 4",
+        )
+    return [
+        recipe for recipe in recipes
+        if recipe.department_number == department_number
+    ]
 
 
 @router.get("/{recipe_id}", response_model=Recipe)

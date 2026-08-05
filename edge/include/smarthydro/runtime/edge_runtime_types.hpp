@@ -42,8 +42,8 @@ enum class FaultMode {
 /**
  * @brief Descrizione utente di un'anomalia da applicare alla simulazione.
  *
- * `target` usa i nomi stabili dei cinque sensori (`temperature`,
- * `air_humidity`, `soil_moisture`, `ph`, `light`) o degli attuatori
+ * `target` usa i nomi stabili dei sei sensori (`temperature`,
+ * `air_humidity`, `soil_moisture`, `soil_conductivity`, `ph`, `light`) o degli attuatori
  * (`water_pump`, `lighting`, `nitrogen_valve`, `phosphorus_valve`,
  * `potassium_valve`, `ph_up_valve`, `ph_down_valve`).
  *
@@ -64,6 +64,7 @@ struct FaultSpecification {
 enum class EdgeEventType {
     RUNTIME_STARTED,
     RECIPE_PHASE_CHANGED,
+    RECIPE_COMPLETED,
     OPERATIONAL_STATE_CHANGED,
     EMERGENCY_LOCKDOWN_ENTERED,
 };
@@ -113,6 +114,8 @@ struct EdgeStepResult {
     double duration_seconds = 0.0;
     /** Nome della fase usata per calcolare i comandi. */
     std::string phase_name;
+    /** True dopo il termine temporale dell'ultima fase. */
+    bool recipe_completed = false;
     /** Stato operativo della zona durante il ciclo. */
     OperationalState operational_state = OperationalState::NOMINAL;
     /** Eventi prodotti all'inizio del ciclo. */

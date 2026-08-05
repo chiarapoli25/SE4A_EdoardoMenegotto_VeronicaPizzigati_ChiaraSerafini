@@ -26,9 +26,12 @@ from .features.telemetry.repository import (
 )
 from .features.zones.repository import (
     ZoneConflict,
+    ZoneUpdateConflict,
+    ZoneUpdateInvalid,
     create_zone,
     get_zone,
     list_zones,
+    update_zone,
 )
 
 __all__ = [
@@ -37,6 +40,8 @@ __all__ = [
     "RecipeVersionConflict",
     "TelemetryConflict",
     "ZoneConflict",
+    "ZoneUpdateConflict",
+    "ZoneUpdateInvalid",
     "create_zone",
     "get_connection",
     "get_latest_actuator_snapshot",
@@ -51,4 +56,5 @@ __all__ = [
     "save_recipe",
     "save_actuator_snapshot",
     "save_telemetry",
+    "update_zone",
 ]

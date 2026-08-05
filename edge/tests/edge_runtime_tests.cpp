@@ -1,3 +1,4 @@
+#include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/recipes/recipe_json.hpp>
 #include <smarthydro/runtime/edge_runtime.hpp>
 
@@ -25,6 +26,7 @@ smarthydro::SensorConfig deterministic_sensors() {
              &config.temperature,
              &config.air_humidity,
              &config.soil_moisture,
+             &config.soil_conductivity,
              &config.ph,
              &config.light_ppfd}) {
         channel->bias = 0.0;
@@ -55,6 +57,16 @@ public:
 private:
     smarthydro::SensorChannel channel_;
     double value_;
+};
+
+class RecordingObserver final : public smarthydro::IEventObserver {
+public:
+    void on_event(
+        const smarthydro::EdgeDomainEvent& event) override {
+        events.push_back(event);
+    }
+
+    std::vector<smarthydro::EdgeDomainEvent> events;
 };
 
 class SequenceSensor final : public smarthydro::ISensor {
@@ -103,6 +115,10 @@ smarthydro::SensorAdapterArray constant_sensor_array() {
         sensors, smarthydro::SensorChannel::AIR_HUMIDITY, 60.0);
     set_constant_sensor(
         sensors, smarthydro::SensorChannel::SOIL_MOISTURE, 60.0);
+    set_constant_sensor(
+        sensors,
+        smarthydro::SensorChannel::SOIL_CONDUCTIVITY,
+        1.8 * std::pow(0.60, 1.30));
     set_constant_sensor(
         sensors, smarthydro::SensorChannel::PH, 6.2);
     set_constant_sensor(
@@ -212,6 +228,33 @@ TEST(EdgeRuntimeTest, ExecutesConfirmedRecipeOnPhysicalSimulators) {
         900.0);
 }
 
+TEST(EdgeRuntimeTest, NutrientControlRequiresTheResistiveProbeEstimate) {
+    auto sensor_config = deterministic_sensors();
+    sensor_config.soil_conductivity.dropout_probability = 1.0;
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(), {}, {}, sensor_config);
+    runtime.confirm_all_configurations();
+
+    const auto result = runtime.step(60.0);
+
+    EXPECT_FALSE(result.readings.soil_bulk_ec_ms_cm.has_value());
+    EXPECT_FALSE(
+        result.readings.fertilizer_concentration_mg_per_liter.has_value());
+    for (const auto variable : {
+             smarthydro::ControlledVariable::NITROGEN,
+             smarthydro::ControlledVariable::PHOSPHORUS,
+             smarthydro::ControlledVariable::POTASSIUM}) {
+        const auto& decision = result.decisions[
+            smarthydro::controlled_variable_index(variable)];
+        EXPECT_EQ(
+            decision.status,
+            smarthydro::ControlDecisionStatus::BLOCKED);
+        EXPECT_EQ(
+            decision.fault_severity,
+            smarthydro::ControlFaultSeverity::RECOVERABLE);
+    }
+}
+
 TEST(EdgeRuntimeTest, RejectsInvalidStepDuration) {
     smarthydro::EdgeRuntime runtime(
         load_demo_recipe(),
@@ -274,6 +317,45 @@ TEST(EdgeRuntimeTest, ReportsRecipePhaseTransition) {
     EXPECT_NE(
         second.events.front().message.find("Flowering"),
         std::string::npos);
+}
+
+TEST(EdgeRuntimeTest, CompletesOnceAndKeepsTheFinalPhaseActive) {
+    auto recipe = load_demo_recipe();
+    for (auto& phase : recipe.phases) {
+        phase.duration_hours = 0.01;
+    }
+    smarthydro::EdgeRuntime runtime(
+        std::move(recipe), {}, {}, deterministic_sensors());
+    auto event_bus = std::make_shared<smarthydro::EventBus>();
+    auto observer = std::make_shared<RecordingObserver>();
+    event_bus->subscribe(observer);
+    runtime.attach_event_bus(event_bus, "completion-zone");
+    runtime.confirm_all_configurations();
+
+    const auto first = runtime.step(60.0);
+    const auto final_phase = runtime.step(60.0);
+    const auto completed = runtime.step(60.0);
+    const auto maintained = runtime.step(60.0);
+
+    EXPECT_FALSE(first.recipe_completed);
+    EXPECT_FALSE(final_phase.recipe_completed);
+    EXPECT_TRUE(completed.recipe_completed);
+    EXPECT_TRUE(maintained.recipe_completed);
+    EXPECT_TRUE(runtime.recipe_completed());
+    EXPECT_EQ(completed.phase_name, final_phase.phase_name);
+    EXPECT_EQ(maintained.phase_name, final_phase.phase_name);
+    ASSERT_EQ(completed.events.size(), 1U);
+    EXPECT_EQ(
+        completed.events.front().type,
+        smarthydro::EdgeEventType::RECIPE_COMPLETED);
+    EXPECT_TRUE(maintained.events.empty());
+    std::size_t completed_events = 0;
+    for (const auto& event : observer->events) {
+        if (std::holds_alternative<smarthydro::RecipeCompleted>(event)) {
+            ++completed_events;
+        }
+    }
+    EXPECT_EQ(completed_events, 1U);
 }
 
 TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {

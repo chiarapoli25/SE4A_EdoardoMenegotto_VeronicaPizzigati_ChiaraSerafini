@@ -2,9 +2,11 @@
 @brief Persistenza SQLite della telemetria dei sensori.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
+from ..zones.models import ControlSetpoints, ControlStrategies
 from .models import TelemetryCreate, TelemetrySample
 
 
@@ -26,9 +28,17 @@ def save_telemetry(
             INSERT INTO telemetry_samples (
                 zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                 received_at, temperature_c, air_humidity_percent,
-                soil_moisture_percent, ph, light_ppfd_umol_m2_s
+                soil_moisture_percent, soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+                fertilizer_concentration_mg_per_liter,
+                nitrogen_estimate_mg_per_liter,
+                phosphorus_estimate_mg_per_liter,
+                potassium_estimate_mg_per_liter,
+                ph, light_ppfd_umol_m2_s, active_recipe_id,
+                active_recipe_version, current_phase, operational_state,
+                lifecycle_state, current_strategies, current_setpoints,
+                time_scale
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 zone_id,
@@ -40,8 +50,22 @@ def save_telemetry(
                 telemetry.temperature_c,
                 telemetry.air_humidity_percent,
                 telemetry.soil_moisture_percent,
+                telemetry.soil_bulk_ec_ms_cm,
+                telemetry.soil_ec_ms_cm,
+                telemetry.fertilizer_concentration_mg_per_liter,
+                telemetry.nitrogen_estimate_mg_per_liter,
+                telemetry.phosphorus_estimate_mg_per_liter,
+                telemetry.potassium_estimate_mg_per_liter,
                 telemetry.ph,
                 telemetry.light_ppfd_umol_m2_s,
+                telemetry.active_recipe_id,
+                telemetry.active_recipe_version,
+                telemetry.current_phase,
+                telemetry.operational_state.value,
+                telemetry.lifecycle_state.value,
+                telemetry.current_strategies.model_dump_json(),
+                telemetry.current_setpoints.model_dump_json(),
+                telemetry.time_scale,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -49,8 +73,16 @@ def save_telemetry(
             """
             SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds,
                    recorded_at, received_at, temperature_c,
-                   air_humidity_percent, soil_moisture_percent, ph,
-                   light_ppfd_umol_m2_s
+                   air_humidity_percent, soil_moisture_percent,
+                   soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+                   fertilizer_concentration_mg_per_liter,
+                   nitrogen_estimate_mg_per_liter,
+                   phosphorus_estimate_mg_per_liter,
+                   potassium_estimate_mg_per_liter, ph,
+                   light_ppfd_umol_m2_s, active_recipe_id,
+                   active_recipe_version, current_phase, operational_state,
+                   lifecycle_state, current_strategies, current_setpoints,
+                   time_scale
             FROM telemetry_samples
             WHERE zone_id = ? AND boot_id = ? AND sequence_number = ?
             """,
@@ -79,6 +111,34 @@ def save_telemetry(
         """,
         (received_at.isoformat(), zone_id),
     )
+    connection.execute(
+        """
+        UPDATE zones
+        SET lifecycle_state = ?, operational_state = ?,
+            active_recipe_id = ?, active_recipe_version = ?,
+            current_phase = ?, current_strategies = ?,
+            current_setpoints = ?, time_scale = ?,
+            projection_updated_at = ?
+        WHERE id = ?
+          AND (
+              projection_updated_at IS NULL
+              OR projection_updated_at <= ?
+          )
+        """,
+        (
+            telemetry.lifecycle_state.value,
+            telemetry.operational_state.value,
+            telemetry.active_recipe_id,
+            telemetry.active_recipe_version,
+            telemetry.current_phase,
+            telemetry.current_strategies.model_dump_json(),
+            telemetry.current_setpoints.model_dump_json(),
+            telemetry.time_scale,
+            recorded_at.isoformat(),
+            zone_id,
+            recorded_at.isoformat(),
+        ),
+    )
     connection.commit()
     stored_data = telemetry.model_dump()
     stored_data["recorded_at"] = recorded_at
@@ -92,6 +152,12 @@ def save_telemetry(
 
 def _telemetry_from_row(row: tuple) -> TelemetrySample:
     """@brief Converte una riga SQLite in un campione di telemetria."""
+    strategies = json.loads(row[23])
+    setpoints = json.loads(row[24])
+    strategy_snapshot = ControlStrategies.defaults().model_dump()
+    strategy_snapshot.update(strategies)
+    setpoint_snapshot = ControlSetpoints.zeros().model_dump()
+    setpoint_snapshot.update(setpoints)
     return TelemetrySample(
         sample_id=row[0],
         zone_id=row[1],
@@ -103,8 +169,22 @@ def _telemetry_from_row(row: tuple) -> TelemetrySample:
         temperature_c=row[7],
         air_humidity_percent=row[8],
         soil_moisture_percent=row[9],
-        ph=row[10],
-        light_ppfd_umol_m2_s=row[11],
+        soil_bulk_ec_ms_cm=row[10],
+        soil_ec_ms_cm=row[11],
+        fertilizer_concentration_mg_per_liter=row[12],
+        nitrogen_estimate_mg_per_liter=row[13],
+        phosphorus_estimate_mg_per_liter=row[14],
+        potassium_estimate_mg_per_liter=row[15],
+        ph=row[16],
+        light_ppfd_umol_m2_s=row[17],
+        active_recipe_id=row[18],
+        active_recipe_version=row[19],
+        current_phase=row[20],
+        operational_state=row[21],
+        lifecycle_state=row[22],
+        current_strategies=strategy_snapshot,
+        current_setpoints=setpoint_snapshot,
+        time_scale=row[25],
     )
 
 
@@ -117,7 +197,15 @@ def get_latest_telemetry(
         """
         SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, temperature_c, air_humidity_percent,
-               soil_moisture_percent, ph, light_ppfd_umol_m2_s
+               soil_moisture_percent, soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+               fertilizer_concentration_mg_per_liter,
+               nitrogen_estimate_mg_per_liter,
+               phosphorus_estimate_mg_per_liter,
+               potassium_estimate_mg_per_liter,
+               ph, light_ppfd_umol_m2_s, active_recipe_id,
+               active_recipe_version, current_phase, operational_state,
+               lifecycle_state, current_strategies, current_setpoints,
+               time_scale
         FROM telemetry_samples
         WHERE zone_id = ?
         ORDER BY recorded_at DESC, id DESC
@@ -152,7 +240,15 @@ def list_telemetry(
         f"""
         SELECT id, zone_id, boot_id, sequence_number, timestamp_seconds, recorded_at,
                received_at, temperature_c, air_humidity_percent,
-               soil_moisture_percent, ph, light_ppfd_umol_m2_s
+               soil_moisture_percent, soil_bulk_ec_ms_cm, soil_ec_ms_cm,
+               fertilizer_concentration_mg_per_liter,
+               nitrogen_estimate_mg_per_liter,
+               phosphorus_estimate_mg_per_liter,
+               potassium_estimate_mg_per_liter,
+               ph, light_ppfd_umol_m2_s, active_recipe_id,
+               active_recipe_version, current_phase, operational_state,
+               lifecycle_state, current_strategies, current_setpoints,
+               time_scale
         FROM telemetry_samples
         WHERE {" AND ".join(conditions)}
         ORDER BY recorded_at DESC, id DESC

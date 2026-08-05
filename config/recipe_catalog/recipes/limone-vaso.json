@@ -1,0 +1,11 @@
+{
+  "id": "recipe-limone-vaso",
+  "plant_type": "Limone (vaso)",
+  "department_number": 4,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Pieno sole", "watering": "Abbondante, poi far asciugare", "temperature": "Caldo", "fertilization": "Agrumi (fine inverno)"},
+  "light_profile": "full_sun",
+  "water_profile": "regular",
+  "feed_profile": "citrus",
+  "ph_setpoint": 6.2
+}

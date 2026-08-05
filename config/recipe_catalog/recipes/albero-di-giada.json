@@ -1,0 +1,11 @@
+{
+  "id": "recipe-albero-di-giada",
+  "plant_type": "Albero di Giada",
+  "department_number": 3,
+  "substrate": "draining",
+  "care_profile": {"light": "Sole diretto", "watering": "Ogni 2-3 settimane", "temperature": "10-30°C", "fertilization": "Primavera/estate"},
+  "light_profile": "direct_sun",
+  "water_profile": "arid",
+  "feed_profile": "light",
+  "ph_setpoint": 6.5
+}

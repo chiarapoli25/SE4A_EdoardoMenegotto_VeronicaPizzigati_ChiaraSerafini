@@ -18,6 +18,10 @@ const std::string& EdgeRuntime::active_phase_name() const {
         .name;
 }
 
+bool EdgeRuntime::recipe_completed() const noexcept {
+    return recipe_completed_;
+}
+
 void EdgeRuntime::change_strategy(
     ControlledVariable variable,
     StrategyType strategy,
@@ -50,6 +54,10 @@ void EdgeRuntime::replace_recipe(Recipe recipe) {
     recipe_start_time_seconds_ =
         environment_->state().simulation_time_seconds;
     recipe_time_offset_seconds_ = 0.0;
+    recipe_completed_ = false;
+    fault_detector_.reset();
+    reported_runtime_faults_.clear();
+    previous_actuator_faults_.clear();
     reported_phase_index_.reset();
     history_phase_index_ = kControlledVariableCount;
     cumulative_phase_dose_milliliters_.fill(0.0);

@@ -1,0 +1,11 @@
+{
+  "id": "recipe-ibisco",
+  "plant_type": "Ibisco",
+  "department_number": 2,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Sole diretto", "watering": "Abbondante in estate", "temperature": "15-30°C", "fertilization": "Settimanale in fioritura"},
+  "light_profile": "direct_sun",
+  "water_profile": "abundant",
+  "feed_profile": "high",
+  "ph_setpoint": 6.2
+}

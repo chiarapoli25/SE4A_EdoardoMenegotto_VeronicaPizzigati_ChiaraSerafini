@@ -38,6 +38,20 @@ struct TelemetrySample {
     ActuatorOutput actuator_output;
     /** Stato ambientale raggiunto. */
     EnvironmentState environment_state;
+    /** Identificativo della ricetta attualmente eseguita. */
+    std::string active_recipe_id;
+    /** Versione completa della ricetta attualmente eseguita. */
+    std::uint64_t active_recipe_version = 0;
+    /** Fase della ricetta usata nel ciclo. */
+    std::string current_phase;
+    /** Lifecycle applicativo della zona: Idle, Running, Paused o Error. */
+    std::string lifecycle_state = "Running";
+    /** Strategia selezionata per ciascuna variabile controllata. */
+    ControlledValues<StrategyType> current_strategies{};
+    /** Setpoint della fase corrente per ciascuna variabile controllata. */
+    ControlledValues<double> current_setpoints{};
+    /** Rapporto fra tempo simulato e tempo reale. */
+    double time_scale = 1.0;
 };
 
 /** @brief Transizione del lifecycle applicativo di una zona. */
@@ -125,14 +139,16 @@ struct StateChanged {
     std::string reason;
 };
 
-/** @brief Guasto strutturato prodotto da un detector presente o futuro. */
+/** @brief Guasto strutturato prodotto dal FaultDetector osservazionale. */
 struct FaultDetected {
     /** Zona nella quale e stato rilevato il guasto. */
     std::string zone_id;
     /** Timestamp simulato del rilevamento, in secondi. */
     double timestamp_seconds = 0.0;
-    /** Tipo stabile del guasto. */
-    std::string fault_type;
+    /** Sensore, modello o attuatore che ha prodotto l'evidenza. */
+    std::string component;
+    /** Regola stabile violata dal componente. */
+    std::string rule;
     /** Severita usata dalla FSM. */
     ControlFaultSeverity severity = ControlFaultSeverity::NONE;
     /** Diagnostica leggibile e contestuale. */
@@ -163,6 +179,20 @@ struct RecipePhaseChanged {
     std::string previous_phase;
     /** Nome della nuova fase. */
     std::string current_phase;
+};
+
+/** @brief Completamento temporale della ricetta, con ultima fase mantenuta. */
+struct RecipeCompleted {
+    /** Zona che ha completato la sequenza. */
+    std::string zone_id;
+    /** Timestamp simulato del rilevamento, in secondi. */
+    double timestamp_seconds = 0.0;
+    /** Identificatore della ricetta completata. */
+    std::string recipe_id;
+    /** Ultima fase che resta attiva dopo il completamento. */
+    std::string final_phase;
+    /** Durata nominale complessiva della ricetta, in ore. */
+    double total_duration_hours = 0.0;
 };
 
 /** @brief Ingresso della FSM nello stato EmergencyLockdown. */
@@ -227,6 +257,7 @@ using EdgeDomainEvent = std::variant<
     FaultDetected,
     StrategyChanged,
     RecipePhaseChanged,
+    RecipeCompleted,
     EmergencyTriggered,
     BackendUnavailable,
     CommandExecuted,

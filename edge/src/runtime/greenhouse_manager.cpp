@@ -281,6 +281,9 @@ EdgeStepResult ZoneController::step(double delta_time_seconds) {
             "greenhouse zone is not running: " +
             std::string(to_string(lifecycle_state_)));
     }
+    runtime().set_snapshot_context(
+        to_string(lifecycle_state_),
+        time_scale_);
     return runtime().step(delta_time_seconds);
 }
 
@@ -619,6 +622,23 @@ void ZoneController::attach_event_bus(
     }
 }
 
+void ZoneController::decommission_for_removal() noexcept {
+    if (runtime_) {
+        runtime_->detach_event_bus();
+        runtime_->stop_all_actuators();
+    }
+    command_processor_.reset();
+    runtime_.reset();
+    command_results_.clear();
+    cultivation_id_.clear();
+    last_error_.clear();
+    time_scale_ = 1.0;
+    simulation_duration_seconds_.reset();
+    simulation_target_timestamp_seconds_.reset();
+    lifecycle_state_ = ZoneLifecycleState::IDLE;
+    event_bus_.reset();
+}
+
 GreenhouseManager::GreenhouseManager(
     std::shared_ptr<EventBus> event_bus)
     : event_bus_(
@@ -672,6 +692,17 @@ ZoneController& GreenhouseManager::add_zone(
             "failed to register greenhouse zone: " + zone_id);
     }
     return *iterator->second;
+}
+
+bool GreenhouseManager::remove_zone(
+    const std::string& zone_id) noexcept {
+    const auto iterator = zones_.find(zone_id);
+    if (iterator == zones_.end()) {
+        return false;
+    }
+    iterator->second->decommission_for_removal();
+    zones_.erase(iterator);
+    return true;
 }
 
 bool GreenhouseManager::contains(

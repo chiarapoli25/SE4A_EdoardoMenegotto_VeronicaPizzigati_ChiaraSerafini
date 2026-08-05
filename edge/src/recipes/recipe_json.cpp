@@ -52,19 +52,19 @@ ControlledVariable variable_from_string(const std::string& value) {
     throw std::invalid_argument("unknown ControlledVariable: " + value);
 }
 
-SensorType sensor_from_string(const std::string& value) {
+ControlInputSource input_source_from_string(const std::string& value) {
     for (const auto sensor : {
-             SensorType::SOIL_MOISTURE_SENSOR,
-             SensorType::LIGHT_SENSOR,
-             SensorType::PH_SENSOR,
-             SensorType::NITROGEN_MODEL,
-             SensorType::PHOSPHORUS_MODEL,
-             SensorType::POTASSIUM_MODEL}) {
+             ControlInputSource::SOIL_MOISTURE_SENSOR,
+             ControlInputSource::LIGHT_SENSOR,
+             ControlInputSource::PH_SENSOR,
+             ControlInputSource::NITROGEN_MODEL,
+             ControlInputSource::PHOSPHORUS_MODEL,
+             ControlInputSource::POTASSIUM_MODEL}) {
         if (value == to_string(sensor)) {
             return sensor;
         }
     }
-    throw std::invalid_argument("unknown SensorType: " + value);
+    throw std::invalid_argument("unknown ControlInputSource: " + value);
 }
 
 ActuatorType actuator_from_string(const std::string& value) {
@@ -241,7 +241,7 @@ Json recipe_to_object(const Recipe& recipe) {
     for (const auto& controller : recipe.controllers) {
         controllers.push_back({
             {"variable", to_string(controller.variable)},
-            {"sensor", to_string(controller.sensor)},
+            {"input_source", to_string(controller.input_source)},
             {"actuator", to_string(controller.actuator)},
             {"default_strategy", to_string(controller.default_strategy)},
             {"selected_strategy", to_string(controller.selected_strategy)},
@@ -299,8 +299,23 @@ Recipe recipe_from_object(const Json& json) {
         ControllerConfiguration controller;
         controller.variable = variable_from_string(
             controller_json.at("variable").get<std::string>());
-        controller.sensor = sensor_from_string(
-            controller_json.at("sensor").get<std::string>());
+        const bool has_input_source =
+            controller_json.contains("input_source");
+        const bool has_legacy_sensor = controller_json.contains("sensor");
+        if (!has_input_source && !has_legacy_sensor) {
+            throw std::invalid_argument(
+                "controller requires input_source");
+        }
+        if (has_input_source && has_legacy_sensor &&
+            controller_json.at("input_source") !=
+                controller_json.at("sensor")) {
+            throw std::invalid_argument(
+                "controller input_source conflicts with legacy sensor");
+        }
+        controller.input_source = input_source_from_string(
+            controller_json
+                .at(has_input_source ? "input_source" : "sensor")
+                .get<std::string>());
         controller.actuator = actuator_from_string(
             controller_json.at("actuator").get<std::string>());
         controller.default_strategy = strategy_from_string(

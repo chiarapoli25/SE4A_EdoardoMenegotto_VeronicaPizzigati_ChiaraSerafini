@@ -13,6 +13,7 @@
 #include <deque>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <mutex>
 #include <random>
 #include <set>
@@ -168,6 +169,18 @@ std::vector<PendingUpload> uploads_from_event(
                 const auto recorded_at = utc_now();
                 const auto telemetry_id = generated_identifier();
                 const auto actuator_id = generated_identifier();
+                Json current_strategies = Json::object();
+                Json current_setpoints = Json::object();
+                for (std::size_t index = 0;
+                     index < kControlledVariableCount;
+                     ++index) {
+                    const auto variable =
+                        static_cast<ControlledVariable>(index);
+                    current_strategies[to_string(variable)] =
+                        to_string(value.current_strategies[index]);
+                    current_setpoints[to_string(variable)] =
+                        value.current_setpoints[index];
+                }
                 Json telemetry = {
                     {"boot_id", config.boot_id},
                     {"sequence_number", value.sequence_number},
@@ -179,10 +192,38 @@ std::vector<PendingUpload> uploads_from_event(
                      optional_json(value.readings.air_humidity_percent)},
                     {"soil_moisture_percent",
                      optional_json(value.readings.soil_moisture_percent)},
+                    {"soil_bulk_ec_ms_cm",
+                     optional_json(value.readings.soil_bulk_ec_ms_cm)},
+                    {"soil_ec_ms_cm",
+                     optional_json(value.readings.soil_ec_ms_cm)},
+                    {"fertilizer_concentration_mg_per_liter",
+                     optional_json(
+                         value.readings
+                             .fertilizer_concentration_mg_per_liter)},
+                    {"nitrogen_estimate_mg_per_liter",
+                     optional_json(
+                         value.readings.nitrogen_estimate_mg_per_liter)},
+                    {"phosphorus_estimate_mg_per_liter",
+                     optional_json(
+                         value.readings.phosphorus_estimate_mg_per_liter)},
+                    {"potassium_estimate_mg_per_liter",
+                     optional_json(
+                         value.readings.potassium_estimate_mg_per_liter)},
                     {"ph", optional_json(value.readings.ph)},
                     {"light_ppfd_umol_m2_s",
                      optional_json(
                          value.readings.light_ppfd_umol_m2_s)},
+                    {"active_recipe_id", value.active_recipe_id},
+                    {"active_recipe_version",
+                     value.active_recipe_version},
+                    {"current_phase", value.current_phase},
+                    {"operational_state",
+                     to_string(value.operational_state)},
+                    {"lifecycle_state", value.lifecycle_state},
+                    {"current_strategies",
+                     std::move(current_strategies)},
+                    {"current_setpoints", std::move(current_setpoints)},
+                    {"time_scale", value.time_scale},
                 };
                 Json actuators = {
                     {"boot_id", config.boot_id},
@@ -253,7 +294,9 @@ std::vector<PendingUpload> uploads_from_event(
                     };
                 } else if constexpr (std::is_same_v<Event, FaultDetected>) {
                     payload = {
-                        {"fault_type", value.fault_type},
+                        {"component", value.component},
+                        {"rule", value.rule},
+                        {"fault_type", value.rule},
                         {"severity", severity_name(value.severity)},
                         {"diagnostic", value.diagnostic},
                     };
@@ -270,6 +313,14 @@ std::vector<PendingUpload> uploads_from_event(
                     payload = {
                         {"previous_phase", value.previous_phase},
                         {"current_phase", value.current_phase},
+                    };
+                } else if constexpr (
+                    std::is_same_v<Event, RecipeCompleted>) {
+                    payload = {
+                        {"recipe_id", value.recipe_id},
+                        {"final_phase", value.final_phase},
+                        {"total_duration_hours",
+                         value.total_duration_hours},
                     };
                 } else if constexpr (
                     std::is_same_v<Event, EmergencyTriggered>) {
@@ -770,6 +821,17 @@ public:
         return result;
     }
 
+    std::vector<std::string> take_removed_zone_ids() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::string> result;
+        result.reserve(removed_zone_ids_.size());
+        while (!removed_zone_ids_.empty()) {
+            result.push_back(std::move(removed_zone_ids_.front()));
+            removed_zone_ids_.pop_front();
+        }
+        return result;
+    }
+
     void submit_result(
         const std::string& zone_id,
         const RuntimeCommandResult& result) {
@@ -833,7 +895,8 @@ private:
         }
     }
 
-    void persist_zone_assignments() const {
+    void persist_zone_assignments(
+        const std::vector<std::string>& zone_ids) const {
         const auto final_path = zone_assignments_path();
         const auto temporary_path =
             final_path.string() + ".tmp";
@@ -844,7 +907,7 @@ private:
             throw std::runtime_error(
                 "cannot persist backend zone assignments");
         }
-        output << Json(zone_ids_).dump(2) << '\n';
+        output << Json(zone_ids).dump(2) << '\n';
         output.close();
         std::filesystem::rename(temporary_path, final_path);
     }
@@ -1062,7 +1125,7 @@ private:
             throw std::invalid_argument(
                 "backend zone assignment response must be an array");
         }
-        bool changed = false;
+        std::set<std::string> assigned_zone_ids;
         for (const auto& assignment : assignments) {
             const auto zone_id =
                 assignment.at("id").get<std::string>();
@@ -1070,19 +1133,67 @@ private:
                 throw std::invalid_argument(
                     "backend returned an empty zone identifier");
             }
-            if (!known_zone_ids_.insert(zone_id).second) {
-                continue;
+            if (!assigned_zone_ids.insert(zone_id).second) {
+                throw std::invalid_argument(
+                    "backend returned a duplicate zone identifier");
             }
-            zone_ids_.push_back(zone_id);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
+        }
+
+        std::vector<std::string> added;
+        std::vector<std::string> removed;
+        std::set_difference(
+            assigned_zone_ids.begin(),
+            assigned_zone_ids.end(),
+            known_zone_ids_.begin(),
+            known_zone_ids_.end(),
+            std::back_inserter(added));
+        std::set_difference(
+            known_zone_ids_.begin(),
+            known_zone_ids_.end(),
+            assigned_zone_ids.begin(),
+            assigned_zone_ids.end(),
+            std::back_inserter(removed));
+        if (added.empty() && removed.empty()) {
+            if (!std::filesystem::exists(zone_assignments_path())) {
+                persist_zone_assignments(
+                    std::vector<std::string>(
+                        assigned_zone_ids.begin(),
+                        assigned_zone_ids.end()));
+            }
+            outage_reported_ = false;
+            return;
+        }
+
+        const std::vector<std::string> authoritative_zone_ids(
+            assigned_zone_ids.begin(),
+            assigned_zone_ids.end());
+        persist_zone_assignments(authoritative_zone_ids);
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& zone_id : removed) {
+                discovered_zone_ids_.erase(
+                    std::remove(
+                        discovered_zone_ids_.begin(),
+                        discovered_zone_ids_.end(),
+                        zone_id),
+                    discovered_zone_ids_.end());
+                commands_.erase(
+                    std::remove_if(
+                        commands_.begin(),
+                        commands_.end(),
+                        [&zone_id](const RemoteRuntimeCommand& command) {
+                            return command.zone_id == zone_id;
+                        }),
+                    commands_.end());
+                removed_zone_ids_.push_back(zone_id);
+            }
+            for (const auto& zone_id : added) {
                 discovered_zone_ids_.push_back(zone_id);
             }
-            changed = true;
         }
-        if (changed) {
-            persist_zone_assignments();
-        }
+        zone_ids_ = authoritative_zone_ids;
+        known_zone_ids_ = std::move(assigned_zone_ids);
         outage_reported_ = false;
     }
 
@@ -1211,6 +1322,7 @@ private:
     std::size_t in_flight_uploads_ = 0;
     std::deque<RemoteRuntimeCommand> commands_;
     std::deque<std::string> discovered_zone_ids_;
+    std::deque<std::string> removed_zone_ids_;
     std::set<std::string> known_command_ids_;
     std::thread worker_;
     bool running_ = false;
@@ -1251,6 +1363,11 @@ HttpBackendClient::take_commands() {
 std::vector<std::string>
 HttpBackendClient::take_discovered_zone_ids() {
     return impl_->take_discovered_zone_ids();
+}
+
+std::vector<std::string>
+HttpBackendClient::take_removed_zone_ids() {
+    return impl_->take_removed_zone_ids();
 }
 
 void HttpBackendClient::submit_command_result(

@@ -248,10 +248,20 @@ void print_step(
         << " | sequence=" << result.sequence_number
         << " | t=" << result.start_time_seconds / 3600.0 << " h"
         << " | phase=" << result.phase_name
+        << " | recipe="
+        << (result.recipe_completed ? "completed" : "running")
         << " | state="
         << smarthydro::to_string(result.operational_state)
         << "\nSensors: soil=";
     print_optional(result.readings.soil_moisture_percent, "%");
+    std::cout << "  EC terreno apparente: ";
+    print_optional(result.readings.soil_bulk_ec_ms_cm, " mS/cm");
+    std::cout << "  EC stimata acqua nei pori: ";
+    print_optional(result.readings.soil_ec_ms_cm, " mS/cm");
+    std::cout << "  fertilizzante totale stimato: ";
+    print_optional(
+        result.readings.fertilizer_concentration_mg_per_liter,
+        " mg/L");
     std::cout << ", light=";
     print_optional(
         result.readings.light_ppfd_umol_m2_s,
@@ -350,6 +360,16 @@ int main(int argc, char* argv[]) {
             const auto now = Clock::now();
             scheduler.accrue(now);
             for (auto& zone_id :
+                 backend_client->take_removed_zone_ids()) {
+                if (!greenhouse.remove_zone(zone_id)) {
+                    continue;
+                }
+                std::cout
+                    << "Decommissioned unassigned backend zone "
+                    << zone_id << " from Edge "
+                    << options.edge_id << '\n';
+            }
+            for (auto& zone_id :
                  backend_client->take_discovered_zone_ids()) {
                 if (greenhouse.contains(zone_id)) {
                     continue;
@@ -360,6 +380,9 @@ int main(int argc, char* argv[]) {
                     << " on Edge " << options.edge_id << '\n';
             }
             for (auto& remote : backend_client->take_commands()) {
+                if (!greenhouse.contains(remote.zone_id)) {
+                    continue;
+                }
                 const auto result = greenhouse.execute_command(
                     remote.zone_id,
                     remote.envelope);
