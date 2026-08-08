@@ -99,6 +99,8 @@ class ActuatorSnapshotCreate(BaseModel):
     command: ActuatorCommandState
     ## @brief Uscita fisica prodotta dagli attuatori.
     output: ActuatorPhysicalOutput
+    ## @brief Ciclo colturale; il backend lo completa dalla zona se omesso.
+    cultivation_id: str | None = Field(default=None, max_length=128)
 
 
 class ActuatorSnapshot(ActuatorSnapshotCreate):

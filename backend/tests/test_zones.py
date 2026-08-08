@@ -45,8 +45,9 @@ def test_create_and_read_zone(client: TestClient) -> None:
     assert created.json() == {
         **zone_payload(),
         "department_name": "Piante Tropicali e da Fogliame",
-        "assigned_edge_id": None,
+        "assigned_edge_id": "smarthydro-edge",
         "active_recipe_id": None,
+        "active_cultivation_id": None,
         "current_phase": None,
         "cultivation_completed": False,
         "administrative_status": "active",
@@ -103,6 +104,9 @@ def test_zone_responses_use_the_canonical_department_names(
 
         assert response.status_code == 201
         assert response.json()["department_name"] == expected_name
+        assert response.json()["assigned_edge_id"] == (
+            None if department_number == 5 else "smarthydro-edge"
+        )
 
 
 def test_list_zones_orders_departments_and_sectors(client: TestClient) -> None:

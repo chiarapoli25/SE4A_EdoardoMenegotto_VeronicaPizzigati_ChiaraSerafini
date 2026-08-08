@@ -49,9 +49,9 @@ def create_zone(connection: sqlite3.Connection, zone: ZoneCreate) -> Zone:
                 last_edge_contact, current_phase, cultivation_completed,
                 administrative_status, lifecycle_state, operational_state,
                 active_recipe_version, current_strategies, current_setpoints,
-                time_scale
+                time_scale, active_cultivation_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 stored_zone.id,
@@ -72,6 +72,7 @@ def create_zone(connection: sqlite3.Connection, zone: ZoneCreate) -> Zone:
                 stored_zone.current_strategies.model_dump_json(),
                 stored_zone.current_setpoints.model_dump_json(),
                 stored_zone.time_scale,
+                stored_zone.active_cultivation_id,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -110,6 +111,7 @@ def _zone_from_row(row: tuple) -> Zone:
         current_strategies=strategy_projection,
         current_setpoints=setpoint_projection,
         time_scale=row[17],
+        active_cultivation_id=row[18],
     )
 
 
@@ -153,7 +155,7 @@ def get_zone(connection: sqlite3.Connection, zone_id: str) -> Zone | None:
                last_edge_contact, current_phase, cultivation_completed,
                administrative_status, lifecycle_state, operational_state,
                active_recipe_version, current_strategies, current_setpoints,
-               time_scale
+               time_scale, active_cultivation_id
         FROM zones
         WHERE id = ?
         """,
@@ -174,7 +176,7 @@ def list_zones(connection: sqlite3.Connection) -> list[Zone]:
                last_edge_contact, current_phase, cultivation_completed,
                administrative_status, lifecycle_state, operational_state,
                active_recipe_version, current_strategies, current_setpoints,
-               time_scale
+               time_scale, active_cultivation_id
         FROM zones
         ORDER BY department_number, sector_number
         """
@@ -195,7 +197,7 @@ def list_zones_for_edge(
                last_edge_contact, current_phase, cultivation_completed,
                administrative_status, lifecycle_state, operational_state,
                active_recipe_version, current_strategies, current_setpoints,
-               time_scale
+               time_scale, active_cultivation_id
         FROM zones
         WHERE assigned_edge_id = ?
         ORDER BY department_number, sector_number

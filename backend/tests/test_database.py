@@ -231,7 +231,7 @@ def test_init_db_adds_edge_assignment_to_legacy_zones() -> None:
         "projection_updated_at",
     } <= columns
     assert "zone_type" not in columns
-    assert assignment == (None, "active", 0)
+    assert assignment == ("smarthydro-edge", "active", 0)
 
 
 def test_init_db_migrates_schema_to_accept_quarantine() -> None:

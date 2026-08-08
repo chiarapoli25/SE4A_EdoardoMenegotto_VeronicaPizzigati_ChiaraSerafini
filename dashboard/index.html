@@ -3,33 +3,30 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Control room SmartHydro per reparti, settori, colture e simulazione Edge.">
+    <meta name="description" content="Control room SmartHydro per reparti, quarantena, ricette e controllo Edge.">
     <title>SmartHydro · Control room</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar">
-        <a class="brand" href="#serra" aria-label="SmartHydro home">
+      <aside class="sidebar" aria-label="Navigazione principale">
+        <a class="brand" href="#dashboard" aria-label="SmartHydro home">
           <span class="brand-mark" aria-hidden="true">S</span>
           <span><strong>SmartHydro</strong><small>Control room</small></span>
         </a>
 
-        <nav class="main-nav" aria-label="Sezioni principali">
-          <button class="nav-item active" data-view="serra" type="button">
-            <span class="nav-icon" aria-hidden="true">▦</span>Serra
-          </button>
-          <button class="nav-item" data-view="recipe" type="button">
-            <span class="nav-icon" aria-hidden="true">⌁</span>Ricetta
-          </button>
-          <button class="nav-item" data-view="simulation" type="button">
-            <span class="nav-icon" aria-hidden="true">▶</span>Simulazione Edge
-          </button>
+        <nav class="main-nav">
+          <button class="nav-item active" data-view="dashboard" type="button"><span aria-hidden="true">▦</span>Dashboard</button>
+          <button class="nav-item" data-view="serra" type="button"><span aria-hidden="true">⌂</span>Serra</button>
+          <button class="nav-item" data-view="cultivations" type="button"><span aria-hidden="true">◒</span>Coltivazioni</button>
+          <button class="nav-item" data-view="recipe" type="button"><span aria-hidden="true">⌁</span>Ricette</button>
+          <button class="nav-item" data-view="simulations" type="button"><span aria-hidden="true">▷</span>Simulazioni</button>
+          <button class="nav-item" data-view="edge" type="button"><span aria-hidden="true">⚙</span>Area tecnica</button>
         </nav>
 
         <div class="sidebar-status">
           <p class="eyebrow">Stato sistema</p>
-          <div class="status-row"><span>Dashboard</span><span id="side-dashboard" class="dot pending"></span></div>
+          <div class="status-row"><span>Dashboard</span><span id="side-dashboard" class="dot ready"></span></div>
           <div class="status-row"><span>Backend</span><span id="side-backend" class="dot pending"></span></div>
           <div class="status-row"><span>Edge C++</span><span id="side-edge" class="dot pending"></span></div>
         </div>
@@ -39,164 +36,175 @@
         <header class="topbar">
           <button id="mobile-menu" class="mobile-menu" type="button" aria-label="Apri menu">☰</button>
           <div>
-            <p id="page-context" class="eyebrow">Serra didattica · 4 reparti</p>
+            <p id="page-context" class="eyebrow">Serra didattica · 5 reparti</p>
             <h1 id="page-title">Serra</h1>
           </div>
           <div class="topbar-actions">
             <span id="connection-pill" class="pill neutral"><span class="pulse"></span>Connessione in verifica</span>
-            <button class="primary compact" data-go-to="simulation" type="button">Avvia Edge</button>
+            <button id="time-control-trigger" class="secondary compact time-control-trigger" type="button" aria-haspopup="dialog">Tempo: 1× · Continuo</button>
           </div>
         </header>
 
-        <div id="toast-region" class="toast-region" aria-live="polite"></div>
+        <div id="toast-region" class="toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
 
         <section id="view-serra" class="view active" aria-labelledby="page-title">
           <nav id="greenhouse-breadcrumbs" class="breadcrumbs" aria-label="Percorso nella serra"></nav>
-
-          <div class="greenhouse-toolbar">
+          <div class="page-toolbar">
             <div>
               <p id="greenhouse-kicker" class="eyebrow">Mappa operativa</p>
               <h2 id="greenhouse-heading">Piantina della serra</h2>
-              <p id="greenhouse-description" class="muted">Seleziona un reparto per visualizzare i suoi settori di coltivazione.</p>
+              <p id="greenhouse-description" class="muted">Quattro reparti produttivi e un’area separata per la quarantena.</p>
             </div>
             <div class="refresh-block">
               <span id="greenhouse-updated" class="muted">Dati non ancora aggiornati</span>
               <button id="refresh-greenhouse" class="secondary compact" type="button">Aggiorna</button>
             </div>
           </div>
-
           <div id="greenhouse-alert" class="inline-status greenhouse-alert" hidden></div>
           <div id="greenhouse-content" aria-live="polite"></div>
         </section>
 
-        <section id="view-recipe" class="view" aria-labelledby="page-title">
-          <div class="toolbar panel">
-            <div class="toolbar-field">
-              <label for="recipe-selector">Ricetta salvata</label>
-              <select id="recipe-selector"><option value="">Nessuna ricetta</option></select>
-            </div>
-            <div class="toolbar-actions">
-              <button id="new-recipe" class="secondary" type="button">Nuova ricetta</button>
-              <button id="save-recipe" class="primary" type="button">Salva ricetta</button>
-            </div>
+        <section id="view-cultivations" class="view" aria-labelledby="page-title">
+          <div class="page-toolbar">
+            <div><p class="eyebrow">Cicli agronomici</p><h2>Coltivazioni</h2><p class="muted">Crea, controlla, sospendi o termina un ciclo senza utilizzare identificativi tecnici.</p></div>
+            <button class="primary" type="button" data-add-cultivation>+ Aggiungi coltivazione</button>
           </div>
-
-          <form id="recipe-form" novalidate>
-            <article class="panel">
-              <div class="section-heading">
-                <div><p class="eyebrow">Identità</p><h2>Ricetta del pomodoro</h2></div>
-                <span id="recipe-version" class="badge outline">Versione 1</span>
-              </div>
-              <div class="form-grid three">
-                <label>Identificativo
-                  <input id="recipe-id" data-path="id" required pattern="[A-Za-z0-9._-]+" autocomplete="off">
-                  <small>Solo lettere, numeri, punto, trattino e underscore.</small>
-                </label>
-                <label>Specie
-                  <input id="plant-type" value="Tomato" readonly>
-                  <small>Unica specie supportata in questa versione.</small>
-                </label>
-                <label>Substrato
-                  <select id="substrate" data-path="substrate" required>
-                    <option value="aerated-universal">Universale aerato</option>
-                    <option value="draining">Drenante</option>
-                    <option value="organic-retentive">Organico ritentivo</option>
-                  </select>
-                </label>
-              </div>
-            </article>
-
-            <div class="section-heading spaced">
-              <div><p class="eyebrow">Programma colturale</p><h2>Fasi e target</h2></div>
-              <button id="add-phase" class="secondary compact" type="button">+ Aggiungi fase</button>
-            </div>
-            <div id="phase-editor"></div>
-
-            <div class="section-heading spaced">
-              <div><p class="eyebrow">Configurazione tecnica</p><h2>Strategy e limiti</h2></div>
-              <span class="muted">Apri una variabile per i dettagli</span>
-            </div>
-            <div id="controller-editor" class="controller-stack"></div>
-          </form>
+          <div id="cultivations-content" aria-live="polite"></div>
         </section>
 
-        <section id="view-simulation" class="view" aria-labelledby="page-title">
-          <div class="simulation-layout">
-            <aside class="panel simulation-controls">
-              <p class="eyebrow">Configurazione run</p>
-              <h2>Simulazione Edge</h2>
-              <p class="muted">L’eseguibile C++ applica la ricetta salvata e restituisce ogni ciclo.</p>
-              <label>Ricetta
-                <select id="simulation-recipe"><option value="">Seleziona una ricetta</option></select>
-              </label>
-              <div class="form-grid two">
-                <label>Cicli
-                  <input id="simulation-steps" type="number" min="1" max="672" value="96">
-                </label>
-                <label>Passo
-                  <select id="simulation-step-seconds">
-                    <option value="300">5 minuti</option>
-                    <option value="900" selected>15 minuti</option>
-                    <option value="1800">30 minuti</option>
-                    <option value="3600">1 ora</option>
-                  </select>
-                </label>
-              </div>
-              <button id="run-simulation" class="primary full" type="button">Esegui simulazione</button>
-              <div class="playback-controls" aria-label="Controlli riproduzione">
-                <button id="play-simulation" class="icon-button" type="button" aria-label="Riproduci">▶</button>
-                <button id="pause-simulation" class="icon-button" type="button" aria-label="Pausa">Ⅱ</button>
-                <button id="step-simulation" class="icon-button" type="button" aria-label="Passo successivo">▶|</button>
-                <button id="reset-simulation" class="icon-button" type="button" aria-label="Reset">↺</button>
-              </div>
-              <div class="progress-block">
-                <div><span>Avanzamento</span><strong id="simulation-counter">0 / 0</strong></div>
-                <progress id="simulation-progress" max="1" value="0"></progress>
-              </div>
-              <div id="simulation-status" class="inline-status">In attesa di una simulazione.</div>
+        <section id="view-recipe" class="view" aria-labelledby="page-title">
+          <div class="recipe-layout">
+            <aside class="panel catalog-panel">
+              <div class="section-heading"><div><p class="eyebrow">Catalogo SQLite</p><h2>Ricette</h2></div><span id="recipe-count" class="badge outline">0</span></div>
+              <label>Cerca specie o ricetta<input id="recipe-search" type="search" placeholder="Es. Calathea"></label>
+              <label>Reparto<select id="recipe-department"><option value="">Tutti i reparti</option><option value="1">1 · Tropicali e fogliame</option><option value="2">2 · Piante da fiore</option><option value="3">3 · Grasse e succulente</option><option value="4">4 · Frutto e ortaggi</option></select></label>
+              <div id="recipe-list" class="recipe-list" role="listbox" aria-label="Ricette disponibili"></div>
             </aside>
 
-            <div class="simulation-content">
-              <article class="panel cycle-header">
-                <div>
-                  <p class="eyebrow">Ciclo corrente</p>
-                  <h2 id="simulation-phase">Nessun dato</h2>
-                </div>
-                <div class="time-chip"><span>Tempo simulato</span><strong id="simulation-time">—</strong></div>
-              </article>
-
-              <div id="simulation-sensors" class="metric-grid compact-grid"></div>
-
-              <div class="split-grid">
-                <article class="panel">
-                  <div class="section-heading"><div><p class="eyebrow">Comandi sicuri</p><h2>Decisioni Edge</h2></div></div>
-                  <div class="table-scroll">
-                    <table>
-                      <thead><tr><th>Variabile</th><th>Stato</th><th>Comando</th><th>Nota</th></tr></thead>
-                      <tbody id="decision-table"><tr><td colspan="4" class="table-empty">Nessun ciclo disponibile</td></tr></tbody>
-                    </table>
-                  </div>
-                </article>
-                <article class="panel">
-                  <div class="section-heading"><div><p class="eyebrow">Stato fisico</p><h2>Attuatori</h2></div></div>
-                  <div id="simulation-actuators" class="actuator-list"></div>
-                </article>
+            <div class="recipe-workspace">
+              <div class="page-toolbar recipe-toolbar">
+                <div><p class="eyebrow">Contratto Backend–Edge</p><h2 id="recipe-heading">Seleziona una ricetta</h2><p id="recipe-subheading" class="muted">Il catalogo contiene le configurazioni multispecie complete.</p></div>
+                <div class="toolbar-actions"><button id="duplicate-recipe" class="secondary" type="button" disabled>Duplica</button><button id="save-recipe" class="primary" type="button" disabled>Salva nuova versione</button></div>
               </div>
+              <form id="recipe-form" novalidate>
+                <div id="recipe-editor" class="route-empty panel"><span aria-hidden="true">⌁</span><h2>Nessuna ricetta selezionata</h2><p>Scegli una voce dal catalogo per consultarla o modificarla.</p></div>
+              </form>
+            </div>
+          </div>
+        </section>
 
-              <article class="panel">
-                <div class="section-heading"><div><p class="eyebrow">Ultimi passi</p><h2>Storico</h2></div></div>
-                <div class="table-scroll">
-                  <table>
-                    <thead><tr><th>Ciclo</th><th>Fase</th><th>Terreno</th><th>pH</th><th>Luce</th><th>Acqua</th></tr></thead>
-                    <tbody id="history-table"><tr><td colspan="6" class="table-empty">Lo storico apparirà durante la riproduzione.</td></tr></tbody>
-                  </table>
-                </div>
-              </article>
+        <section id="view-simulations" class="view" aria-labelledby="page-title">
+          <div class="page-toolbar">
+            <div><p class="eyebrow">Analisi previsionale</p><h2>Scenari simulati</h2><p class="muted">Esplora una ricetta in modo isolato: nessun dato o comando raggiunge la coltivazione reale.</p></div>
+            <button class="primary" type="button" data-open-time-mode="batch">+ Nuovo scenario</button>
+          </div>
+          <div id="simulations-content" aria-live="polite" aria-atomic="false"></div>
+        </section>
+
+        <section id="view-edge" class="view" aria-labelledby="page-title">
+          <div class="edge-layout">
+            <aside class="panel edge-selector">
+              <p class="eyebrow">Zona controllata</p>
+              <h2>Area tecnica</h2>
+              <p class="muted">Diagnostica, configurazione, sicurezza e coda dei comandi Edge.</p>
+              <label>Settore produttivo<select id="edge-zone"><option value="">Seleziona un settore</option></select></label>
+              <div id="edge-zone-summary" class="inline-status">Seleziona un settore per iniziare.</div>
+              <button id="edge-refresh" class="secondary full" type="button">Aggiorna stato</button>
+            </aside>
+            <div id="edge-content" class="edge-content">
+              <div class="route-empty panel"><span aria-hidden="true">◉</span><h2>Nessun settore selezionato</h2><p>Seleziona un settore produttivo assegnato a un Edge.</p></div>
             </div>
           </div>
         </section>
       </main>
     </div>
+
+    <dialog id="time-dialog" aria-labelledby="time-dialog-title">
+      <form id="time-form" class="dialog-card time-dialog-card">
+        <header><div><p class="eyebrow">Regolazione temporale</p><h2 id="time-dialog-title">Come vuoi usare il tempo?</h2></div><button class="dialog-close" type="button" data-close-dialog="time-dialog" aria-label="Chiudi">×</button></header>
+        <div class="mode-choice" role="radiogroup" aria-label="Modalità temporale">
+          <label><input type="radio" name="time-mode" value="runtime" checked><span><strong>Runtime</strong><small>Accelera una coltivazione attiva</small></span></label>
+          <label><input type="radio" name="time-mode" value="batch"><span><strong>Scenario in blocco</strong><small>Anteprima isolata e non operativa</small></span></label>
+        </div>
+        <section id="runtime-time-panel">
+          <label>Coltivazione<select id="runtime-cultivation"></select></label>
+          <div class="form-grid two time-fields">
+            <label>Velocità<select id="runtime-speed"><option value="1">1× · 1 ora = 1 ora</option><option value="5">5× · 1 ora = 12 min</option><option value="10">10× · 1 ora = 6 min</option><option value="30">30× · 1 ora = 2 min</option><option value="60">60× · 1 ora = 1 min</option></select></label>
+            <label>Avanzamento<select id="runtime-duration-mode"><option value="continuous">Continuo</option><option value="limited">Per una durata definita</option></select></label>
+          </div>
+          <div id="runtime-duration-fields" class="form-grid two" hidden><label>Durata<input id="runtime-duration" type="number" min="1" value="1"></label><label>Unità<select id="runtime-duration-unit"><option value="hours">ore</option><option value="days">giorni</option><option value="weeks">settimane</option></select></label></div>
+          <div id="runtime-time-status" class="inline-status">Le modifiche vengono accodate all’Edge della coltivazione.</div>
+          <button id="apply-runtime-time" class="primary full" type="button">Applica al runtime</button>
+        </section>
+        <section id="batch-time-panel" hidden>
+          <div class="scenario-warning"><strong>Scenario simulato — non operativo</strong><span>Non modifica il runtime e non aziona dispositivi reali.</span></div>
+          <label>Ricetta<select id="batch-recipe"></select></label>
+          <div class="preset-row" aria-label="Durate rapide"><button type="button" data-batch-days="7">1 settimana</button><button type="button" data-batch-days="30">1 mese</button><button type="button" data-batch-days="90">3 mesi</button><button type="button" data-batch-days="180">6 mesi</button><button type="button" data-batch-days="360">12 mesi</button></div>
+          <div class="form-grid two"><label>Durata<input id="batch-duration" type="number" min="1" max="360" value="30"></label><label>Unità<select id="batch-duration-unit"><option value="days">giorni</option><option value="weeks">settimane</option><option value="months">mesi (30 giorni)</option></select></label></div>
+          <button id="start-batch" class="primary full" type="button">Simula scenario</button>
+        </section>
+      </form>
+    </dialog>
+
+    <dialog id="cultivation-dialog" aria-labelledby="cultivation-dialog-title">
+      <form id="cultivation-form" class="dialog-card">
+        <header><div><p class="eyebrow">Procedura guidata</p><h2 id="cultivation-dialog-title">Aggiungi coltivazione</h2></div><button class="dialog-close" type="button" data-close-dialog="cultivation-dialog" aria-label="Chiudi">×</button></header>
+        <ol class="wizard-steps" aria-label="Passaggi"><li class="active">1. Settore libero</li><li>2. Ricetta</li><li>3. Avvio</li></ol>
+        <label>Settore disponibile<select id="cultivation-zone" required></select></label>
+        <label>Ricetta compatibile<select id="cultivation-recipe" required></select></label>
+        <div id="cultivation-summary" class="cultivation-summary"></div>
+        <div id="cultivation-form-status" class="inline-status" hidden></div>
+        <footer><button class="secondary" type="button" data-close-dialog="cultivation-dialog">Annulla</button><button id="create-cultivation" class="primary" type="submit">Crea e avvia</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="sector-dialog">
+      <form id="sector-form" method="dialog" class="dialog-card">
+        <header><div><p class="eyebrow">Nuovo settore</p><h2 id="sector-dialog-title">Configura il settore</h2></div><button class="dialog-close" type="button" data-close-dialog="sector-dialog" aria-label="Chiudi">×</button></header>
+        <p id="sector-dialog-copy" class="muted"></p>
+        <input id="sector-department" type="hidden">
+        <input id="sector-number" type="hidden">
+        <div class="form-grid two">
+          <label>Identificativo<input id="sector-id" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*"></label>
+          <label>Nome settore<input id="sector-name" required maxlength="100"></label>
+        </div>
+        <div id="sector-crop-fields" class="form-grid two">
+          <label>Specie presente<select id="sector-species" required></select></label>
+          <label>Ricetta attiva<select id="sector-recipe"></select></label>
+        </div>
+        <div class="inline-status">L’assegnazione al controller Edge viene gestita automaticamente dal backend.</div>
+        <div id="sector-form-status" class="inline-status" hidden></div>
+        <footer><button class="secondary" type="button" data-close-dialog="sector-dialog">Annulla</button><button id="confirm-sector" class="primary" value="default">Configura settore</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="quarantine-dialog">
+      <form id="quarantine-form" method="dialog" class="dialog-card">
+        <header><div><p class="eyebrow">Movimento sanitario</p><h2>Metti in quarantena</h2></div><button class="dialog-close" value="cancel" aria-label="Chiudi">×</button></header>
+        <label>Pianta<select id="quarantine-plant" required></select></label>
+        <label>Settore di quarantena<select id="quarantine-zone" required></select></label>
+        <label>Motivo<textarea id="quarantine-reason" rows="3" maxlength="500" required placeholder="Descrivi il sintomo o il controllo richiesto"></textarea></label>
+        <footer><button class="secondary" value="cancel">Annulla</button><button id="confirm-quarantine" class="primary" value="default">Conferma spostamento</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="release-dialog">
+      <form id="release-form" method="dialog" class="dialog-card">
+        <header><div><p class="eyebrow">Dimissione sanitaria</p><h2>Rilascia la pianta</h2></div><button class="dialog-close" value="cancel" aria-label="Chiudi">×</button></header>
+        <input id="release-plant-id" type="hidden">
+        <p id="release-copy" class="muted"></p>
+        <label>Nota di dimissione (facoltativa)<textarea id="release-reason" rows="3" maxlength="500" placeholder="Es. controllo completato"></textarea></label>
+        <footer><button class="secondary" value="cancel">Annulla</button><button id="confirm-release" class="primary" value="default">Riporta al settore di origine</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="history-dialog">
+      <div class="dialog-card wide">
+        <header><div><p class="eyebrow">Audit sanitario</p><h2 id="history-title">Storico spostamenti</h2></div><button class="dialog-close" data-close-dialog="history-dialog" aria-label="Chiudi">×</button></header>
+        <div id="history-content"></div>
+      </div>
+    </dialog>
+
     <script src="script.js"></script>
   </body>
 </html>

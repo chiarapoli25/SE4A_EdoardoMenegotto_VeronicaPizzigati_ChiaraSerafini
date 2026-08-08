@@ -42,6 +42,7 @@ struct CommandLineOptions {
     std::size_t command_poll_milliseconds = 1000;
     std::size_t cycle_delay_milliseconds = 0;
     bool show_help = false;
+    bool progress = false;
 };
 
 const char* status_name(
@@ -195,6 +196,10 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
                 static_cast<std::size_t>(parsed);
             continue;
         }
+        if (argument == "--progress") {
+            options.progress = true;
+            continue;
+        }
         throw std::invalid_argument(
             "unknown argument: " + argument);
     }
@@ -216,6 +221,7 @@ void print_help(const char* executable) {
         << "  --outbox-path PATH  Persistent delivery queue directory\n"
         << "  --command-poll-ms N Command polling interval (default: 1000)\n"
         << "  --cycle-delay-ms N  Real-time pause before each cycle (default: 0)\n"
+        << "  --progress          Write machine-readable progress to stderr\n"
         << "  -h, --help          Show this help\n";
 }
 
@@ -578,6 +584,10 @@ int main(int argc, char* argv[]) {
             }
             const auto results =
                 greenhouse.step_all(options.step_seconds);
+            if (options.progress) {
+                std::cerr << "PROGRESS " << step << '/' << options.steps
+                          << '\n' << std::flush;
+            }
             if (options.output == OutputFormat::JSON) {
                 const auto primary = results.find("zone-1");
                 if (primary == results.end()) {

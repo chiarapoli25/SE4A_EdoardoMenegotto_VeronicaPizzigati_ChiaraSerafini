@@ -6,6 +6,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from ...core.config import default_edge_id
 from ...core.database import get_db
 from ..recipes.models import Recipe
 from ..recipes.repository import get_recipe
@@ -69,6 +70,8 @@ def register_zone(
     @return Zona creata con stato iniziale `offline`.
     @throws HTTPException Se id o posizione sono gia occupati.
     """
+    if zone.department_number < 5 and zone.assigned_edge_id is None:
+        zone = zone.model_copy(update={"assigned_edge_id": default_edge_id()})
     if zone.active_recipe_id is not None:
         recipe = get_recipe(connection, zone.active_recipe_id)
         if recipe is None:

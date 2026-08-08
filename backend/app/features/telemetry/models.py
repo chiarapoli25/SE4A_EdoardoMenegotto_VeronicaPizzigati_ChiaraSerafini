@@ -87,6 +87,8 @@ class TelemetryCreate(GreenhouseTelemetry):
     )
     ## @brief Istante della misura completo di fuso orario.
     recorded_at: AwareDatetime
+    ## @brief Ciclo colturale; il backend lo completa dalla zona se omesso.
+    cultivation_id: str | None = Field(default=None, max_length=128)
 
 
 class TelemetrySample(TelemetryCreate):

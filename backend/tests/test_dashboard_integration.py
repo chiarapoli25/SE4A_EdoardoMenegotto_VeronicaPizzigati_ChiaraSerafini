@@ -39,6 +39,98 @@ def test_dashboard_is_a_standalone_static_bundle() -> None:
     assert (DASHBOARD_DIRECTORY / "styles.css").is_file()
 
 
+def test_dashboard_is_served_by_fastapi(integration_client: TestClient) -> None:
+    """Lo script demo espone la control room e i suoi asset dalla stessa origine."""
+    dashboard = integration_client.get("/dashboard/")
+    script = integration_client.get("/dashboard/script.js")
+    stylesheet = integration_client.get("/dashboard/styles.css")
+
+    assert dashboard.status_code == 200
+    assert "SmartHydro · Control room" in dashboard.text
+    assert script.status_code == 200
+    assert "Priorità agronomiche" in script.text
+    assert stylesheet.status_code == 200
+
+
+def test_local_file_dashboard_can_reach_the_backend(
+    integration_client: TestClient,
+) -> None:
+    """L'origine opaca dei file locali può interrogare il backend demo."""
+    response = integration_client.options(
+        "/recipes",
+        headers={
+            "Origin": "null",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "null"
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
+    assert integration_client.get(
+        "/recipes", headers={"Origin": "null"}
+    ).headers["access-control-allow-origin"] == "null"
+
+
+def test_dashboard_uses_current_backend_contracts() -> None:
+    """Verifica i contratti agronomici, i grafici e il controllo temporale."""
+    script = (DASHBOARD_DIRECTORY / "script.js").read_text(encoding="utf-8")
+    index = (DASHBOARD_DIRECTORY / "index.html").read_text(encoding="utf-8")
+
+    assert 'number: 5, name: "Quarantena"' in script
+    assert 'request("/health")' in script
+    assert 'request("/plants?limit=1000")' in script
+    assert 'request("/recipes/template")' not in script
+    assert 'request("/simulations", { method: "POST"' in script
+    assert 'window.location.protocol === "file:"' in script
+    assert 'DEFAULT_LOCAL_BACKEND = "http://127.0.0.1:8000"' in script
+    assert 'data-configure-sector=' in script
+    assert 'data-assign-zone-recipe=' in script
+    assert 'request("/cultivations", { method: "POST"' in script
+    assert '/telemetry?limit=1000' in script
+    assert '/actuators?limit=1000' in script
+    assert 'Andamento dei sensori' in script
+    assert 'Attività degli attuatori' in script
+    assert 'id="time-dialog"' in index
+    assert 'Scenario simulato — non operativo' in index
+    assert 'SetSimulationSpeed' in script
+    assert 'SetSimulationDuration' in script
+    assert 'route?.name === "recipe"' in script
+    assert 'data-chart-window="6h"' in script
+    assert 'Mostra dati tabellari' in script
+    assert 'id="sector-edge"' not in index
+    assert 'request("/zones", { method: "POST"' in script
+    assert 'id="sector-dialog"' in index
+    assert "Decisioni agronomiche" in script
+    assert 'data-view="serra"' in index
+    assert 'heading.textContent = "Piantina della serra"' in script
+    assert 'data-go-to="serra"' in script
+
+
+def test_sector_configuration_contract_accepts_species_and_compatible_recipe(
+    integration_client: TestClient,
+) -> None:
+    """Il flusso aperto dal click crea un settore valido per backend ed Edge."""
+    recipes = integration_client.get("/recipes").json()
+    recipe = next(item for item in recipes if item["id"] == "recipe-calathea")
+    payload = {
+        "id": "r1-s1",
+        "name": "Piante Tropicali e da Fogliame - Settore 1",
+        "department_number": 1,
+        "sector_number": 1,
+        "plant_species": recipe["plant_type"],
+        "active_recipe_id": recipe["id"],
+    }
+
+    created = integration_client.post("/zones", json=payload)
+
+    assert created.status_code == 201
+    assert created.json()["plant_species"] == "Calathea"
+    assert created.json()["active_recipe_id"] == "recipe-calathea"
+    assert created.json()["assigned_edge_id"] == "smarthydro-edge"
+
+
 def test_dashboard_recipe_catalog_uses_the_complete_runtime_contract(
     integration_client: TestClient,
 ) -> None:

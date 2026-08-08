@@ -87,10 +87,16 @@ come inattiva. Una zona inattiva non possiede ancora un `EdgeRuntime`: sensori,
 ambiente e attuatori vengono creati soltanto dopo un comando
 `ActivateCultivation` valido.
 
+I nuovi settori produttivi senza assegnazione esplicita vengono collegati dal
+backend a `smarthydro-edge`. Lo stesso provisioning viene applicato alle zone
+esistenti non assegnate durante l'inizializzazione del database. Per usare un
+identificativo diverso impostare `SMARTHYDRO_DEFAULT_EDGE_ID` prima di avviare
+il backend; i settori di quarantena non vengono assegnati a un runtime Edge.
+
 Avvio normale, con provisioning gestito dal backend:
 
 ```bash
-./edge/build/bin/edge --edge-id edge-serra-1
+./edge/build/bin/edge --edge-id smarthydro-edge
 ```
 
 La dashboard usa invece `edge_simulator`, un eseguibile batch separato che
@@ -276,7 +282,7 @@ altro endpoint:
 ```bash
 ./edge/build/bin/edge \
   --backend-url http://127.0.0.1:8000 \
-  --edge-id edge-serra-1 \
+  --edge-id smarthydro-edge \
   --outbox-path edge-data/outbox \
   --command-poll-ms 1000
 ```
@@ -1015,6 +1021,8 @@ Le API Edge sono disponibili anche con prefisso `/api/v1`. Comprendono:
 - eventi Edge;
 - elenco e distribuzione delle ricette;
 - anagrafica delle piante, flag di quarantena e storico degli spostamenti;
+- cicli agronomici persistenti con avvio, pausa, ripresa e archiviazione;
+- scenari batch effimeri e non operativi da 15 minuti a 360 giorni;
 - accodamento, polling e conferma dei comandi runtime.
 
 Gli endpoint senza prefisso rimangono disponibili per compatibilita.
@@ -1027,9 +1035,40 @@ python -m pytest backend/tests
 
 ## Dashboard
 
-Aprire direttamente il file `dashboard/index.html` con un browser. Non e
-necessario avviare un server web. Il pulsante **Check local status** aggiorna
-lo stato visualizzato a `Dashboard ready`.
+Avviare backend ed Edge con lo script dimostrativo e aprire la control room
+all'indirizzo `http://127.0.0.1:8000/dashboard/`:
+
+```bash
+./scripts/run_demo.sh
+```
+
+FastAPI serve il bundle statico dalla stessa origine delle API usate dal
+browser. La dashboard apre con le priorita dell'agronomo: cicli attivi,
+settori in attenzione, parametri entro target e attuatori accesi. Le viste
+successive gestiscono coltivazioni, ricette, scenari temporali e diagnostica
+tecnica; la piantina fisica e la quarantena restano disponibili.
+
+`Aggiungi coltivazione` propone soltanto settori liberi e ricette compatibili.
+La conferma `Crea e avvia` crea atomicamente il ciclo e accoda
+`ActivateCultivation`; se l'Edge e offline il ciclo mostra esplicitamente che
+l'avvio e in attesa. `Termina coltivazione` conserva settore e storico e libera
+il settore soltanto dopo la conferma Edge.
+
+Il controllo `Tempo` resta nell'intestazione di tutte le viste tranne il
+catalogo ricette. In modalita runtime imposta 1x, 5x, 10x, 30x o 60x e una
+durata leggibile in ore, giorni o settimane. In modalita batch simula una
+ricetta isolata con passi di 15 minuti: un mese vale 30 giorni, il risultato
+non scrive telemetria in SQLite e non invia comandi agli attuatori reali.
+
+I grafici sono raggruppati in Microclima, Substrato, Nutrizione e Attuatori.
+Condividono l'intervallo temporale, mostrano setpoint, fascia ammessa, soglie
+di sicurezza e accensioni degli attuatori; ogni grafico include una tabella
+dati alternativa accessibile.
+
+L'indirizzo consigliato resta `http://127.0.0.1:8000/dashboard/`. Se
+`dashboard/index.html` viene aperto direttamente come file locale, il bundle
+usa automaticamente `http://127.0.0.1:8000` come backend: il servizio deve
+quindi essere gia avviato.
 
 ## Ricetta JSON
 

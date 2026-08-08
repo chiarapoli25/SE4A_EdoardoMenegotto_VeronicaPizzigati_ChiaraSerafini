@@ -2,9 +2,22 @@
 
 import math
 import os
+import re
 
 
 DEFAULT_OFFLINE_THRESHOLD_SECONDS = 60.0
+DEFAULT_EDGE_ID = "smarthydro-edge"
+
+
+def default_edge_id() -> str:
+    """Edge al quale il backend assegna i nuovi settori produttivi."""
+    value = os.environ.get("SMARTHYDRO_DEFAULT_EDGE_ID", DEFAULT_EDGE_ID).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
+        raise RuntimeError(
+            "SMARTHYDRO_DEFAULT_EDGE_ID must contain only letters, numbers, "
+            "underscores and hyphens"
+        )
+    return value
 
 
 def offline_threshold_seconds() -> float:
