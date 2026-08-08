@@ -10,6 +10,8 @@ import os
 from collections.abc import Generator
 from pathlib import Path
 
+from .config import default_edge_id
+
 
 ## @brief Percorso predefinito del database SQLite del backend.
 DEFAULT_DATABASE_PATH = Path(
@@ -207,6 +209,7 @@ def _migrate_zone_projection_columns(connection: sqlite3.Connection) -> None:
         "current_setpoints": "TEXT NOT NULL DEFAULT '{}'",
         "time_scale": "REAL NOT NULL DEFAULT 1.0",
         "projection_updated_at": "TEXT",
+        "active_cultivation_id": "TEXT",
     }
     for column, declaration in additions.items():
         if columns and column not in columns:
@@ -380,6 +383,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             time_scale REAL NOT NULL DEFAULT 1.0
                 CHECK (time_scale BETWEEN 1.0 AND 60.0),
             projection_updated_at TEXT,
+            active_cultivation_id TEXT,
             cultivation_completed INTEGER NOT NULL DEFAULT 0
                 CHECK (cultivation_completed IN (0, 1)),
             administrative_status TEXT NOT NULL DEFAULT 'active'
@@ -401,6 +405,53 @@ def init_db(connection: sqlite3.Connection) -> None:
     _migrate_zone_administrative_status_column(connection)
     _migrate_cultivation_completed_column(connection)
     _migrate_zone_projection_columns(connection)
+    connection.execute(
+        """
+        UPDATE zones
+        SET assigned_edge_id = ?
+        WHERE department_number BETWEEN 1 AND 4
+          AND assigned_edge_id IS NULL
+        """,
+        (default_edge_id(),),
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cultivations (
+            id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            plant_species TEXT NOT NULL,
+            recipe_id TEXT NOT NULL,
+            recipe_version INTEGER NOT NULL CHECK (recipe_version >= 1),
+            state TEXT NOT NULL
+                CHECK (state IN (
+                    'activating', 'running', 'pausing', 'paused',
+                    'resuming', 'stopping', 'error', 'archived'
+                )),
+            recipe_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (recipe_completed IN (0, 1)),
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            ended_at TEXT,
+            archived_at TEXT,
+            last_command_id TEXT,
+            FOREIGN KEY (zone_id) REFERENCES zones(id),
+            FOREIGN KEY (recipe_id) REFERENCES recipes(id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cultivations_one_active_per_zone
+        ON cultivations (zone_id)
+        WHERE archived_at IS NULL
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cultivations_state_created
+        ON cultivations (state, created_at DESC)
+        """
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS plants (
@@ -486,6 +537,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             current_strategies TEXT NOT NULL,
             current_setpoints TEXT NOT NULL,
             time_scale REAL NOT NULL,
+            cultivation_id TEXT,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
             UNIQUE (zone_id, boot_id, sequence_number)
         )
@@ -509,6 +561,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             received_at TEXT NOT NULL,
             command_data TEXT NOT NULL,
             output_data TEXT NOT NULL,
+            cultivation_id TEXT,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
             UNIQUE (zone_id, boot_id, sequence_number)
         )
@@ -568,6 +621,16 @@ def init_db(connection: sqlite3.Connection) -> None:
     _migrate_edge_session_columns(connection)
     _migrate_soil_probe_columns(connection)
     _migrate_telemetry_state_columns(connection)
+    telemetry_columns = _table_columns(connection, "telemetry_samples")
+    if telemetry_columns and "cultivation_id" not in telemetry_columns:
+        connection.execute(
+            "ALTER TABLE telemetry_samples ADD COLUMN cultivation_id TEXT"
+        )
+    actuator_columns = _table_columns(connection, "actuator_snapshots")
+    if actuator_columns and "cultivation_id" not in actuator_columns:
+        connection.execute(
+            "ALTER TABLE actuator_snapshots ADD COLUMN cultivation_id TEXT"
+        )
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_telemetry_zone_recorded_at
@@ -578,6 +641,18 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_actuators_zone_recorded_at
         ON actuator_snapshots (zone_id, recorded_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_telemetry_cultivation_recorded_at
+        ON telemetry_samples (cultivation_id, recorded_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_actuators_cultivation_recorded_at
+        ON actuator_snapshots (cultivation_id, recorded_at DESC)
         """
     )
     from ..features.recipes.catalog import seed_recipe_catalog

@@ -19,6 +19,12 @@ from ..features.plants.models import (
     PlantMovement,
     PlantQuarantineUpdate,
 )
+from ..features.cultivations.models import (
+    Cultivation,
+    CultivationAction,
+    CultivationCreate,
+    CultivationState,
+)
 from ..features.recipes.models import (
     ActuatorType,
     ConfirmationState,
@@ -73,6 +79,10 @@ __all__ = [
     "ControllerParameters",
     "ControlSetpoints",
     "ControlStrategies",
+    "Cultivation",
+    "CultivationAction",
+    "CultivationCreate",
+    "CultivationState",
     "FertilizerQuantities",
     "FertilizerValveStates",
     "GreenhouseTelemetry",

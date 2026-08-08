@@ -218,6 +218,16 @@ set_tests_properties(
         PASS_REGULAR_EXPRESSION "without a local recipe"
 )
 
+# La simulazione finita richiesta dalla dashboard usa un entry point separato,
+# senza reintrodurre la vecchia modalita batch nel servizio Edge principale.
+add_test(
+    NAME edge_simulator_json_smoke
+    COMMAND ${CMAKE_COMMAND}
+        -DEDGE_EXECUTABLE=$<TARGET_FILE:edge_simulator>
+        -DRECIPE_PATH=${PROJECT_SOURCE_DIR}/../config/example_recipe.json
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/edge_json_smoke.cmake
+)
+
 # Smoke test dei programmi dimostrativi. Sensori e ricette creano un solo CSV
 # e nessun PNG; gli altri output di test finiscono esclusivamente nella build.
 if(BUILD_EXPERIMENTS)

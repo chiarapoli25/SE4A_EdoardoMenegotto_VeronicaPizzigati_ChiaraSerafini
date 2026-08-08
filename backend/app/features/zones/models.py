@@ -198,6 +198,8 @@ class Zone(ZoneCreate):
     )
     ## @brief Rapporto corrente fra tempo simulato e reale.
     time_scale: float = Field(default=1.0, ge=1.0, le=60.0)
+    ## @brief Ciclo colturale non archiviato attualmente assegnato.
+    active_cultivation_id: str | None = None
 
 
 class ZoneUpdate(BaseModel):

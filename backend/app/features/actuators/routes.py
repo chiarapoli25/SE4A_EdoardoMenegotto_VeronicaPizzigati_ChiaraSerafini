@@ -64,6 +64,7 @@ def read_latest_actuator_snapshot(
 @router.get("", response_model=list[ActuatorSnapshot])
 def read_actuator_history(
     zone_id: str,
+    cultivation_id: str | None = None,
     recorded_from: AwareDatetime | None = Query(default=None, alias="from"),
     recorded_to: AwareDatetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=100, ge=1, le=1000),
@@ -83,4 +84,5 @@ def read_actuator_history(
         recorded_from=recorded_from,
         recorded_to=recorded_to,
         limit=limit,
+        cultivation_id=cultivation_id,
     )

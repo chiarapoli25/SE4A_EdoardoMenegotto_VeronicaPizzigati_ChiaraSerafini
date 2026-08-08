@@ -69,6 +69,13 @@ def _apply_recipe_state(
                 (zone_id,),
             )
             projected = True
+        from ..cultivations.repository import apply_edge_projection
+
+        apply_edge_projection(
+            connection,
+            zone_id,
+            lifecycle_state=current_state if isinstance(current_state, str) else None,
+        )
     elif event.event_type == "StateChanged":
         current_state = event.payload.get("current_state")
         if current_state in {"Nominal", "Degraded", "EmergencyLockdown"}:
@@ -134,6 +141,13 @@ def _apply_recipe_state(
                 (final_phase, zone_id),
             )
             projected = True
+            from ..cultivations.repository import apply_edge_projection
+
+            apply_edge_projection(
+                connection,
+                zone_id,
+                recipe_completed=True,
+            )
 
     if projected:
         connection.execute(

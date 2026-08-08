@@ -20,7 +20,17 @@ def save_telemetry(
     telemetry: TelemetryCreate,
 ) -> TelemetrySample:
     """@brief Salva un campione e aggiorna lo stato della zona."""
-    recorded_at = telemetry.recorded_at.astimezone(timezone.utc)
+    active_row = connection.execute(
+        "SELECT active_cultivation_id FROM zones WHERE id = ?",
+        (zone_id,),
+    ).fetchone()
+    effective = telemetry.model_copy(
+        update={
+            "cultivation_id": telemetry.cultivation_id
+            or (active_row[0] if active_row is not None else None)
+        }
+    )
+    recorded_at = effective.recorded_at.astimezone(timezone.utc)
     received_at = datetime.now(timezone.utc)
     try:
         cursor = connection.execute(
@@ -36,36 +46,37 @@ def save_telemetry(
                 ph, light_ppfd_umol_m2_s, active_recipe_id,
                 active_recipe_version, current_phase, operational_state,
                 lifecycle_state, current_strategies, current_setpoints,
-                time_scale
+                time_scale, cultivation_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 zone_id,
-                telemetry.boot_id,
-                telemetry.sequence_number,
-                telemetry.timestamp_seconds,
+                effective.boot_id,
+                effective.sequence_number,
+                effective.timestamp_seconds,
                 recorded_at.isoformat(),
                 received_at.isoformat(),
-                telemetry.temperature_c,
-                telemetry.air_humidity_percent,
-                telemetry.soil_moisture_percent,
-                telemetry.soil_bulk_ec_ms_cm,
-                telemetry.soil_ec_ms_cm,
-                telemetry.fertilizer_concentration_mg_per_liter,
-                telemetry.nitrogen_estimate_mg_per_liter,
-                telemetry.phosphorus_estimate_mg_per_liter,
-                telemetry.potassium_estimate_mg_per_liter,
-                telemetry.ph,
-                telemetry.light_ppfd_umol_m2_s,
-                telemetry.active_recipe_id,
-                telemetry.active_recipe_version,
-                telemetry.current_phase,
-                telemetry.operational_state.value,
-                telemetry.lifecycle_state.value,
-                telemetry.current_strategies.model_dump_json(),
-                telemetry.current_setpoints.model_dump_json(),
-                telemetry.time_scale,
+                effective.temperature_c,
+                effective.air_humidity_percent,
+                effective.soil_moisture_percent,
+                effective.soil_bulk_ec_ms_cm,
+                effective.soil_ec_ms_cm,
+                effective.fertilizer_concentration_mg_per_liter,
+                effective.nitrogen_estimate_mg_per_liter,
+                effective.phosphorus_estimate_mg_per_liter,
+                effective.potassium_estimate_mg_per_liter,
+                effective.ph,
+                effective.light_ppfd_umol_m2_s,
+                effective.active_recipe_id,
+                effective.active_recipe_version,
+                effective.current_phase,
+                effective.operational_state.value,
+                effective.lifecycle_state.value,
+                effective.current_strategies.model_dump_json(),
+                effective.current_setpoints.model_dump_json(),
+                effective.time_scale,
+                effective.cultivation_id,
             ),
         )
     except sqlite3.IntegrityError as error:
@@ -82,24 +93,24 @@ def save_telemetry(
                    light_ppfd_umol_m2_s, active_recipe_id,
                    active_recipe_version, current_phase, operational_state,
                    lifecycle_state, current_strategies, current_setpoints,
-                   time_scale
+                   time_scale, cultivation_id
             FROM telemetry_samples
             WHERE zone_id = ? AND boot_id = ? AND sequence_number = ?
             """,
-            (zone_id, telemetry.boot_id, telemetry.sequence_number),
+            (zone_id, effective.boot_id, effective.sequence_number),
         ).fetchone()
         if existing is not None:
             stored = _telemetry_from_row(existing)
             comparable = stored.model_dump(
                 exclude={"sample_id", "zone_id", "received_at"},
             )
-            incoming = telemetry.model_dump()
+            incoming = effective.model_dump()
             comparable["recorded_at"] = stored.recorded_at
             incoming["recorded_at"] = recorded_at
             if comparable == incoming:
                 return stored
         raise TelemetryConflict(
-            f"telemetry sequence {telemetry.sequence_number} already exists "
+            f"telemetry sequence {effective.sequence_number} already exists "
             f"for zone {zone_id!r}"
         ) from error
 
@@ -126,21 +137,21 @@ def save_telemetry(
           )
         """,
         (
-            telemetry.lifecycle_state.value,
-            telemetry.operational_state.value,
-            telemetry.active_recipe_id,
-            telemetry.active_recipe_version,
-            telemetry.current_phase,
-            telemetry.current_strategies.model_dump_json(),
-            telemetry.current_setpoints.model_dump_json(),
-            telemetry.time_scale,
+            effective.lifecycle_state.value,
+            effective.operational_state.value,
+            effective.active_recipe_id,
+            effective.active_recipe_version,
+            effective.current_phase,
+            effective.current_strategies.model_dump_json(),
+            effective.current_setpoints.model_dump_json(),
+            effective.time_scale,
             recorded_at.isoformat(),
             zone_id,
             recorded_at.isoformat(),
         ),
     )
     connection.commit()
-    stored_data = telemetry.model_dump()
+    stored_data = effective.model_dump()
     stored_data["recorded_at"] = recorded_at
     return TelemetrySample(
         **stored_data,
@@ -185,6 +196,7 @@ def _telemetry_from_row(row: tuple) -> TelemetrySample:
         current_strategies=strategy_snapshot,
         current_setpoints=setpoint_snapshot,
         time_scale=row[25],
+        cultivation_id=row[26],
     )
 
 
@@ -205,7 +217,7 @@ def get_latest_telemetry(
                ph, light_ppfd_umol_m2_s, active_recipe_id,
                active_recipe_version, current_phase, operational_state,
                lifecycle_state, current_strategies, current_setpoints,
-               time_scale
+               time_scale, cultivation_id
         FROM telemetry_samples
         WHERE zone_id = ?
         ORDER BY recorded_at DESC, id DESC
@@ -224,10 +236,14 @@ def list_telemetry(
     recorded_from: datetime | None = None,
     recorded_to: datetime | None = None,
     limit: int = 100,
+    cultivation_id: str | None = None,
 ) -> list[TelemetrySample]:
     """@brief Legge lo storico recente in ordine cronologico."""
     conditions = ["zone_id = ?"]
     parameters: list[str | int] = [zone_id]
+    if cultivation_id is not None:
+        conditions.append("cultivation_id = ?")
+        parameters.append(cultivation_id)
     if recorded_from is not None:
         conditions.append("recorded_at >= ?")
         parameters.append(recorded_from.astimezone(timezone.utc).isoformat())
@@ -248,7 +264,7 @@ def list_telemetry(
                ph, light_ppfd_umol_m2_s, active_recipe_id,
                active_recipe_version, current_phase, operational_state,
                lifecycle_state, current_strategies, current_setpoints,
-               time_scale
+               time_scale, cultivation_id
         FROM telemetry_samples
         WHERE {" AND ".join(conditions)}
         ORDER BY recorded_at DESC, id DESC

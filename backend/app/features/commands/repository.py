@@ -50,6 +50,8 @@ def create_command(
     connection: sqlite3.Connection,
     zone_id: str,
     command: RuntimeCommandCreate,
+    *,
+    commit: bool = True,
 ) -> RuntimeCommand:
     created_at = datetime.now(timezone.utc)
     payload_data = json.dumps(command.payload, sort_keys=True, separators=(",", ":"))
@@ -82,7 +84,8 @@ def create_command(
         raise RuntimeCommandConflict(
             f"command_id {command.command_id!r} already exists with different data"
         ) from error
-    connection.commit()
+    if commit:
+        connection.commit()
     stored = get_command(connection, command.command_id)
     assert stored is not None
     return stored
@@ -159,5 +162,13 @@ def complete_command(
                 """,
                 (recipe_id, zone_id),
             )
+    from ..cultivations.repository import apply_command_result
+
+    apply_command_result(
+        connection,
+        zone_id=zone_id,
+        command_type=existing.command_type.value,
+        result=result,
+    )
     connection.commit()
     return get_command(connection, command_id)
