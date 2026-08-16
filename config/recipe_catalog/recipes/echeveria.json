@@ -1,0 +1,11 @@
+{
+  "id": "recipe-echeveria",
+  "plant_type": "Echeveria",
+  "department_number": 3,
+  "substrate": "draining",
+  "care_profile": {"light": "Sole diretto", "watering": "Ogni 2-4 settimane", "temperature": "10-30°C", "fertilization": "1 volta in primavera"},
+  "light_profile": "direct_sun",
+  "water_profile": "arid",
+  "feed_profile": "rare",
+  "ph_setpoint": 6.5
+}

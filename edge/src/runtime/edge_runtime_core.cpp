@@ -70,12 +70,42 @@ const char* to_string(OperationalState state) noexcept {
     return "Unknown";
 }
 
+const char* to_string(FaultTargetKind kind) noexcept {
+    switch (kind) {
+        case FaultTargetKind::SENSOR:
+            return "sensor";
+        case FaultTargetKind::ACTUATOR:
+            return "actuator";
+    }
+    return "unknown";
+}
+
+const char* to_string(FaultMode mode) noexcept {
+    switch (mode) {
+        case FaultMode::SENSOR_DROPOUT:
+            return "sensor_dropout";
+        case FaultMode::SENSOR_STUCK:
+            return "sensor_stuck";
+        case FaultMode::SENSOR_OFFSET:
+            return "sensor_offset";
+        case FaultMode::ACTUATOR_STUCK_OFF:
+            return "actuator_stuck_off";
+        case FaultMode::ACTUATOR_STUCK_ON:
+            return "actuator_stuck_on";
+        case FaultMode::ACTUATOR_SLOW_RESPONSE:
+            return "actuator_slow_response";
+    }
+    return "unknown";
+}
+
 const char* to_string(EdgeEventType type) noexcept {
     switch (type) {
         case EdgeEventType::RUNTIME_STARTED:
             return "RuntimeStarted";
         case EdgeEventType::RECIPE_PHASE_CHANGED:
             return "RecipePhaseChanged";
+        case EdgeEventType::RECIPE_COMPLETED:
+            return "RecipeCompleted";
         case EdgeEventType::OPERATIONAL_STATE_CHANGED:
             return "OperationalStateChanged";
         case EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED:
@@ -91,7 +121,8 @@ EdgeRuntime::EdgeRuntime(
     SensorConfig sensor_config,
     std::uint32_t environment_seed,
     std::uint32_t sensor_seed,
-    OperationalStatePolicy state_policy)
+    OperationalStatePolicy state_policy,
+    FaultDetectorConfig detector_config)
     : control_system_(std::move(recipe)),
       actuators_(std::make_unique<ActuatorSimulatorAdapter>(
           std::move(actuator_config))),
@@ -100,13 +131,15 @@ EdgeRuntime::EdgeRuntime(
               std::move(environment_config),
               control_system_.recipe()),
           environment_seed)),
+      soil_probe_model_(sensor_config.soil_probe_model),
       sensors_(make_simulated_sensor_adapters(
           std::move(sensor_config),
           sensor_seed)),
       water_pump_(*actuators_),
       lighting_(*actuators_),
       fertilizer_valves_(*actuators_),
-      state_policy_(require_valid_state_policy(state_policy)) {
+      state_policy_(require_valid_state_policy(state_policy)),
+      fault_detector_(std::move(detector_config)) {
     recipe_start_time_seconds_ =
         environment_->state().simulation_time_seconds;
     active_substrate_ = *control_system_.recipe().substrate;
@@ -119,15 +152,19 @@ EdgeRuntime::EdgeRuntime(
     SensorAdapterArray sensors,
     std::unique_ptr<IActuator> actuators,
     std::unique_ptr<IEnvironment> environment,
-    OperationalStatePolicy state_policy)
+    OperationalStatePolicy state_policy,
+    SoilProbeModelConfig soil_probe_model,
+    FaultDetectorConfig detector_config)
     : control_system_(std::move(recipe)),
       actuators_(require_actuators(std::move(actuators))),
       environment_(require_environment(std::move(environment))),
+      soil_probe_model_(std::move(soil_probe_model)),
       sensors_(std::move(sensors)),
       water_pump_(*actuators_),
       lighting_(*actuators_),
       fertilizer_valves_(*actuators_),
-      state_policy_(require_valid_state_policy(state_policy)) {
+      state_policy_(require_valid_state_policy(state_policy)),
+      fault_detector_(std::move(detector_config)) {
     for (std::size_t index = 0;
          index < kSensorChannelCount;
          ++index) {
@@ -172,7 +209,7 @@ const EnvironmentState& EdgeRuntime::environment_state() const noexcept {
 }
 
 const ActuatorOutput& EdgeRuntime::actuator_output() const noexcept {
-    return actuators_->output();
+    return effective_actuator_output_;
 }
 
 OperationalState EdgeRuntime::operational_state() const noexcept {

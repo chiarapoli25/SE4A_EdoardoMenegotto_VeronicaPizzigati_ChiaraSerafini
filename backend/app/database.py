@@ -40,9 +40,12 @@ from .features.telemetry.repository import (
 )
 from .features.zones.repository import (
     ZoneConflict,
+    ZoneUpdateConflict,
+    ZoneUpdateInvalid,
     create_zone,
     get_zone,
     list_zones,
+    update_zone,
 )
 
 __all__ = [
@@ -54,9 +57,14 @@ __all__ = [
     "RecipeVersionConflict",
     "TelemetryConflict",
     "ZoneConflict",
+<<<<<<< HEAD
     "complete_cultivation",
     "confirm_cultivation",
     "create_cultivation",
+=======
+    "ZoneUpdateConflict",
+    "ZoneUpdateInvalid",
+>>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
     "create_zone",
     "get_active_cultivation_for_zone",
     "get_connection",
@@ -77,4 +85,5 @@ __all__ = [
     "save_recipe",
     "save_actuator_snapshot",
     "save_telemetry",
+    "update_zone",
 ]

@@ -1,0 +1,11 @@
+{
+  "id": "recipe-monstera-deliciosa",
+  "plant_type": "Monstera Deliciosa",
+  "department_number": 1,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Indiretta luminosa", "watering": "Ogni 1-2 settimane", "temperature": "18-27°C", "fertilization": "Ogni 2 settimane (veg.)"},
+  "light_profile": "bright_indirect",
+  "water_profile": "moderate",
+  "feed_profile": "biweekly",
+  "ph_setpoint": 6.2
+}

@@ -1,0 +1,11 @@
+{
+  "id": "recipe-orchidea-phalaenopsis",
+  "plant_type": "Orchidea (Phalaenopsis)",
+  "department_number": 2,
+  "substrate": "draining",
+  "care_profile": {"light": "Indiretta luminosa", "watering": "Immersione (radici argentate)", "temperature": "20-27°C", "fertilization": "Ogni 2 settimane"},
+  "light_profile": "bright_indirect",
+  "water_profile": "moderate",
+  "feed_profile": "biweekly",
+  "ph_setpoint": 6.2
+}

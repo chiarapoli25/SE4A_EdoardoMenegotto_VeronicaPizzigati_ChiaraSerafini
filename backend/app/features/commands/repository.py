@@ -143,5 +143,21 @@ def complete_command(
             zone_id,
         ),
     )
+    if (
+        result.status is CommandStatus.SUCCEEDED
+        and existing.command_type.value
+        in {"ActivateCultivation", "LoadRecipe"}
+    ):
+        recipe_id = existing.payload.get("recipe_id")
+        if isinstance(recipe_id, str) and recipe_id:
+            connection.execute(
+                """
+                UPDATE zones
+                SET active_recipe_id = ?, current_phase = NULL,
+                    cultivation_completed = 0
+                WHERE id = ?
+                """,
+                (recipe_id, zone_id),
+            )
     connection.commit()
     return get_command(connection, command_id)

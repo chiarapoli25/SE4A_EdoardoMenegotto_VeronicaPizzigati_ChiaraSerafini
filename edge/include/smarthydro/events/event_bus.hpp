@@ -7,6 +7,7 @@
 
 #include <smarthydro/runtime/edge_runtime_types.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -37,6 +38,91 @@ struct TelemetrySample {
     ActuatorOutput actuator_output;
     /** Stato ambientale raggiunto. */
     EnvironmentState environment_state;
+    /** Identificativo della ricetta attualmente eseguita. */
+    std::string active_recipe_id;
+    /** Versione completa della ricetta attualmente eseguita. */
+    std::uint64_t active_recipe_version = 0;
+    /** Fase della ricetta usata nel ciclo. */
+    std::string current_phase;
+    /** Lifecycle applicativo della zona: Idle, Running, Paused o Error. */
+    std::string lifecycle_state = "Running";
+    /** Strategia selezionata per ciascuna variabile controllata. */
+    ControlledValues<StrategyType> current_strategies{};
+    /** Setpoint della fase corrente per ciascuna variabile controllata. */
+    ControlledValues<double> current_setpoints{};
+    /** Rapporto fra tempo simulato e tempo reale. */
+    double time_scale = 1.0;
+};
+
+/** @brief Transizione del lifecycle applicativo di una zona. */
+struct ZoneLifecycleChanged {
+    /** Zona interessata dalla transizione. */
+    std::string zone_id;
+    /** Timestamp simulato disponibile, zero prima della creazione del runtime. */
+    double timestamp_seconds = 0.0;
+    /** Nome stabile dello stato precedente. */
+    std::string previous_state;
+    /** Nome stabile del nuovo stato. */
+    std::string current_state;
+    /** Causa della transizione. */
+    std::string reason;
+};
+
+/** @brief Cambio del rapporto fra tempo simulato e tempo reale di una zona. */
+struct SimulationSpeedChanged {
+    /** Zona interessata dalla modifica. */
+    std::string zone_id;
+    /** Timestamp simulato disponibile al momento del cambio. */
+    double timestamp_seconds = 0.0;
+    /** Velocita temporale precedente. */
+    double previous_time_scale = 1.0;
+    /** Nuova velocita temporale applicata. */
+    double current_time_scale = 1.0;
+};
+
+/** @brief Configurazione o rimozione del limite temporale di una zona. */
+struct SimulationDurationChanged {
+    /** Zona interessata dalla configurazione. */
+    std::string zone_id;
+    /** Timestamp simulato dal quale decorre la nuova durata. */
+    double timestamp_seconds = 0.0;
+    /** True quando la simulazione ha un limite temporale. */
+    bool limited = false;
+    /** Durata richiesta; zero quando il limite viene rimosso. */
+    double duration_seconds = 0.0;
+    /** Timestamp simulato di arrivo; zero in modalita continua. */
+    double target_timestamp_seconds = 0.0;
+};
+
+/** @brief Raggiungimento del limite temporale configurato per una zona. */
+struct SimulationDurationCompleted {
+    /** Zona che ha completato la finestra simulativa. */
+    std::string zone_id;
+    /** Timestamp simulato esatto di completamento. */
+    double timestamp_seconds = 0.0;
+    /** Durata della finestra appena completata. */
+    double duration_seconds = 0.0;
+};
+
+/**
+ * @brief Ingresso o uscita dallo stato di ritardo dello scheduler.
+ *
+ * L'evento viene emesso soltanto quando cambia il valore di `lagging`, non a
+ * ogni iterazione nella quale rimane del lavoro arretrato.
+ */
+struct SchedulerLagStateChanged {
+    /** Zona interessata dal ritardo. */
+    std::string zone_id;
+    /** Timestamp simulato dell'ultimo stato applicato. */
+    double timestamp_seconds = 0.0;
+    /** True quando rimangono passi completi non ancora eseguiti. */
+    bool lagging = false;
+    /** Secondi simulati ancora accumulati. */
+    double pending_simulation_seconds = 0.0;
+    /** Numero di passi completi ancora pendenti. */
+    std::size_t pending_steps = 0;
+    /** Velocita temporale applicata alla zona. */
+    double time_scale = 1.0;
 };
 
 /** @brief Transizione osservabile della macchina a stati operativa. */
@@ -53,14 +139,16 @@ struct StateChanged {
     std::string reason;
 };
 
-/** @brief Guasto strutturato prodotto da un detector presente o futuro. */
+/** @brief Guasto strutturato prodotto dal FaultDetector osservazionale. */
 struct FaultDetected {
     /** Zona nella quale e stato rilevato il guasto. */
     std::string zone_id;
     /** Timestamp simulato del rilevamento, in secondi. */
     double timestamp_seconds = 0.0;
-    /** Tipo stabile del guasto. */
-    std::string fault_type;
+    /** Sensore, modello o attuatore che ha prodotto l'evidenza. */
+    std::string component;
+    /** Regola stabile violata dal componente. */
+    std::string rule;
     /** Severita usata dalla FSM. */
     ControlFaultSeverity severity = ControlFaultSeverity::NONE;
     /** Diagnostica leggibile e contestuale. */
@@ -91,6 +179,20 @@ struct RecipePhaseChanged {
     std::string previous_phase;
     /** Nome della nuova fase. */
     std::string current_phase;
+};
+
+/** @brief Completamento temporale della ricetta, con ultima fase mantenuta. */
+struct RecipeCompleted {
+    /** Zona che ha completato la sequenza. */
+    std::string zone_id;
+    /** Timestamp simulato del rilevamento, in secondi. */
+    double timestamp_seconds = 0.0;
+    /** Identificatore della ricetta completata. */
+    std::string recipe_id;
+    /** Ultima fase che resta attiva dopo il completamento. */
+    std::string final_phase;
+    /** Durata nominale complessiva della ricetta, in ore. */
+    double total_duration_hours = 0.0;
 };
 
 /** @brief Ingresso della FSM nello stato EmergencyLockdown. */
@@ -146,10 +248,16 @@ struct CommandFailed {
 /** @brief Unione chiusa degli eventi pubblicabili sul bus dell'Edge. */
 using EdgeDomainEvent = std::variant<
     TelemetrySample,
+    ZoneLifecycleChanged,
+    SimulationSpeedChanged,
+    SimulationDurationChanged,
+    SimulationDurationCompleted,
+    SchedulerLagStateChanged,
     StateChanged,
     FaultDetected,
     StrategyChanged,
     RecipePhaseChanged,
+    RecipeCompleted,
     EmergencyTriggered,
     BackendUnavailable,
     CommandExecuted,

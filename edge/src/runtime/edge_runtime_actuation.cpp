@@ -15,6 +15,59 @@ constexpr double kDeliveredTolerance = 1.0e-12;
 
 }  // namespace
 
+void EdgeRuntime::stop_all_actuators() noexcept {
+    actuators_->stop_all();
+    effective_actuator_output_ = {};
+}
+
+void EdgeRuntime::reset_actuator_observation() noexcept {
+    detector_command_observation_ = {};
+    detector_output_observation_ = {};
+}
+
+void EdgeRuntime::record_actuator_observation(
+    const ActuatorCommand& command,
+    const ActuatorOutput& output) noexcept {
+    detector_command_observation_.requested_irrigation_volume_liters =
+        std::max(
+            detector_command_observation_.requested_irrigation_volume_liters,
+            command.requested_irrigation_volume_liters);
+    detector_command_observation_.lighting_percent = std::max(
+        detector_command_observation_.lighting_percent,
+        command.lighting_percent);
+    detector_output_observation_.water_pump_on =
+        detector_output_observation_.water_pump_on || output.water_pump_on;
+    detector_output_observation_.water_pump_flow_liters_per_hour =
+        std::max(
+            detector_output_observation_.water_pump_flow_liters_per_hour,
+            output.water_pump_flow_liters_per_hour);
+    detector_output_observation_.irrigation_volume_liters_last_step +=
+        output.irrigation_volume_liters_last_step;
+    detector_output_observation_.water_pump_on_time_seconds_last_step +=
+        output.water_pump_on_time_seconds_last_step;
+    detector_output_observation_.lighting_power_watts = std::max(
+        detector_output_observation_.lighting_power_watts,
+        output.lighting_power_watts);
+    for (std::size_t index = 0;
+         index < kFertilizerTypeCount;
+         ++index) {
+        detector_command_observation_.fertilizer_valves_open[index] =
+            detector_command_observation_.fertilizer_valves_open[index] ||
+            command.fertilizer_valves_open[index];
+        detector_output_observation_.fertilizer_valves_open[index] =
+            detector_output_observation_.fertilizer_valves_open[index] ||
+            output.fertilizer_valves_open[index];
+        detector_output_observation_
+            .fertilizer_flow_milliliters_per_hour[index] = std::max(
+                detector_output_observation_
+                    .fertilizer_flow_milliliters_per_hour[index],
+                output.fertilizer_flow_milliliters_per_hour[index]);
+        detector_output_observation_
+            .fertilizer_volume_milliliters_last_step[index] +=
+                output.fertilizer_volume_milliliters_last_step[index];
+    }
+}
+
 void EdgeRuntime::apply_safe_fallback(
     double delta_time_seconds,
     EdgeStepResult& result,
@@ -53,7 +106,11 @@ void EdgeRuntime::apply_decisions(
 
     const double water_command =
         result.decisions[water_index].command;
-    if (water_command > 0.0 && !water_pump_.active()) {
+    if (result.decisions[water_index].status ==
+            ControlDecisionStatus::BLOCKED &&
+        result.decisions[water_index].safety_critical) {
+        water_pump_.cancel();
+    } else if (water_command > 0.0 && !water_pump_.active()) {
         water_pump_.request_volume_liters(water_command);
     }
 
@@ -157,7 +214,15 @@ void EdgeRuntime::advance_physics(
     double delta_time_seconds,
     EdgeStepResult& result) {
     actuators_->step(delta_time_seconds);
-    const auto& output = actuators_->output();
+    effective_actuator_output_ = fault_injector_.alter_output(
+        actuators_->command(),
+        actuators_->output(),
+        actuators_->config(),
+        delta_time_seconds,
+        environment_->state().simulation_time_seconds);
+    record_actuator_observation(
+        actuators_->command(), effective_actuator_output_);
+    const auto& output = effective_actuator_output_;
     result.delivered_water_liters +=
         output.irrigation_volume_liters_last_step;
     for (std::size_t index = 0;

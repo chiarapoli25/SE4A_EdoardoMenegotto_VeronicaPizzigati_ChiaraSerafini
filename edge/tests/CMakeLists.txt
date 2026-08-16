@@ -67,6 +67,17 @@ target_compile_features(io_adapter_tests PRIVATE cxx_std_17)
 set_target_properties(io_adapter_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(io_adapter_tests)
 
+# Test unitari della separazione tra injector e detector osservazionale.
+add_executable(fault_detector_tests fault_detector_tests.cpp)
+target_link_libraries(fault_detector_tests
+    PRIVATE
+        fault_management
+        GTest::gtest_main
+)
+target_compile_features(fault_detector_tests PRIVATE cxx_std_17)
+set_target_properties(fault_detector_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(fault_detector_tests)
+
 # Test del pattern Observer, dei logger e dell'integrazione col runtime.
 add_executable(event_bus_tests event_bus_tests.cpp)
 target_link_libraries(event_bus_tests
@@ -173,34 +184,38 @@ target_compile_definitions(greenhouse_manager_tests
 set_target_properties(greenhouse_manager_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(greenhouse_manager_tests)
 
-# Il main deve caricare la ricetta e completare almeno un ciclo senza servizi
-# esterni o interazione utente.
-add_test(
-    NAME edge_main_recipe_smoke
-    COMMAND $<TARGET_FILE:edge>
-        --recipe "${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
-        --steps 1
-        --step-seconds 900
+# Test deterministici del clock, time scale e catch-up multi-zona.
+add_executable(
+    simulation_scheduler_tests
+    simulation_scheduler_tests.cpp
 )
-set_tests_properties(
-    edge_main_recipe_smoke
-    PROPERTIES
-        PASS_REGULAR_EXPRESSION "Status: recipe runtime ready"
+target_link_libraries(simulation_scheduler_tests
+    PRIVATE
+        greenhouse_manager
+        recipe_json
+        GTest::gtest_main
 )
+target_compile_features(simulation_scheduler_tests PRIVATE cxx_std_17)
+target_compile_definitions(simulation_scheduler_tests
+    PRIVATE
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+)
+set_target_properties(
+    simulation_scheduler_tests
+    PROPERTIES CXX_EXTENSIONS OFF
+)
+gtest_discover_tests(simulation_scheduler_tests)
 
-# Verifica che l'eseguibile componga e avanzi almeno due zone indipendenti.
+# Il main non richiede piu una ricetta locale e documenta l'avvio come servizio
+# continuo in attesa di ActivateCultivation.
 add_test(
-    NAME edge_main_multizone_smoke
-    COMMAND $<TARGET_FILE:edge>
-        --recipe "${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
-        --zones 2
-        --steps 1
-        --step-seconds 60
+    NAME edge_main_service_help
+    COMMAND $<TARGET_FILE:edge> --help
 )
 set_tests_properties(
-    edge_main_multizone_smoke
+    edge_main_service_help
     PROPERTIES
-        PASS_REGULAR_EXPRESSION "Zones: 2"
+        PASS_REGULAR_EXPRESSION "without a local recipe"
 )
 
 # Smoke test dei programmi dimostrativi. Sensori e ricette creano un solo CSV

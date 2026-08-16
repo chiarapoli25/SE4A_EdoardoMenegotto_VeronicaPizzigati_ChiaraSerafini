@@ -1,0 +1,11 @@
+{
+  "id": "recipe-anturio",
+  "plant_type": "Anturio",
+  "department_number": 2,
+  "substrate": "aerated-universal",
+  "care_profile": {"light": "Indiretta alta", "watering": "Superficie asciutta", "temperature": "Costante ~20°C", "fertilization": "Mensile"},
+  "light_profile": "bright_indirect",
+  "water_profile": "moderate",
+  "feed_profile": "monthly",
+  "ph_setpoint": 6.2
+}

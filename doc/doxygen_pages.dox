@@ -16,6 +16,8 @@
  * | Backend | API per dashboard e integrazione futura | Endpoint base disponibili |
  *
  * Il controllo rimane nell'Edge anche quando il backend non e disponibile.
+ * SmartHydro conserva il proprio nome, ma il dominio implementato e una
+ * coltivazione in terriccio e non un impianto idroponico.
  */
 
 /**
@@ -39,6 +41,25 @@
  * | Eventi | @ref smarthydro::EventBus | Distribuisce telemetria e cambi di stato |
  * | Comandi | @ref smarthydro::RuntimeCommandProcessor | Esegue richieste idempotenti |
  *
+ * @section edge_domain Contratto delle grandezze
+ *
+ * | Grandezza | Ruolo | Unita e sorgente |
+ * | ---------- | ----- | ---------------- |
+ * | Umidita del terriccio | Controllata | Percentuale, sonda capacitiva simulata |
+ * | Luce | Controllata | PPFD in umol/(m2 s), sensore PAR simulato |
+ * | pH | Controllata | Acqua interstiziale del terriccio, elettrodo simulato |
+ * | N/P/K | Controllate tramite stima | EC corretta e composizione del modello |
+ * | Temperatura dell'aria | Osservata | Gradi Celsius, nessun controllore |
+ * | Umidita relativa | Osservata | Percentuale, nessun controllore |
+ * | EC apparente | Misurata | mS/cm, sonda resistiva simulata |
+ * | EC nei pori e fertilizzante totale | Derivate | Correzione con umidita e calibrazione empirica |
+ *
+ * L'acqua viene erogata al terriccio e puo essere trattenuta, assorbita dalle
+ * radici, drenata o persa per evaporazione. Non sono modellati vasche, livelli
+ * d'acqua o ricircolo. N/P/K sono stime fuse sensore-modello, non tre sensori fisici.
+ * Il contratto ricetta usa `input_source`; `sensor` e accettato soltanto come
+ * campo legacy in ingresso.
+ *
  * @section edge_source_layout Struttura dei sorgenti
  *
  * Gli header in `edge/include/smarthydro` e le implementazioni in `edge/src`
@@ -49,6 +70,7 @@
  * - `control/`: Strategy e orchestrazione della ricetta;
  * - `recipes/`: serializzazione JSON;
  * - `events/`: EventBus e observer;
+ * - `faults/`: Fault Injector e Fault Detector indipendenti;
  * - `runtime/`: ciclo operativo, FSM, comandi e gestione multi-zona.
  *
  * L'implementazione di @ref smarthydro::EdgeRuntime e divisa in file
@@ -61,11 +83,13 @@
  * Ogni chiamata a EdgeRuntime::step():
  *
  * 1. determina la fase della ricetta;
- * 2. legge i sensori e i modelli N/P/K;
- * 3. calcola le sei @ref smarthydro::ControlDecision;
- * 4. verifica fault e stato operativo;
- * 5. applica i comandi e aggiorna l'ambiente;
- * 6. restituisce @ref smarthydro::EdgeStepResult e pubblica gli eventi.
+ * 2. legge i sensori e le stime del modello N/P/K;
+ * 3. @ref smarthydro::FaultDetector osserva le letture;
+ * 4. calcola le sei @ref smarthydro::ControlDecision;
+ * 5. applica i comandi e osserva le risposte degli attuatori;
+ * 6. la FSM reagisce alle sole evidenze @ref smarthydro::DetectedFault;
+ * 7. aggiorna l'ambiente, restituisce @ref smarthydro::EdgeStepResult e
+ *    pubblica gli eventi.
  *
  * `EdgeStepResult` contiene progressivo, letture, decisioni, quantita
  * erogate, stato degli attuatori, ambiente ed eventi del ciclo.
@@ -86,13 +110,22 @@
  * | Stato | Comportamento |
  * | ----- | ------------- |
  * | `Nominal` | Il controllo applica normalmente i comandi |
- * | `Degraded` | Gli attuatori restano fermi durante la verifica |
+ * | `Degraded` | Viene isolato il controllo dipendente dal componente guasto |
  * | `EmergencyLockdown` | Tutte le uscite restano in stato sicuro |
+ *
+ * @ref smarthydro::FaultInjector altera esclusivamente sensori e attuatori
+ * simulati. Non pubblica eventi e non modifica la FSM. Il componente separato
+ * @ref smarthydro::FaultDetector osserva letture, comandi e uscite e applica
+ * soglie configurabili per assenza, range fisico, velocita, congelamento,
+ * risposta assente o insufficiente, uscita senza comando e validita N/P/K.
+ * Ogni evidenza pubblicata come @ref smarthydro::FaultDetected contiene
+ * componente, regola, severita e diagnostica.
  *
  * Un fault recuperabile porta a `Degraded`; se persiste puo causare
  * `EmergencyLockdown`. Un fault critico provoca il blocco immediato.
  * @ref smarthydro::OperationalStatePolicy configura le soglie di escalation e
- * recovery. L'uscita dall'emergenza richiede un reset manuale e cicli sani.
+ * recovery. L'uscita dall'emergenza richiede un reset manuale e una nuova
+ * osservazione sana anche delle uscite fisiche.
  *
  * @section edge_recipes Ricette e Strategy
  *
@@ -107,6 +140,11 @@
  * - Predictive: previsione basata su modello e storico.
  *
  * `load_recipe_json()` e `save_recipe_json()` gestiscono il formato JSON.
+ * Le fasi avanzano automaticamente sul tempo simulato oppure tramite
+ * @ref smarthydro::AdvanceRecipePhaseCommand. Ogni transizione pubblica
+ * @ref smarthydro::RecipePhaseChanged. Terminata l'ultima durata viene
+ * pubblicato una sola volta @ref smarthydro::RecipeCompleted; l'ultima fase
+ * resta selezionata e la ricetta non riparte dall'inizio.
  *
  * @section edge_commands Comandi runtime
  *
@@ -131,8 +169,8 @@
  * - @ref smarthydro::BackendClient.
  *
  * Gli eventi principali segnalano telemetria, fault, cambi di Strategy o fase,
- * transizioni della FSM ed esito dei comandi fisici. Un observer che fallisce
- * non interrompe il ciclo locale.
+ * completamento della ricetta, transizioni della FSM ed esito dei comandi
+ * fisici. Un observer che fallisce non interrompe il ciclo locale.
  *
  * @section edge_adapters Adapter e sostituzione hardware
  *
@@ -159,20 +197,24 @@
  * | POST | `/zones` | backend.app.features.zones.routes.register_zone() | Registrazione di un settore della serra |
  * | GET | `/zones` | backend.app.features.zones.routes.read_zones() | Elenco dei settori ordinati per reparto |
  * | GET | `/zones/{zone_id}` | backend.app.features.zones.routes.read_zone() | Lettura di un settore tramite identificativo |
- * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione di un campione sensori dall'Edge |
- * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo campione sensori disponibile |
- * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato dei sensori |
+ * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione dello snapshot completo dall'Edge |
+ * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo snapshot completo disponibile |
+ * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato della telemetria |
  * | POST | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.create_actuator_snapshot() | Acquisizione di comando e uscita fisica dall'Edge |
  * | GET | `/zones/{zone_id}/actuators/latest` | backend.app.features.actuators.routes.read_latest_actuator_snapshot() | Ultimo stato degli attuatori |
  * | GET | `/zones/{zone_id}/actuators` | backend.app.features.actuators.routes.read_actuator_history() | Storico filtrato degli attuatori |
- * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione, salvataggio ed esportazione di una ricetta |
+ * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione e persistenza integrale SQLite di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
- * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Elenco delle ricette disponibili |
+ * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Catalogo e ricette salvate, filtrabili per reparto |
  * | POST | `/zones/{zone_id}/events` | backend.app.features.events.routes.create_event() | Acquisizione idempotente di un evento Edge |
  * | GET | `/zones/{zone_id}/events` | backend.app.features.events.routes.read_events() | Storico degli eventi Edge |
  * | POST | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.enqueue_command() | Accodamento di un comando runtime |
  * | GET | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.read_pending_commands() | Polling dei comandi pendenti |
  * | POST | `/zones/{zone_id}/commands/{command_id}/result` | backend.app.features.commands.routes.report_command_result() | Esito idempotente del comando |
+ * | POST | `/plants` | backend.app.features.plants.routes.register_plant() | Registrazione di una singola pianta nel settore di origine |
+ * | GET | `/plants` | backend.app.features.plants.routes.read_plants() | Elenco filtrabile per posizione e flag di quarantena |
+ * | PATCH | `/plants/{plant_id}/quarantine` | backend.app.features.plants.routes.update_plant_quarantine() | Attivazione o rimozione del flag di quarantena e spostamento della pianta |
+ * | GET | `/plants/{plant_id}/movements` | backend.app.features.plants.routes.read_plant_movements() | Storico degli spostamenti della pianta |
  *
  * Gli endpoint applicativi sono esposti anche sotto `/api/v1`, contratto usato
  * dall'Edge. Se `SMARTHYDRO_API_TOKEN` e configurata, questa superficie richiede
@@ -181,6 +223,19 @@
  * L'endpoint `/health` e attualmente statico: non verifica sensori, database o
  * collegamento con l'Edge. La specifica OpenAPI interattiva e disponibile in
  * `/docs` quando il server e in esecuzione.
+ *
+ * Le zone espongono il nome canonico dei quattro reparti produttivi; il quinto
+ * nome e riservato alla destinazione fisica di quarantena, mentre lo stato di
+ * quarantena appartiene sempre alla pianta. La directory
+ * `config/recipe_catalog/recipes/` contiene un JSON di bootstrap per ciascuna
+ * delle 20 specie, mentre `config/recipe_catalog/profiles.json` raccoglie i
+ * profili condivisi e le sequenze di fase per categoria. `init_db()` espande
+ * profili e override della singola pianta e salva integralmente ogni ricetta
+ * multifase in `recipes.data`. `recipe_catalog_imports.catalog_version`
+ * governa le migrazioni del bootstrap. Repository, API ed Edge leggono poi
+ * soltanto SQLite: i JSON non sono una sorgente runtime. Le indicazioni
+ * qualitative originali sono conservate in `care_profile` e affiancate dai
+ * target numerici compatibili con l'Edge.
  *
  * @section backend_architecture Organizzazione per funzionalita
  *
@@ -225,8 +280,24 @@
  * delegano il salvataggio al relativo repository. Un worker HTTP nell'Edge
  * usa timeout brevi, outbox persistente e retry con backoff. In senso opposto
  * interroga `commands`, esegue il comando fra due cicli e pubblica l'esito.
- * Le transazioni portano il settore nello stato `online` e aggiornano
- * `last_edge_contact`.
+ * Le transazioni aggiornano `last_edge_contact`; `status` viene ricalcolato
+ * come online/offline usando la soglia configurabile
+ * `SMARTHYDRO_OFFLINE_THRESHOLD_SECONDS`. Uno sweep asincrono nel lifespan
+ * FastAPI persiste il passaggio offline anche in assenza di letture API.
+ *
+ * @section edge_zone_reconciliation Riconciliazione Edge-zona
+ *
+ * Il worker Edge interroga periodicamente
+ * `/api/v1/edges/{edge_id}/zones`, valida completamente l'array e confronta
+ * l'insieme autorevole con gli ID locali. La nuova cache
+ * `assigned-zones.json` viene scritta prima di pubblicare aggiunte e
+ * rimozioni. Per ogni rimozione `GreenhouseManager::remove_zone()` arresta gli
+ * attuatori e distrugge runtime e processore comandi; lo scheduler elimina il
+ * backlog associato e il client scarta eventuali comandi non ancora estratti.
+ *
+ * Risposte HTTP non riuscite e manifesti JSON non validi non modificano
+ * insieme locale o cache. Un array 2xx valido e realmente vuoto e invece una
+ * riconciliazione autorevole e puo rimuovere tutte le zone assegnate.
  *
  * @code{.txt}
  * Edge -> features/telemetry/routes.py
@@ -240,6 +311,22 @@
  * Backend <- risultato comando <- Edge runtime
  * Dashboard <- features/actuators/routes.py <- repository.py <- SQLite
  * @endcode
+ *
+ * @section backend_zone_projection Proiezione corrente della zona
+ *
+ * Il campione telemetrico include sensori, stime N/P/K, EC del terriccio,
+ * ricetta e versione, fase, FSM operativa, lifecycle, Strategy, setpoint e
+ * scala temporale. `telemetry/repository.py` conserva il campione storico e,
+ * nella stessa transazione, aggiorna nella tabella `zones` i campi
+ * `lifecycle_state`, `operational_state`, `active_recipe_id`,
+ * `active_recipe_version`, `current_phase`, `current_strategies`,
+ * `current_setpoints`, `time_scale` e `last_edge_contact`.
+ *
+ * Gli eventi restano un audit append-only ma le API delle zone non devono
+ * rileggerli per ricostruire lo stato corrente. Anche il vincolo che impedisce
+ * di riassegnare una zona Running consulta direttamente la proiezione. Un
+ * campione fuori ordine viene conservato senza riportare indietro lo stato
+ * sintetico corrente.
  *
  * @section backend_actuator_contract Contratto degli attuatori
  *
@@ -262,10 +349,11 @@
  * - backend/app/core/database.py: connessioni, dipendenza FastAPI e schema;
  * - backend/app/features/system/: identificazione e health check;
  * - backend/app/features/zones/: reparti, settori e specie vegetali;
+ * - backend/app/features/plants/: anagrafica, flag di quarantena e spostamenti delle singole piante;
  * - backend/app/features/telemetry/: acquisizione e storico dei sensori;
  * - backend/app/features/actuators/: comando e uscita fisica degli attuatori;
  * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;
  * - backend/app/features/commands/: coda ed esiti dei comandi runtime;
- * - backend/app/features/recipes/: ricette, persistenza ed esportazione;
+ * - backend/app/features/recipes/: bootstrap, ricette e persistenza SQLite;
  * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */

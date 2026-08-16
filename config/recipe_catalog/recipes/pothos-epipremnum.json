@@ -1,0 +1,11 @@
+{
+  "id": "recipe-pothos-epipremnum",
+  "plant_type": "Pothos (Epipremnum)",
+  "department_number": 1,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Indiretta/Ombra", "watering": "Ogni 1-2 settimane", "temperature": "18-25°C", "fertilization": "Mensile (mar-set)"},
+  "light_profile": "indirect",
+  "water_profile": "moderate",
+  "feed_profile": "monthly",
+  "ph_setpoint": 6.2
+}

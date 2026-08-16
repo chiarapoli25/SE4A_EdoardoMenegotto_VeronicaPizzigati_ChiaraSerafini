@@ -1,0 +1,11 @@
+{
+  "id": "recipe-violetta-africana",
+  "plant_type": "Violetta Africana",
+  "department_number": 2,
+  "substrate": "aerated-universal",
+  "care_profile": {"light": "Indiretta luminosa", "watering": "Dal basso", "temperature": "18-24°C", "fertilization": "Mensile"},
+  "light_profile": "bright_indirect",
+  "water_profile": "regular",
+  "feed_profile": "monthly",
+  "ph_setpoint": 6.2
+}

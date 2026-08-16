@@ -8,6 +8,7 @@
 #include <smarthydro/runtime/edge_runtime.hpp>
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -30,6 +31,52 @@ struct LoadRecipeCommand {
     Recipe recipe;
 };
 
+/**
+ * @brief Attiva una coltivazione in una zona Edge precedentemente inattiva.
+ *
+ * La ricetta viene scaricata dal livello HTTP prima che il comando raggiunga
+ * il GreenhouseManager. L'attivazione crea un nuovo runtime simulato e
+ * conferma le configurazioni soltanto dopo averle validate localmente.
+ */
+struct ActivateCultivationCommand {
+    /** Identificativo stabile della coltivazione assegnato dal backend. */
+    std::string cultivation_id;
+    /** Ricetta completa e versionata da usare nel nuovo runtime. */
+    Recipe recipe;
+};
+
+/** @brief Sospende tempo simulato e attuatori della coltivazione. */
+struct PauseCultivationCommand {};
+
+/** @brief Riprende una coltivazione precedentemente sospesa. */
+struct ResumeCultivationCommand {};
+
+/** @brief Arresta la coltivazione e riporta la zona nello stato Idle. */
+struct StopCultivationCommand {};
+
+/**
+ * @brief Cambia il rapporto fra tempo simulato e tempo reale della zona.
+ *
+ * Il valore zero non rappresenta una velocita: la pausa resta un comando di
+ * lifecycle esplicito. I limiti numerici sono applicati da ZoneController.
+ */
+struct SetSimulationSpeedCommand {
+    /** Secondi simulati prodotti da ogni secondo reale. */
+    double time_scale = 1.0;
+};
+
+/**
+ * @brief Imposta una finestra temporale simulata opzionale per la zona.
+ *
+ * La durata viene calcolata a partire dal timestamp simulato applicato al
+ * momento del comando. `std::nullopt` rimuove il limite e ripristina
+ * l'esecuzione continua.
+ */
+struct SetSimulationDurationCommand {
+    /** Durata simulata richiesta in secondi, oppure nessun limite. */
+    std::optional<double> duration_seconds;
+};
+
 /** @brief Conferma una configurazione agronomica pendente. */
 struct ConfirmConfigurationCommand {
     /** Variabile la cui configurazione deve essere confermata. */
@@ -42,14 +89,16 @@ struct RejectConfigurationCommand {
     ControlledVariable variable = ControlledVariable::SOIL_MOISTURE;
 };
 
-/** @brief Inietta un guasto sintetico persistente nella simulazione. */
+/**
+ * @brief Inietta un'anomalia fisica tipizzata nella simulazione.
+ *
+ * La richiesta non decide la gravita operativa: sensori, attuatori e detector
+ * producono prima un sintomo osservabile; soltanto allora la FSM sceglie
+ * Degraded o EmergencyLockdown.
+ */
 struct InjectFaultCommand {
-    /** Identificatore usato per riconoscere e rimuovere il fault. */
-    std::string fault_id;
-    /** Severita con cui la FSM deve valutare il fault. */
-    ControlFaultSeverity severity = ControlFaultSeverity::RECOVERABLE;
-    /** Diagnostica leggibile che accompagna gli eventi e le transizioni. */
-    std::string diagnostic;
+    /** Specifica completa del componente, modalita, valore e durata. */
+    FaultSpecification specification;
 };
 
 /** @brief Rimuove un guasto sintetico identificato. */
@@ -74,6 +123,12 @@ struct ResetEmergencyCommand {};
 using RuntimeCommand = std::variant<
     ChangeStrategyCommand,
     LoadRecipeCommand,
+    ActivateCultivationCommand,
+    PauseCultivationCommand,
+    ResumeCultivationCommand,
+    StopCultivationCommand,
+    SetSimulationSpeedCommand,
+    SetSimulationDurationCommand,
     ConfirmConfigurationCommand,
     RejectConfigurationCommand,
     InjectFaultCommand,

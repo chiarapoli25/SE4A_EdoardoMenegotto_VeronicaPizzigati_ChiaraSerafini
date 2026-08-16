@@ -1,0 +1,11 @@
+{
+  "id": "recipe-spatifillo",
+  "plant_type": "Spatifillo",
+  "department_number": 2,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Indiretta", "watering": "1 volta/sett. (al bisogno)", "temperature": "18-25°C", "fertilization": "Leggero mensile"},
+  "light_profile": "indirect",
+  "water_profile": "moist",
+  "feed_profile": "light",
+  "ph_setpoint": 6.2
+}

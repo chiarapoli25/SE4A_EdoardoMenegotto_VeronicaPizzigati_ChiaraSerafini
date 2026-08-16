@@ -1,0 +1,11 @@
+{
+  "id": "recipe-fragola",
+  "plant_type": "Fragola",
+  "department_number": 4,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Mezz'ombra o sole", "watering": "Costante e fresca", "temperature": "Temperato", "fertilization": "Organico a marzo"},
+  "light_profile": "partial_sun",
+  "water_profile": "moist",
+  "feed_profile": "organic",
+  "ph_setpoint": 6.2
+}

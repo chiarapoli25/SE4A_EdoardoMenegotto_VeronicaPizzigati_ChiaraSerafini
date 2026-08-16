@@ -1,0 +1,11 @@
+{
+  "id": "recipe-cactus-di-natale",
+  "plant_type": "Cactus di Natale",
+  "department_number": 3,
+  "substrate": "draining",
+  "care_profile": {"light": "Indiretta", "watering": "Superficie asciutta", "temperature": "15-22°C", "fertilization": "Pre-fioritura (buio)"},
+  "light_profile": "indirect",
+  "water_profile": "dry",
+  "feed_profile": "rare",
+  "ph_setpoint": 6.5
+}

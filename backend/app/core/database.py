@@ -30,7 +30,11 @@ def get_connection(
     """
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(database_path)
+    # FastAPI puo creare la dipendenza sincrona e invocare l'endpoint in due
+    # worker thread differenti. La connessione resta comunque confinata alla
+    # singola richiesta, ma SQLite deve consentirne l'uso sequenziale fra i due
+    # thread gestiti da Starlette.
+    return sqlite3.connect(database_path, check_same_thread=False)
 
 
 def get_db() -> Generator[sqlite3.Connection, None, None]:
@@ -110,6 +114,12 @@ def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
                 temperature_c REAL,
                 air_humidity_percent REAL,
                 soil_moisture_percent REAL,
+                soil_bulk_ec_ms_cm REAL,
+                soil_ec_ms_cm REAL,
+                fertilizer_concentration_mg_per_liter REAL,
+                nitrogen_estimate_mg_per_liter REAL,
+                phosphorus_estimate_mg_per_liter REAL,
+                potassium_estimate_mg_per_liter REAL,
                 ph REAL,
                 light_ppfd_umol_m2_s REAL,
                 FOREIGN KEY (zone_id) REFERENCES zones(id),
@@ -172,6 +182,186 @@ def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
         connection.execute("DROP TABLE actuator_snapshots_legacy")
 
 
+def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
+    """Aggiunge l'assegnazione Edge agli schemi creati da versioni precedenti."""
+    if (
+        _table_columns(connection, "zones")
+        and "assigned_edge_id" not in _table_columns(connection, "zones")
+    ):
+        connection.execute(
+            "ALTER TABLE zones ADD COLUMN assigned_edge_id TEXT"
+        )
+
+
+def _migrate_soil_probe_columns(connection: sqlite3.Connection) -> None:
+    """Aggiunge alle telemetrie legacy le stime prodotte dalle sonde nel suolo."""
+    columns = _table_columns(connection, "telemetry_samples")
+    additions = {
+        "soil_bulk_ec_ms_cm": "REAL",
+        "soil_ec_ms_cm": "REAL",
+        "fertilizer_concentration_mg_per_liter": "REAL",
+        "nitrogen_estimate_mg_per_liter": "REAL",
+        "phosphorus_estimate_mg_per_liter": "REAL",
+        "potassium_estimate_mg_per_liter": "REAL",
+    }
+    for column, declaration in additions.items():
+        if columns and column not in columns:
+            connection.execute(
+                f"ALTER TABLE telemetry_samples ADD COLUMN {column} {declaration}"
+            )
+
+
+def _migrate_telemetry_state_columns(connection: sqlite3.Connection) -> None:
+    """Aggiunge lo snapshot operativo completo ai campioni precedenti."""
+    columns = _table_columns(connection, "telemetry_samples")
+    additions = {
+        "active_recipe_id": "TEXT NOT NULL DEFAULT 'legacy-unknown'",
+        "active_recipe_version": "INTEGER NOT NULL DEFAULT 1",
+        "current_phase": "TEXT NOT NULL DEFAULT 'legacy-unknown'",
+        "operational_state": "TEXT NOT NULL DEFAULT 'Nominal'",
+        "lifecycle_state": "TEXT NOT NULL DEFAULT 'Running'",
+        "current_strategies": "TEXT NOT NULL DEFAULT '{}'",
+        "current_setpoints": "TEXT NOT NULL DEFAULT '{}'",
+        "time_scale": "REAL NOT NULL DEFAULT 1.0",
+    }
+    for column, declaration in additions.items():
+        if columns and column not in columns:
+            connection.execute(
+                f"ALTER TABLE telemetry_samples ADD COLUMN {column} {declaration}"
+            )
+
+
+def _migrate_zone_projection_columns(connection: sqlite3.Connection) -> None:
+    """Aggiunge la proiezione corrente senza derivarla dallo storico eventi."""
+    columns = _table_columns(connection, "zones")
+    additions = {
+        "lifecycle_state": "TEXT NOT NULL DEFAULT 'Idle'",
+        "operational_state": "TEXT NOT NULL DEFAULT 'Nominal'",
+        "active_recipe_version": "INTEGER",
+        "current_strategies": "TEXT NOT NULL DEFAULT '{}'",
+        "current_setpoints": "TEXT NOT NULL DEFAULT '{}'",
+        "time_scale": "REAL NOT NULL DEFAULT 1.0",
+        "projection_updated_at": "TEXT",
+    }
+    for column, declaration in additions.items():
+        if columns and column not in columns:
+            connection.execute(
+                f"ALTER TABLE zones ADD COLUMN {column} {declaration}"
+            )
+
+
+def _migrate_recipe_catalog_version(connection: sqlite3.Connection) -> None:
+    """Versiona il bootstrap senza trasformare i JSON in sorgente runtime."""
+    columns = _table_columns(connection, "recipe_catalog_imports")
+    if columns and "catalog_version" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE recipe_catalog_imports
+            ADD COLUMN catalog_version INTEGER NOT NULL DEFAULT 1
+            """
+        )
+
+
+def _migrate_cultivation_completed_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """Aggiunge lo stato finale esplicito alle zone create in precedenza."""
+    columns = _table_columns(connection, "zones")
+    if columns and "cultivation_completed" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE zones
+            ADD COLUMN cultivation_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (cultivation_completed IN (0, 1))
+            """
+        )
+
+
+def _migrate_zone_administrative_status_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """Aggiunge lo stato amministrativo senza confonderlo con la connettivita."""
+    if (
+        _table_columns(connection, "zones")
+        and "administrative_status" not in _table_columns(connection, "zones")
+    ):
+        connection.execute(
+            """
+            ALTER TABLE zones
+            ADD COLUMN administrative_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (administrative_status IN ('active', 'inactive', 'maintenance'))
+            """
+        )
+
+
+def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
+    """Estende i reparti a 1-5 e rende mista la composizione del quinto."""
+    columns = _table_columns(connection, "zones")
+    if not columns:
+        return
+    schema_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'zones'"
+    ).fetchone()
+    schema = "" if schema_row is None else (schema_row[0] or "")
+    if (
+        "zone_type" not in columns
+        and "BETWEEN 1 AND 5" in schema.upper()
+    ):
+        return
+
+    connection.execute("DROP TABLE IF EXISTS zones_department_migration")
+    connection.execute(
+        """
+        CREATE TABLE zones_department_migration (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            department_number INTEGER NOT NULL
+                CHECK (department_number BETWEEN 1 AND 5),
+            sector_number INTEGER NOT NULL
+                CHECK (sector_number BETWEEN 1 AND 2),
+            plant_species TEXT,
+            assigned_edge_id TEXT,
+            status TEXT NOT NULL CHECK (status IN ('online', 'offline')),
+            active_recipe_id TEXT,
+            last_edge_contact TEXT,
+            current_phase TEXT,
+            cultivation_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (cultivation_completed IN (0, 1)),
+            administrative_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (administrative_status IN
+                       ('active', 'inactive', 'maintenance')),
+            CHECK (
+                (department_number BETWEEN 1 AND 4
+                 AND plant_species IS NOT NULL)
+                OR
+                (department_number = 5
+                 AND plant_species IS NULL)
+            ),
+            UNIQUE (department_number, sector_number)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO zones_department_migration (
+            id, name, department_number, sector_number, plant_species,
+            assigned_edge_id, status, active_recipe_id,
+            last_edge_contact, current_phase
+        )
+        SELECT id, name, department_number, sector_number,
+               CASE WHEN department_number = 5
+                    THEN NULL ELSE plant_species END,
+               assigned_edge_id, status, active_recipe_id,
+               last_edge_contact, current_phase
+        FROM zones
+        """
+    )
+    connection.execute("DROP TABLE zones")
+    connection.execute(
+        "ALTER TABLE zones_department_migration RENAME TO zones"
+    )
+
+
 def init_db(connection: sqlite3.Connection) -> None:
     """@brief Crea lo schema applicativo se non esiste.
 
@@ -193,20 +383,115 @@ def init_db(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS recipe_catalog_imports (
+            recipe_id TEXT PRIMARY KEY,
+            imported_at TEXT NOT NULL,
+            catalog_version INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    _migrate_recipe_catalog_version(connection)
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS zones (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             department_number INTEGER NOT NULL
-                CHECK (department_number BETWEEN 1 AND 4),
+                CHECK (department_number BETWEEN 1 AND 5),
             sector_number INTEGER NOT NULL
                 CHECK (sector_number BETWEEN 1 AND 2),
-            plant_species TEXT NOT NULL,
+            plant_species TEXT,
+            assigned_edge_id TEXT,
             status TEXT NOT NULL CHECK (status IN ('online', 'offline')),
             active_recipe_id TEXT,
             last_edge_contact TEXT,
             current_phase TEXT,
+            lifecycle_state TEXT NOT NULL DEFAULT 'Idle'
+                CHECK (lifecycle_state IN ('Idle', 'Running', 'Paused', 'Error')),
+            operational_state TEXT NOT NULL DEFAULT 'Nominal'
+                CHECK (operational_state IN
+                       ('Nominal', 'Degraded', 'EmergencyLockdown')),
+            active_recipe_version INTEGER,
+            current_strategies TEXT NOT NULL DEFAULT '{}',
+            current_setpoints TEXT NOT NULL DEFAULT '{}',
+            time_scale REAL NOT NULL DEFAULT 1.0
+                CHECK (time_scale BETWEEN 1.0 AND 60.0),
+            projection_updated_at TEXT,
+            cultivation_completed INTEGER NOT NULL DEFAULT 0
+                CHECK (cultivation_completed IN (0, 1)),
+            administrative_status TEXT NOT NULL DEFAULT 'active'
+                CHECK (administrative_status IN
+                       ('active', 'inactive', 'maintenance')),
+            CHECK (
+                (department_number BETWEEN 1 AND 4
+                 AND plant_species IS NOT NULL)
+                OR
+                (department_number = 5
+                 AND plant_species IS NULL)
+            ),
             UNIQUE (department_number, sector_number)
         )
+        """
+    )
+    _migrate_zone_assignment_column(connection)
+    _migrate_fifth_department_schema(connection)
+    _migrate_zone_administrative_status_column(connection)
+    _migrate_cultivation_completed_column(connection)
+    _migrate_zone_projection_columns(connection)
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plants (
+            id TEXT PRIMARY KEY,
+            species TEXT NOT NULL,
+            home_zone_id TEXT NOT NULL,
+            current_zone_id TEXT NOT NULL,
+            is_quarantined INTEGER NOT NULL DEFAULT 0
+                CHECK (is_quarantined IN (0, 1)),
+            quarantine_reason TEXT,
+            quarantined_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (home_zone_id) REFERENCES zones(id),
+            FOREIGN KEY (current_zone_id) REFERENCES zones(id),
+            CHECK (
+                (is_quarantined = 0
+                 AND quarantine_reason IS NULL
+                 AND quarantined_at IS NULL)
+                OR
+                (is_quarantined = 1
+                 AND quarantine_reason IS NOT NULL
+                 AND quarantined_at IS NOT NULL)
+            )
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plants_current_zone_quarantine
+        ON plants (current_zone_id, is_quarantined, id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plant_movements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plant_id TEXT NOT NULL,
+            from_zone_id TEXT NOT NULL,
+            to_zone_id TEXT NOT NULL,
+            is_quarantined INTEGER NOT NULL
+                CHECK (is_quarantined IN (0, 1)),
+            reason TEXT,
+            moved_at TEXT NOT NULL,
+            FOREIGN KEY (plant_id) REFERENCES plants(id),
+            FOREIGN KEY (from_zone_id) REFERENCES zones(id),
+            FOREIGN KEY (to_zone_id) REFERENCES zones(id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_plant_movements_plant_moved_at
+        ON plant_movements (plant_id, moved_at DESC)
         """
     )
     connection.execute(
@@ -222,8 +507,22 @@ def init_db(connection: sqlite3.Connection) -> None:
             temperature_c REAL,
             air_humidity_percent REAL,
             soil_moisture_percent REAL,
+            soil_bulk_ec_ms_cm REAL,
+            soil_ec_ms_cm REAL,
+            fertilizer_concentration_mg_per_liter REAL,
+            nitrogen_estimate_mg_per_liter REAL,
+            phosphorus_estimate_mg_per_liter REAL,
+            potassium_estimate_mg_per_liter REAL,
             ph REAL,
             light_ppfd_umol_m2_s REAL,
+            active_recipe_id TEXT NOT NULL,
+            active_recipe_version INTEGER NOT NULL,
+            current_phase TEXT NOT NULL,
+            operational_state TEXT NOT NULL,
+            lifecycle_state TEXT NOT NULL,
+            current_strategies TEXT NOT NULL,
+            current_setpoints TEXT NOT NULL,
+            time_scale REAL NOT NULL,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
             UNIQUE (zone_id, boot_id, sequence_number)
         )
@@ -347,6 +646,8 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
     )
     _migrate_edge_session_columns(connection)
+    _migrate_soil_probe_columns(connection)
+    _migrate_telemetry_state_columns(connection)
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_telemetry_zone_recorded_at
@@ -359,4 +660,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON actuator_snapshots (zone_id, recorded_at DESC)
         """
     )
+    from ..features.recipes.catalog import seed_recipe_catalog
+
+    seed_recipe_catalog(connection)
     connection.commit()

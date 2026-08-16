@@ -20,16 +20,16 @@ double hour_of_day(double elapsed_hours) {
     return hour;
 }
 
-double nutrient_model_value(
+std::optional<double> nutrient_probe_estimate(
     ControlledVariable variable,
-    const EnvironmentState& state) {
+    const SensorReadings& readings) {
     switch (variable) {
         case ControlledVariable::NITROGEN:
-            return state.nitrogen_mg_per_liter;
+            return readings.nitrogen_estimate_mg_per_liter;
         case ControlledVariable::PHOSPHORUS:
-            return state.phosphorus_mg_per_liter;
+            return readings.phosphorus_estimate_mg_per_liter;
         case ControlledVariable::POTASSIUM:
-            return state.potassium_mg_per_liter;
+            return readings.potassium_estimate_mg_per_liter;
         default:
             break;
     }
@@ -76,6 +76,26 @@ std::size_t EdgeRuntime::active_phase_index(
     return phases.size() - 1;
 }
 
+double EdgeRuntime::total_recipe_duration_hours() const noexcept {
+    double total = 0.0;
+    for (const auto& phase : control_system_.recipe().phases) {
+        total += phase.duration_hours;
+    }
+    return total;
+}
+
+ControlledValues<ValueRange> EdgeRuntime::active_safety_ranges() const {
+    ControlledValues<ValueRange> ranges{};
+    const auto& phase = control_system_.active_phase(
+        elapsed_recipe_hours());
+    for (std::size_t index = 0;
+         index < kControlledVariableCount;
+         ++index) {
+        ranges[index] = phase.targets[index].safety_range;
+    }
+    return ranges;
+}
+
 void EdgeRuntime::reset_histories_if_needed() {
     const double elapsed_seconds =
         environment_->state().simulation_time_seconds;
@@ -106,12 +126,18 @@ SensorReadings EdgeRuntime::read_sensors() {
     readings.soil_moisture_percent =
         sensors_[sensor_channel_index(SensorChannel::SOIL_MOISTURE)]
             ->read(state);
+    readings.soil_bulk_ec_ms_cm =
+        sensors_[sensor_channel_index(SensorChannel::SOIL_CONDUCTIVITY)]
+            ->read(state);
     readings.ph =
         sensors_[sensor_channel_index(SensorChannel::PH)]
             ->read(state);
     readings.light_ppfd_umol_m2_s =
         sensors_[sensor_channel_index(SensorChannel::LIGHT)]
             ->read(state);
+    fault_injector_.alter_readings(
+        readings, state.simulation_time_seconds);
+    update_soil_probe_estimates(readings, state, soil_probe_model_);
     return readings;
 }
 
@@ -123,6 +149,7 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     }
 
     reset_histories_if_needed();
+    reset_actuator_observation();
 
     EdgeStepResult result;
     result.sequence_number = next_sequence_number_++;
@@ -162,10 +189,65 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         }
     }
     reported_phase_index_ = phase_index;
+    if (!recipe_completed_ &&
+        elapsed_recipe_hours() >= total_recipe_duration_hours()) {
+        recipe_completed_ = true;
+        result.events.push_back(
+            {
+                EdgeEventType::RECIPE_COMPLETED,
+                result.start_time_seconds,
+                "recipe completed; final phase remains active: " +
+                    result.phase_name,
+            });
+        if (event_bus_) {
+            event_bus_->publish(
+                RecipeCompleted{
+                    zone_id_,
+                    result.start_time_seconds,
+                    control_system_.recipe().id,
+                    result.phase_name,
+                    total_recipe_duration_hours(),
+                });
+        }
+    }
+    result.recipe_completed = recipe_completed_;
     result.readings = read_sensors();
+    auto detected_faults = fault_detector_.observe_readings(
+        result.readings, active_safety_ranges());
+    for (const auto& fault : previous_actuator_faults_) {
+        if (fault.severity == ControlFaultSeverity::RECOVERABLE) {
+            detected_faults.push_back(fault);
+        }
+    }
+    if (!detected_faults.empty()) {
+        publish_detected_faults(
+            detected_faults, result.start_time_seconds);
+    }
 
-    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN &&
-        !manual_reset_requested_) {
+    if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
+        if (manual_reset_requested_) {
+            apply_safe_fallback(delta_time_seconds, result, false);
+            auto actuator_faults = fault_detector_.observe_actuators(
+                detector_command_observation_,
+                detector_output_observation_,
+                actuators_->config(),
+                delta_time_seconds);
+            previous_actuator_faults_ = actuator_faults;
+            detected_faults.insert(
+                detected_faults.end(),
+                actuator_faults.begin(),
+                actuator_faults.end());
+            publish_detected_faults(
+                detected_faults, result.start_time_seconds);
+            update_operational_state(result, detected_faults);
+            result.actuator_command = actuators_->command();
+            result.actuator_output = effective_actuator_output_;
+            result.environment_state = environment_->state();
+            publish_telemetry(result);
+            return result;
+        }
+        publish_detected_faults(
+            detected_faults, result.start_time_seconds);
         apply_safe_fallback(delta_time_seconds, result, true);
         result.actuator_command = actuators_->command();
         result.actuator_output = actuators_->output();
@@ -220,7 +302,9 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         const auto index = controlled_variable_index(variable);
         request = base_request(delta_time_seconds);
         request.controller_input.model_estimate =
-            nutrient_model_value(variable, environment_->state());
+            nutrient_probe_estimate(variable, result.readings);
+        request.source_valid =
+            request.controller_input.model_estimate.has_value();
         request.controller_input.water_delivered_liters =
             requested_water;
         request.controller_input.cumulative_dose_milliliters =
@@ -233,13 +317,48 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             control_system_.execute(variable, request);
     }
 
+    apply_degraded_isolation(result, detected_faults);
+
     bool command_executed = false;
-    if (!update_operational_state(result)) {
+    const bool state_evaluated_before_actuation =
+        !detected_faults.empty();
+    if (state_evaluated_before_actuation &&
+        !update_operational_state(result, detected_faults)) {
         apply_safe_fallback(delta_time_seconds, result, false);
     } else {
         try {
             apply_decisions(delta_time_seconds, result);
             command_executed = true;
+            auto actuator_faults = fault_detector_.observe_actuators(
+                detector_command_observation_,
+                detector_output_observation_,
+                actuators_->config(),
+                delta_time_seconds);
+            previous_actuator_faults_ = actuator_faults;
+            detected_faults.insert(
+                detected_faults.end(),
+                actuator_faults.begin(),
+                actuator_faults.end());
+            if (!actuator_faults.empty()) {
+                publish_detected_faults(
+                    detected_faults, result.start_time_seconds);
+            }
+            if (state_evaluated_before_actuation) {
+                bool has_critical_actuator_fault = false;
+                for (const auto& fault : actuator_faults) {
+                    if (fault.severity ==
+                        ControlFaultSeverity::CRITICAL) {
+                        has_critical_actuator_fault = true;
+                        break;
+                    }
+                }
+                if (has_critical_actuator_fault) {
+                    update_operational_state(
+                        result, actuator_faults, false);
+                }
+            } else {
+                update_operational_state(result, detected_faults);
+            }
         } catch (const std::exception& error) {
             const std::string diagnostic =
                 "actuator command failed: " +
@@ -254,11 +373,13 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             apply_safe_fallback(delta_time_seconds, result, false);
         }
     }
-    if (operational_state_ == OperationalState::NOMINAL) {
+    if (command_executed) {
         update_dose_histories(delta_time_seconds, result);
     }
+    publish_detected_faults(
+        detected_faults, result.start_time_seconds);
     result.actuator_command = actuators_->command();
-    result.actuator_output = actuators_->output();
+    result.actuator_output = effective_actuator_output_;
     result.environment_state = environment_->state();
     if (command_executed) {
         publish_command_executed(result);

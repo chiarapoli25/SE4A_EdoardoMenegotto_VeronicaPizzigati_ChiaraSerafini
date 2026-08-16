@@ -70,12 +70,47 @@ std::string event_detail(const EdgeDomainEvent& event) {
             if constexpr (std::is_same_v<Event, TelemetrySample>) {
                 return "sequence=" +
                        std::to_string(value.sequence_number);
+            } else if constexpr (
+                std::is_same_v<Event, ZoneLifecycleChanged>) {
+                return value.previous_state + " -> " +
+                       value.current_state + ": " + value.reason;
+            } else if constexpr (
+                std::is_same_v<Event, SimulationSpeedChanged>) {
+                return std::to_string(value.previous_time_scale) +
+                       "x -> " +
+                       std::to_string(value.current_time_scale) +
+                       "x";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationChanged>) {
+                return value.limited
+                           ? "duration=" +
+                                 std::to_string(
+                                     value.duration_seconds) +
+                                 "s target=" +
+                                 std::to_string(
+                                     value.target_timestamp_seconds)
+                           : "continuous simulation";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationCompleted>) {
+                return "completed duration=" +
+                       std::to_string(value.duration_seconds) +
+                       "s";
+            } else if constexpr (
+                std::is_same_v<Event, SchedulerLagStateChanged>) {
+                return std::string(
+                           value.lagging ? "lagging" : "recovered") +
+                       " pending_steps=" +
+                       std::to_string(value.pending_steps) +
+                       " pending_seconds=" +
+                       std::to_string(
+                           value.pending_simulation_seconds);
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return std::string(state_name(value.previous_state)) +
                        " -> " + state_name(value.current_state) +
                        ": " + value.reason;
             } else if constexpr (std::is_same_v<Event, FaultDetected>) {
-                return value.fault_type + ": " + value.diagnostic;
+                return value.component + " / " + value.rule + ": " +
+                       value.diagnostic;
             } else if constexpr (std::is_same_v<Event, StrategyChanged>) {
                 return std::string(to_string(value.variable)) +
                        " strategy changed";
@@ -83,6 +118,10 @@ std::string event_detail(const EdgeDomainEvent& event) {
                 std::is_same_v<Event, RecipePhaseChanged>) {
                 return value.previous_phase + " -> " +
                        value.current_phase;
+            } else if constexpr (
+                std::is_same_v<Event, RecipeCompleted>) {
+                return value.recipe_id + " completed in " +
+                       value.final_phase;
             } else if constexpr (
                 std::is_same_v<Event, EmergencyTriggered>) {
                 return value.reason;
@@ -109,6 +148,21 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             using Event = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<Event, TelemetrySample>) {
                 return "TelemetrySample";
+            } else if constexpr (
+                std::is_same_v<Event, ZoneLifecycleChanged>) {
+                return "ZoneLifecycleChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationSpeedChanged>) {
+                return "SimulationSpeedChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationChanged>) {
+                return "SimulationDurationChanged";
+            } else if constexpr (
+                std::is_same_v<Event, SimulationDurationCompleted>) {
+                return "SimulationDurationCompleted";
+            } else if constexpr (
+                std::is_same_v<Event, SchedulerLagStateChanged>) {
+                return "SchedulerLagStateChanged";
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return "StateChanged";
             } else if constexpr (std::is_same_v<Event, FaultDetected>) {
@@ -118,6 +172,9 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             } else if constexpr (
                 std::is_same_v<Event, RecipePhaseChanged>) {
                 return "RecipePhaseChanged";
+            } else if constexpr (
+                std::is_same_v<Event, RecipeCompleted>) {
+                return "RecipeCompleted";
             } else if constexpr (
                 std::is_same_v<Event, EmergencyTriggered>) {
                 return "EmergencyTriggered";
@@ -205,7 +262,10 @@ CsvLogger::CsvLogger(const std::string& file_path)
 void CsvLogger::write_header() {
     *output_
         << "timestamp,event_type,zone,state,temperature_c,"
-           "air_humidity_percent,soil_moisture_percent,ph,"
+           "air_humidity_percent,soil_moisture_percent,soil_bulk_ec_ms_cm,"
+           "soil_ec_ms_cm,fertilizer_concentration_mg_per_liter,"
+           "nitrogen_estimate_mg_per_liter,phosphorus_estimate_mg_per_liter,"
+           "potassium_estimate_mg_per_liter,ph,"
            "light_ppfd,detail\n";
 }
 
@@ -223,11 +283,26 @@ void CsvLogger::on_event(const EdgeDomainEvent& event) {
                    telemetry->readings.air_humidity_percent) << ','
             << optional_number(
                    telemetry->readings.soil_moisture_percent) << ','
+            << optional_number(
+                   telemetry->readings.soil_bulk_ec_ms_cm) << ','
+            << optional_number(telemetry->readings.soil_ec_ms_cm) << ','
+            << optional_number(
+                   telemetry->readings
+                       .fertilizer_concentration_mg_per_liter) << ','
+            << optional_number(
+                   telemetry->readings
+                       .nitrogen_estimate_mg_per_liter) << ','
+            << optional_number(
+                   telemetry->readings
+                       .phosphorus_estimate_mg_per_liter) << ','
+            << optional_number(
+                   telemetry->readings
+                       .potassium_estimate_mg_per_liter) << ','
             << optional_number(telemetry->readings.ph) << ','
             << optional_number(
                    telemetry->readings.light_ppfd_umol_m2_s) << ',';
     } else {
-        *output_ << ",,,,,,";
+        *output_ << ",,,,,,,,,,,,";
     }
     *output_ << csv_escape(event_detail(event)) << '\n';
 }

@@ -1,6 +1,7 @@
 #include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/runtime/edge_runtime.hpp>
 
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -29,22 +30,61 @@ const std::string& EdgeRuntime::zone_id() const noexcept {
     return zone_id_;
 }
 
+void EdgeRuntime::set_snapshot_context(
+    std::string lifecycle_state,
+    double time_scale) {
+    if (lifecycle_state.empty()) {
+        throw std::invalid_argument(
+            "snapshot lifecycle state must not be empty");
+    }
+    if (!std::isfinite(time_scale) || time_scale <= 0.0) {
+        throw std::invalid_argument(
+            "snapshot time scale must be finite and positive");
+    }
+    snapshot_lifecycle_state_ = std::move(lifecycle_state);
+    snapshot_time_scale_ = time_scale;
+}
+
 void EdgeRuntime::publish_telemetry(
     const EdgeStepResult& result) noexcept {
     if (!event_bus_) {
         return;
     }
-    event_bus_->publish(
-        TelemetrySample{
-            zone_id_,
-            result.sequence_number,
-            result.environment_state.simulation_time_seconds,
-            result.operational_state,
-            result.readings,
-            result.actuator_command,
-            result.actuator_output,
-            result.environment_state,
-        });
+    TelemetrySample sample;
+    sample.zone_id = zone_id_;
+    sample.sequence_number = result.sequence_number;
+    sample.timestamp_seconds =
+        result.environment_state.simulation_time_seconds;
+    sample.operational_state = result.operational_state;
+    sample.readings = result.readings;
+    sample.actuator_command = result.actuator_command;
+    sample.actuator_output = result.actuator_output;
+    sample.environment_state = result.environment_state;
+    const auto& recipe = control_system_.recipe();
+    sample.active_recipe_id = recipe.id;
+    sample.active_recipe_version = recipe.version;
+    sample.current_phase = result.phase_name;
+    sample.lifecycle_state = snapshot_lifecycle_state_;
+    sample.time_scale = snapshot_time_scale_;
+
+    const RecipePhase* phase = nullptr;
+    for (const auto& candidate : recipe.phases) {
+        if (candidate.name == result.phase_name) {
+            phase = &candidate;
+            break;
+        }
+    }
+    for (std::size_t index = 0;
+         index < kControlledVariableCount;
+         ++index) {
+        sample.current_strategies[index] =
+            recipe.controllers[index].selected_strategy;
+        if (phase != nullptr) {
+            sample.current_setpoints[index] =
+                phase->targets[index].setpoint;
+        }
+    }
+    event_bus_->publish(sample);
 }
 
 void EdgeRuntime::publish_command_executed(

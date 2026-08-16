@@ -112,6 +112,23 @@ target_link_libraries(recipe_json
 )
 set_target_properties(recipe_json PROPERTIES CXX_EXTENSIONS OFF)
 
+# Injector simulativo e detector osservazionale, indipendenti dalla FSM.
+add_library(
+    fault_management
+    faults/fault_detector.cpp
+    faults/fault_injector.cpp
+)
+target_include_directories(fault_management
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(fault_management PUBLIC cxx_std_17)
+target_link_libraries(fault_management
+    PUBLIC
+        control_system
+        io_adapters
+)
+set_target_properties(fault_management PROPERTIES CXX_EXTENSIONS OFF)
+
 # Ciclo operativo che collega ricetta, sensori, attuatori e ambiente.
 add_library(
     edge_runtime
@@ -131,6 +148,7 @@ target_link_libraries(edge_runtime
         control_system
         io_adapters
         event_bus
+        fault_management
 )
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 
@@ -174,6 +192,7 @@ set_target_properties(http_backend_client PROPERTIES CXX_EXTENSIONS OFF)
 add_library(
     greenhouse_manager
     runtime/greenhouse_manager.cpp
+    runtime/simulation_scheduler.cpp
 )
 target_include_directories(greenhouse_manager
     PUBLIC ${PROJECT_SOURCE_DIR}/include
@@ -198,10 +217,6 @@ target_link_libraries(edge
         greenhouse_manager
         http_backend_client
         recipe_json
-)
-target_compile_definitions(edge
-    PRIVATE
-        SMARTHYDRO_DEFAULT_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
 )
 set_target_properties(edge PROPERTIES CXX_EXTENSIONS OFF)
 

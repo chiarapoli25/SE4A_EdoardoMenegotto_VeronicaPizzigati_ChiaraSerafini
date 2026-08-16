@@ -108,6 +108,21 @@ public:
     /** Estrae i comandi da eseguire fra due cicli del GreenhouseManager. */
     std::vector<RemoteRuntimeCommand> take_commands();
 
+    /**
+     * @brief Estrae gli ID delle zone scoperte dal manifesto dell'Edge.
+     *
+     * Ogni identificatore viene restituito una sola volta, anche dopo retry.
+     */
+    std::vector<std::string> take_discovered_zone_ids();
+
+    /**
+     * @brief Estrae gli ID rimossi da un manifesto backend valido.
+     *
+     * Errori HTTP, JSON malformato o manifesti non validi non producono
+     * rimozioni e lasciano intatta la cache persistente.
+     */
+    std::vector<std::string> take_removed_zone_ids();
+
     /** Accoda l'esito di un comando per la consegna idempotente. */
     void submit_command_result(
         const std::string& zone_id,

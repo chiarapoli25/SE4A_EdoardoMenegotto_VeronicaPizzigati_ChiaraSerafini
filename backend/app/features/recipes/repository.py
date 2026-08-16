@@ -77,7 +77,11 @@ def get_recipe(
 
 
 def list_recipes(connection: sqlite3.Connection) -> list[Recipe]:
+<<<<<<< HEAD
     """Elenca l'ultima versione di ogni ricetta, ordinate per identificativo."""
+=======
+    """Elenca tutte le ricette SQLite ordinate per identificativo."""
+>>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
     rows = connection.execute(
         """
         SELECT data FROM recipes

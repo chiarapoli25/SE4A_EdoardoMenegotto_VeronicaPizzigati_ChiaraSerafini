@@ -112,7 +112,7 @@
   "controllers": [
     {
       "variable": "soil_moisture",
-      "sensor": "soil_moisture_sensor",
+      "input_source": "soil_moisture_sensor",
       "actuator": "water_pump",
       "default_strategy": "Threshold",
       "selected_strategy": "Threshold",
@@ -140,7 +140,7 @@
     },
     {
       "variable": "light",
-      "sensor": "light_sensor",
+      "input_source": "light_sensor",
       "actuator": "lighting",
       "default_strategy": "Threshold",
       "selected_strategy": "Threshold",
@@ -168,7 +168,7 @@
     },
     {
       "variable": "ph",
-      "sensor": "ph_sensor",
+      "input_source": "ph_sensor",
       "actuator": "ph_corrector_valves",
       "default_strategy": "PID",
       "selected_strategy": "PID",
@@ -197,7 +197,7 @@
     },
     {
       "variable": "nitrogen",
-      "sensor": "nitrogen_model",
+      "input_source": "nitrogen_model",
       "actuator": "nitrogen_valve",
       "default_strategy": "Predictive",
       "selected_strategy": "Predictive",
@@ -229,7 +229,7 @@
     },
     {
       "variable": "phosphorus",
-      "sensor": "phosphorus_model",
+      "input_source": "phosphorus_model",
       "actuator": "phosphorus_valve",
       "default_strategy": "Predictive",
       "selected_strategy": "Predictive",
@@ -261,7 +261,7 @@
     },
     {
       "variable": "potassium",
-      "sensor": "potassium_model",
+      "input_source": "potassium_model",
       "actuator": "potassium_valve",
       "default_strategy": "Predictive",
       "selected_strategy": "Predictive",

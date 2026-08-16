@@ -23,10 +23,48 @@ enum class OperationalState {
     EMERGENCY_LOCKDOWN,
 };
 
+/** @brief Famiglia del componente sul quale viene simulata un'anomalia. */
+enum class FaultTargetKind {
+    SENSOR,
+    ACTUATOR,
+};
+
+/** @brief Anomalie riproducibili supportate dalla simulazione Edge. */
+enum class FaultMode {
+    SENSOR_DROPOUT,
+    SENSOR_STUCK,
+    SENSOR_OFFSET,
+    ACTUATOR_STUCK_OFF,
+    ACTUATOR_STUCK_ON,
+    ACTUATOR_SLOW_RESPONSE,
+};
+
+/**
+ * @brief Descrizione utente di un'anomalia da applicare alla simulazione.
+ *
+ * `target` usa i nomi stabili dei sei sensori (`temperature`,
+ * `air_humidity`, `soil_moisture`, `soil_conductivity`, `ph`, `light`) o degli attuatori
+ * (`water_pump`, `lighting`, `nitrogen_valve`, `phosphorus_valve`,
+ * `potassium_valve`, `ph_up_valve`, `ph_down_valve`).
+ *
+ * `value` e obbligatorio per sensor_offset e actuator_slow_response. Per
+ * sensor_stuck e opzionale: se manca viene congelata la prima lettura.
+ * `duration_seconds` assente rende il fault persistente fino a ResetFault.
+ */
+struct FaultSpecification {
+    std::string fault_id;
+    FaultTargetKind target_kind = FaultTargetKind::SENSOR;
+    std::string target = "soil_moisture";
+    FaultMode mode = FaultMode::SENSOR_DROPOUT;
+    std::optional<double> value;
+    std::optional<double> duration_seconds;
+};
+
 /** @brief Tipi di evento prodotti dal runtime locale in questa fase. */
 enum class EdgeEventType {
     RUNTIME_STARTED,
     RECIPE_PHASE_CHANGED,
+    RECIPE_COMPLETED,
     OPERATIONAL_STATE_CHANGED,
     EMERGENCY_LOCKDOWN_ENTERED,
 };
@@ -76,6 +114,8 @@ struct EdgeStepResult {
     double duration_seconds = 0.0;
     /** Nome della fase usata per calcolare i comandi. */
     std::string phase_name;
+    /** True dopo il termine temporale dell'ultima fase. */
+    bool recipe_completed = false;
     /** Stato operativo della zona durante il ciclo. */
     OperationalState operational_state = OperationalState::NOMINAL;
     /** Eventi prodotti all'inizio del ciclo. */
@@ -98,6 +138,10 @@ struct EdgeStepResult {
 
 /** @brief Nome stabile dello stato operativo per log e serializzazione. */
 const char* to_string(OperationalState state) noexcept;
+/** @brief Nome JSON stabile della famiglia del componente guasto. */
+const char* to_string(FaultTargetKind kind) noexcept;
+/** @brief Nome JSON stabile della modalita di fault. */
+const char* to_string(FaultMode mode) noexcept;
 /** @brief Nome stabile del tipo di evento per log e serializzazione. */
 const char* to_string(EdgeEventType type) noexcept;
 

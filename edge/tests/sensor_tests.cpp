@@ -9,6 +9,7 @@ smarthydro::SensorConfig ideal_sensor_config() {
     config.temperature = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.air_humidity = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.soil_moisture = {0.0, 0.0, 0.0, 0.0, 0.0};
+    config.soil_conductivity = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.ph = {0.0, 0.0, 0.0, 0.0, 0.0};
     config.light_ppfd = {0.0, 0.0, 0.0, 0.0, 0.0};
     return config;
@@ -39,6 +40,8 @@ TEST(SensorSimulatorTest, ReadDoesNotModifyEnvironment) {
     EXPECT_DOUBLE_EQ(*readings.temperature_c, 23.4);
     ASSERT_TRUE(readings.soil_moisture_percent.has_value());
     EXPECT_DOUBLE_EQ(*readings.soil_moisture_percent, 80.0);
+    ASSERT_TRUE(readings.soil_ec_ms_cm.has_value());
+    EXPECT_NEAR(*readings.soil_ec_ms_cm, 2.4, 1.0e-12);
     EXPECT_DOUBLE_EQ(readings.timestamp_seconds, 900.0);
 }
 
@@ -60,6 +63,7 @@ TEST(SensorSimulatorTest, SupportsCompleteDropout) {
     config.temperature.dropout_probability = 1.0;
     config.air_humidity.dropout_probability = 1.0;
     config.soil_moisture.dropout_probability = 1.0;
+    config.soil_conductivity.dropout_probability = 1.0;
     config.ph.dropout_probability = 1.0;
     config.light_ppfd.dropout_probability = 1.0;
     smarthydro::SensorSimulator sensors(config, 8);
@@ -69,6 +73,9 @@ TEST(SensorSimulatorTest, SupportsCompleteDropout) {
     EXPECT_FALSE(readings.temperature_c.has_value());
     EXPECT_FALSE(readings.air_humidity_percent.has_value());
     EXPECT_FALSE(readings.soil_moisture_percent.has_value());
+    EXPECT_FALSE(readings.soil_bulk_ec_ms_cm.has_value());
+    EXPECT_FALSE(readings.soil_ec_ms_cm.has_value());
+    EXPECT_FALSE(readings.fertilizer_concentration_mg_per_liter.has_value());
     EXPECT_FALSE(readings.ph.has_value());
     EXPECT_FALSE(readings.light_ppfd_umol_m2_s.has_value());
 }
@@ -91,6 +98,11 @@ TEST(SensorSimulatorTest, SeedMakesInstrumentNoiseReproducible) {
         EXPECT_EQ(a.temperature_c, b.temperature_c);
         EXPECT_EQ(a.air_humidity_percent, b.air_humidity_percent);
         EXPECT_EQ(a.soil_moisture_percent, b.soil_moisture_percent);
+        EXPECT_EQ(a.soil_bulk_ec_ms_cm, b.soil_bulk_ec_ms_cm);
+        EXPECT_EQ(a.soil_ec_ms_cm, b.soil_ec_ms_cm);
+        EXPECT_EQ(
+            a.fertilizer_concentration_mg_per_liter,
+            b.fertilizer_concentration_mg_per_liter);
         EXPECT_EQ(a.ph, b.ph);
         EXPECT_EQ(a.light_ppfd_umol_m2_s, b.light_ppfd_umol_m2_s);
     }
@@ -122,9 +134,76 @@ TEST(SensorSimulatorTest, ReportsSoilMoistureAsPercentage) {
     EXPECT_DOUBLE_EQ(*readings.soil_moisture_percent, 63.5);
 }
 
+TEST(SensorSimulatorTest, ConvertsCapacitanceToSoilMoisture) {
+    auto config = ideal_sensor_config();
+    config.soil_moisture.bias = 6.0;
+    smarthydro::SensorSimulator sensors(config, 13);
+    smarthydro::EnvironmentState environment;
+    environment.soil_moisture_percent = 40.0;
+
+    const auto readings = sensors.read(environment);
+
+    ASSERT_TRUE(readings.soil_moisture_percent.has_value());
+    EXPECT_NEAR(*readings.soil_moisture_percent, 50.0, 1.0e-12);
+}
+
+TEST(SensorSimulatorTest, CorrectsResistiveProbeWithCapacitiveMoisture) {
+    smarthydro::SensorSimulator sensors(ideal_sensor_config(), 11);
+    smarthydro::EnvironmentState wet;
+    wet.soil_moisture_percent = 80.0;
+    wet.ec_ms_cm = 2.1;
+    wet.nitrogen_mg_per_liter = 150.0;
+    wet.phosphorus_mg_per_liter = 50.0;
+    wet.potassium_mg_per_liter = 200.0;
+    auto dry = wet;
+    dry.soil_moisture_percent = 30.0;
+
+    const auto wet_readings = sensors.read(wet);
+    const auto dry_readings = sensors.read(dry);
+
+    ASSERT_TRUE(wet_readings.soil_bulk_ec_ms_cm.has_value());
+    ASSERT_TRUE(dry_readings.soil_bulk_ec_ms_cm.has_value());
+    EXPECT_GT(
+        *wet_readings.soil_bulk_ec_ms_cm,
+        *dry_readings.soil_bulk_ec_ms_cm);
+    ASSERT_TRUE(wet_readings.soil_ec_ms_cm.has_value());
+    ASSERT_TRUE(dry_readings.soil_ec_ms_cm.has_value());
+    EXPECT_NEAR(*wet_readings.soil_ec_ms_cm, 2.1, 1.0e-12);
+    EXPECT_NEAR(*dry_readings.soil_ec_ms_cm, 2.1, 1.0e-12);
+}
+
+TEST(SensorSimulatorTest, EstimatesTotalFertilizerAndModelComposition) {
+    smarthydro::SensorSimulator sensors(ideal_sensor_config(), 12);
+    smarthydro::EnvironmentState environment;
+    environment.soil_moisture_percent = 75.0;
+    environment.ec_ms_cm = 1.8;
+    environment.nitrogen_mg_per_liter = 150.0;
+    environment.phosphorus_mg_per_liter = 50.0;
+    environment.potassium_mg_per_liter = 200.0;
+
+    const auto readings = sensors.read(environment);
+
+    ASSERT_TRUE(readings.fertilizer_concentration_mg_per_liter.has_value());
+    ASSERT_TRUE(readings.nitrogen_estimate_mg_per_liter.has_value());
+    ASSERT_TRUE(readings.phosphorus_estimate_mg_per_liter.has_value());
+    ASSERT_TRUE(readings.potassium_estimate_mg_per_liter.has_value());
+    EXPECT_NEAR(
+        *readings.fertilizer_concentration_mg_per_liter,
+        400.0,
+        1.0e-10);
+    EXPECT_NEAR(*readings.nitrogen_estimate_mg_per_liter, 150.0, 1.0e-10);
+    EXPECT_NEAR(*readings.phosphorus_estimate_mg_per_liter, 50.0, 1.0e-10);
+    EXPECT_NEAR(*readings.potassium_estimate_mg_per_liter, 200.0, 1.0e-10);
+}
+
 TEST(SensorSimulatorTest, RejectsInvalidChannelConfiguration) {
     auto config = ideal_sensor_config();
     config.ph.dropout_probability = 1.1;
+    EXPECT_THROW(smarthydro::SensorSimulator(config, 1), std::invalid_argument);
+
+    config = ideal_sensor_config();
+    config.soil_probe_model.saturated_capacitance_pf =
+        config.soil_probe_model.dry_capacitance_pf;
     EXPECT_THROW(smarthydro::SensorSimulator(config, 1), std::invalid_argument);
 }
 

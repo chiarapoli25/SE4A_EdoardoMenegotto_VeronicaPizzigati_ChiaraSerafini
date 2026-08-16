@@ -1,0 +1,11 @@
+{
+  "id": "recipe-calathea",
+  "plant_type": "Calathea",
+  "department_number": 1,
+  "substrate": "organic-retentive",
+  "care_profile": {"light": "Bassa/Media", "watering": "Costante, leggermente umido", "temperature": "Umidità >60%", "fertilization": "Mensile diluito"},
+  "light_profile": "low",
+  "water_profile": "moist",
+  "feed_profile": "light",
+  "ph_setpoint": 6.2
+}
