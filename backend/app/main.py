@@ -72,11 +72,8 @@ app.include_router(actuator_router)
 app.include_router(recipe_router)
 app.include_router(event_router)
 app.include_router(command_router)
-<<<<<<< HEAD
 app.include_router(cultivation_router)
-=======
 app.include_router(plant_router)
->>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
 
 # Contratto versionato usato dai nuovi client Edge. Gli endpoint storici
 # restano disponibili per la dashboard e per i test precedenti.
@@ -88,11 +85,8 @@ for versioned_router in (
     recipe_router,
     event_router,
     command_router,
-<<<<<<< HEAD
     cultivation_router,
-=======
     plant_router,
->>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
 ):
     app.include_router(
         versioned_router,

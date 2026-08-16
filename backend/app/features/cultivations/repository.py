@@ -8,11 +8,24 @@ non lasciare mai una coltivazione in uno stato intermedio incoerente.
 L'indice univoco parziale creato in `core.database` garantisce comunque,
 anche in presenza di richieste concorrenti, che un settore non abbia mai
 piu di una coltivazione non conclusa.
+
+L'attivazione vera e propria non e simulata da questo modulo: la conferma
+accoda un comando `ActivateCultivation` sulla stessa coda comandi (Edge)
+gia usata dalle altre feature (`features.commands`), con la ricetta pinnata
+incorporata nel payload cosi che l'Edge non debba mai risolvere una versione
+diversa da quella confermata. L'esito arriva quando l'Edge riporta il
+risultato del comando tramite l'endpoint gia esistente
+`POST /zones/{zone_id}/commands/{command_id}/result`; la riconciliazione
+avviene in `features.commands.routes`, che richiama
+`apply_activation_command_result` qui sotto.
 """
 
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 
+from ..commands.models import CommandStatus, CommandType, RuntimeCommandCreate
+from ..commands.repository import RuntimeCommandConflict, create_command
 from ..recipes.repository import get_recipe
 from ..zones.repository import get_zone
 from .models import (
@@ -41,7 +54,7 @@ _COLUMNS = (
     "id, zone_id, plant_species, recipe_id, recipe_version, status, "
     "created_by, created_at, confirmed_at, started_at, completed_at, "
     "elapsed_simulation_seconds, requested_time_scale, applied_time_scale, "
-    "error_message"
+    "error_message, activation_command_id"
 )
 
 ## @brief Stati che non occupano piu in modo esclusivo il settore.
@@ -73,6 +86,7 @@ def _cultivation_from_row(row: tuple) -> Cultivation:
         requested_time_scale=row[12],
         applied_time_scale=row[13],
         error_message=row[14],
+        activation_command_id=row[15],
     )
 
 
@@ -82,6 +96,17 @@ def get_cultivation(
     """@brief Recupera una coltivazione tramite identificativo."""
     row = connection.execute(
         f"SELECT {_COLUMNS} FROM cultivations WHERE id = ?", (cultivation_id,)
+    ).fetchone()
+    return None if row is None else _cultivation_from_row(row)
+
+
+def _get_cultivation_by_activation_command(
+    connection: sqlite3.Connection, command_id: str
+) -> Cultivation | None:
+    """@brief Recupera la coltivazione legata a un comando di attivazione."""
+    row = connection.execute(
+        f"SELECT {_COLUMNS} FROM cultivations WHERE activation_command_id = ?",
+        (command_id,),
     ).fetchone()
     return None if row is None else _cultivation_from_row(row)
 
@@ -198,7 +223,15 @@ def confirm_cultivation(
     cultivation_id: str,
     confirm: CultivationConfirm,
 ) -> Cultivation | None:
-    """@brief Conferma una bozza e fissa definitivamente la versione della ricetta.
+    """@brief Conferma una bozza, fissa la ricetta e accoda l'attivazione Edge.
+
+    @details Dopo i controlli di compatibilita, incorpora la ricetta pinnata
+    per intero nel payload del comando `ActivateCultivation` (oltre a
+    `recipe_id`, letto dalla sincronizzazione gia esistente in
+    `features.commands`, e a `recipe_version`, usato dall'Edge se dovesse
+    comunque risolvere la ricetta da `recipe_id`): l'Edge riceve cosi
+    esattamente la versione confermata qui, anche se nel frattempo viene
+    pubblicata una versione successiva.
 
     @param connection Connessione SQLite sulla quale operare.
     @param cultivation_id Identificativo della coltivazione da confermare.
@@ -252,10 +285,35 @@ def confirm_cultivation(
             f"{previous_substrate!r}, not {recipe.substrate.value!r}"
         )
 
+    activation_command_id = f"{cultivation_id}-activate"
+    create_command(
+        connection,
+        existing.zone_id,
+        RuntimeCommandCreate(
+            command_id=activation_command_id,
+            command_type=CommandType.ACTIVATE_CULTIVATION,
+            payload={
+                "cultivation_id": cultivation_id,
+                "recipe_id": recipe.id,
+                "recipe_version": recipe.version,
+                "recipe": recipe.model_dump(mode="json"),
+            },
+        ),
+    )
+
     confirmed_at = datetime.now(timezone.utc)
     connection.execute(
-        "UPDATE cultivations SET status = ?, confirmed_at = ? WHERE id = ?",
-        (CultivationStatus.CONFIRMED.value, confirmed_at.isoformat(), cultivation_id),
+        """
+        UPDATE cultivations
+        SET status = ?, confirmed_at = ?, activation_command_id = ?
+        WHERE id = ?
+        """,
+        (
+            CultivationStatus.CONFIRMED.value,
+            confirmed_at.isoformat(),
+            activation_command_id,
+            cultivation_id,
+        ),
     )
     connection.commit()
     return get_cultivation(connection, cultivation_id)
@@ -272,7 +330,7 @@ def record_activation_result(
     `started_at` e `applied_time_scale`. Un fallimento conserva il motivo in
     `error_message`, porta la coltivazione a `failed` e libera il settore per
     una nuova bozza; gli attuatori restano spenti perche questo modulo non
-    invia mai comandi di attivazione.
+    invia mai comandi di attivazione direttamente, solo tramite la coda.
 
     @return Coltivazione aggiornata, oppure `None` se l'identificativo non
         esiste.
@@ -327,6 +385,70 @@ def record_activation_result(
     return get_cultivation(connection, cultivation_id)
 
 
+def apply_activation_command_result(
+    connection: sqlite3.Connection,
+    command_id: str,
+    status: CommandStatus,
+    message: str | None,
+) -> Cultivation | None:
+    """@brief Riconcilia l'esito di un comando `ActivateCultivation` completato.
+
+    @details Chiamata da `features.commands.routes` subito dopo che un
+    comando e stato completato, cosi che l'unico canale con cui l'Edge
+    riporta un esito (`POST .../commands/{id}/result`) sia anche l'unico che
+    fa avanzare lo stato della coltivazione. E' tollerante verso i replay
+    idempotenti del comando: se la coltivazione non e (piu) in stato
+    `confirmed` non solleva errori, restituisce semplicemente lo stato
+    corrente.
+
+    @param command_id Identificativo del comando appena completato.
+    @param status Stato finale del comando (`succeeded` o `rejected`).
+    @param message Messaggio riportato dall'Edge, usato come motivo in caso
+        di fallimento.
+    @return La coltivazione coinvolta, oppure `None` se `command_id` non
+        corrisponde a nessuna attivazione di coltivazione.
+    """
+    existing = _get_cultivation_by_activation_command(connection, command_id)
+    if existing is None or existing.status is not CultivationStatus.CONFIRMED:
+        return existing
+    result = CultivationActivationResult(
+        success=status is CommandStatus.SUCCEEDED,
+        error_message=(
+            None
+            if status is CommandStatus.SUCCEEDED
+            else (message or "activation rejected by the Edge")
+        ),
+    )
+    return record_activation_result(connection, existing.id, result)
+
+
+def _enqueue_lifecycle_command(
+    connection: sqlite3.Connection,
+    zone_id: str,
+    cultivation_id: str,
+    command_type: CommandType,
+) -> None:
+    """@brief Notifica un cambio di lifecycle alla stessa coda Edge.
+
+    @details A differenza dell'attivazione, pausa/ripresa/conclusione non
+    attendono un esito: lo stato della coltivazione cambia subito in questa
+    tabella storica, mentre il comando accodato tiene allineata la proiezione
+    corrente sulla zona gia gestita da `features.commands`/`features.zones`.
+    Il fallimento dell'accodamento (identificativo gia usato con dati
+    diversi, caso limite) non deve impedire la transizione locale, quindi
+    viene ignorato.
+    """
+    command_id = f"{cultivation_id}-{command_type.value.lower()}-{uuid.uuid4().hex[:8]}"
+    try:
+        create_command(
+            connection,
+            zone_id,
+            RuntimeCommandCreate(command_id=command_id, command_type=command_type),
+        )
+    except (RuntimeCommandConflict, sqlite3.Error):
+        pass
+
+
 def _apply_progress(
     connection: sqlite3.Connection, cultivation_id: str, progress: CultivationProgress
 ) -> None:
@@ -361,6 +483,9 @@ def pause_cultivation(
         (CultivationStatus.PAUSED.value, cultivation_id),
     )
     connection.commit()
+    _enqueue_lifecycle_command(
+        connection, existing.zone_id, cultivation_id, CommandType.PAUSE_CULTIVATION
+    )
     return get_cultivation(connection, cultivation_id)
 
 
@@ -384,6 +509,9 @@ def resume_cultivation(
         (CultivationStatus.ACTIVE.value, cultivation_id),
     )
     connection.commit()
+    _enqueue_lifecycle_command(
+        connection, existing.zone_id, cultivation_id, CommandType.RESUME_CULTIVATION
+    )
     return get_cultivation(connection, cultivation_id)
 
 
@@ -414,4 +542,7 @@ def complete_cultivation(
         (CultivationStatus.COMPLETED.value, completed_at.isoformat(), cultivation_id),
     )
     connection.commit()
+    _enqueue_lifecycle_command(
+        connection, existing.zone_id, cultivation_id, CommandType.STOP_CULTIVATION
+    )
     return get_cultivation(connection, cultivation_id)

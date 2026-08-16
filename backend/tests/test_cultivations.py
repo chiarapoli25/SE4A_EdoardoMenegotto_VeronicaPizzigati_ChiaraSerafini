@@ -1,20 +1,14 @@
 import sqlite3
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.database import init_db
-from backend.app.main import app, get_db, get_export_directory
+from backend.app.main import app, get_db
 
 
 @pytest.fixture()
-def export_directory(tmp_path: Path) -> Path:
-    return tmp_path / "recipes"
-
-
-@pytest.fixture()
-def client(export_directory: Path) -> TestClient:
+def client() -> TestClient:
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     init_db(connection)
 
@@ -22,7 +16,6 @@ def client(export_directory: Path) -> TestClient:
         yield connection
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_export_directory] = lambda: export_directory
     try:
         yield TestClient(app)
     finally:
@@ -74,6 +67,30 @@ def draft_payload(
     }
 
 
+def confirm_and_get_command_id(client: TestClient, cultivation_id: str = "cult-1") -> str:
+    """Conferma la bozza e restituisce l'id del comando ActivateCultivation accodato."""
+    confirmed = client.post(f"/cultivations/{cultivation_id}/confirm", json={})
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "confirmed"
+    command_id = confirmed.json()["activation_command_id"]
+    assert command_id
+    return command_id
+
+
+def report_command_result(
+    client: TestClient,
+    zone_id: str,
+    command_id: str,
+    status: str,
+    message: str,
+) -> None:
+    response = client.post(
+        f"/zones/{zone_id}/commands/{command_id}/result",
+        json={"status": status, "message": message, "replayed": False},
+    )
+    assert response.status_code == 200
+
+
 def test_open_draft_requires_existing_zone(
     client: TestClient, example_recipe_data: dict
 ) -> None:
@@ -84,54 +101,79 @@ def test_open_draft_requires_existing_zone(
     assert response.status_code == 404
 
 
-def test_confirm_and_positive_activation_makes_cultivation_active(
+def test_confirm_enqueues_activate_cultivation_command(
     client: TestClient, example_recipe_data: dict
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-
     created = client.post("/cultivations", json=draft_payload())
     assert created.status_code == 201
     assert created.json()["status"] == "draft"
 
     confirmed = client.post("/cultivations/cult-1/confirm", json={})
+
     assert confirmed.status_code == 200
     assert confirmed.json()["status"] == "confirmed"
-    assert confirmed.json()["confirmed_at"] is not None
+    command_id = confirmed.json()["activation_command_id"]
+    assert command_id
 
-    activated = client.post(
-        "/cultivations/cult-1/activation-result",
-        json={"success": True, "applied_time_scale": 2.0},
-    )
-    assert activated.status_code == 200
-    body = activated.json()
-    assert body["status"] == "active"
-    assert body["started_at"] is not None
-    assert body["applied_time_scale"] == 2.0
+    pending = client.get("/zones/r1-s1/commands")
+    assert pending.status_code == 200
+    matching = [c for c in pending.json() if c["command_id"] == command_id]
+    assert len(matching) == 1
+    assert matching[0]["command_type"] == "ActivateCultivation"
+    assert matching[0]["payload"]["cultivation_id"] == "cult-1"
+    assert matching[0]["payload"]["recipe"]["version"] == 1
 
 
-def test_failed_activation_keeps_reason_and_frees_zone(
+def test_positive_command_result_activates_the_cultivation(
     client: TestClient, example_recipe_data: dict
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
     client.post("/cultivations", json=draft_payload())
-    client.post("/cultivations/cult-1/confirm", json={})
+    command_id = confirm_and_get_command_id(client)
 
-    failed = client.post(
-        "/cultivations/cult-1/activation-result",
-        json={"success": False, "error_message": "edge unreachable"},
-    )
+    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
 
-    assert failed.status_code == 200
-    body = failed.json()
-    assert body["status"] == "failed"
-    assert body["error_message"] == "edge unreachable"
-    assert body["started_at"] is None
+    cultivation = client.get("/cultivations/cult-1").json()
+    assert cultivation["status"] == "active"
+    assert cultivation["started_at"] is not None
+
+
+def test_rejected_command_result_fails_cultivation_and_frees_zone(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data)
+    client.post("/cultivations", json=draft_payload())
+    command_id = confirm_and_get_command_id(client)
+
+    report_command_result(client, "r1-s1", command_id, "rejected", "edge unreachable")
+
+    cultivation = client.get("/cultivations/cult-1").json()
+    assert cultivation["status"] == "failed"
+    assert cultivation["error_message"] == "edge unreachable"
+    assert cultivation["started_at"] is None
 
     # Il settore e libero: si puo aprire una nuova bozza.
     reopened = client.post("/cultivations", json=draft_payload("cult-2"))
     assert reopened.status_code == 201
+
+
+def test_replaying_the_same_command_result_is_a_no_op(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data)
+    client.post("/cultivations", json=draft_payload())
+    command_id = confirm_and_get_command_id(client)
+
+    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
+    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
+
+    cultivation = client.get("/cultivations/cult-1").json()
+    assert cultivation["status"] == "active"
 
 
 def test_only_one_non_concluded_cultivation_per_zone(
@@ -187,6 +229,11 @@ def test_confirm_fixes_recipe_version_even_after_new_version_is_published(
 
     assert confirmed.status_code == 200
     assert confirmed.json()["recipe_version"] == 1
+    pending = client.get("/zones/r1-s1/commands").json()
+    activate = next(
+        c for c in pending if c["command_id"] == confirmed.json()["activation_command_id"]
+    )
+    assert activate["payload"]["recipe"]["version"] == 1
 
 
 def test_confirm_wrong_state_returns_409(
@@ -208,10 +255,8 @@ def test_pause_resume_and_complete_workflow(
     create_zone(client)
     create_recipe(client, example_recipe_data)
     client.post("/cultivations", json=draft_payload())
-    client.post("/cultivations/cult-1/confirm", json={})
-    client.post(
-        "/cultivations/cult-1/activation-result", json={"success": True}
-    )
+    command_id = confirm_and_get_command_id(client)
+    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
 
     paused = client.post(
         "/cultivations/cult-1/pause",
@@ -233,6 +278,12 @@ def test_pause_resume_and_complete_workflow(
     assert completed.json()["status"] == "completed"
     assert completed.json()["completed_at"] is not None
     assert completed.json()["elapsed_simulation_seconds"] == 7200
+
+    # Pausa e ripresa hanno anche notificato la coda comandi della zona.
+    types = {c["command_type"] for c in client.get("/zones/r1-s1/commands").json()}
+    assert "PauseCultivation" in types
+    assert "ResumeCultivation" in types
+    assert "StopCultivation" in types
 
 
 def test_pause_wrong_state_returns_409(

@@ -1052,8 +1052,24 @@ private:
                             throw std::invalid_argument(
                                 "invalid recipe identifier");
                         }
-                        const auto recipe_response = transport_->get(
-                            "/api/v1/recipes/" + recipe_id);
+                        // Il backend conserva ogni versione come riga a se
+                        // stante (chiave (id, version)): se il comando
+                        // specifica la versione confermata, va richiesta
+                        // esplicitamente, altrimenti /api/v1/recipes/{id}
+                        // risponde con l'ultima pubblicata, che puo differire
+                        // da quella fissata alla conferma della coltivazione.
+                        auto recipe_path = "/api/v1/recipes/" + recipe_id;
+                        const auto& payload = prepared_command.at("payload");
+                        if (
+                            payload.contains("recipe_version") &&
+                            !payload.at("recipe_version").is_null()) {
+                            recipe_path += "?version=" +
+                                std::to_string(
+                                    payload.at("recipe_version")
+                                        .get<long long>());
+                        }
+                        const auto recipe_response =
+                            transport_->get(recipe_path);
                         if (recipe_response.status_code == 404) {
                             throw std::invalid_argument(
                                 "remote recipe not found: " + recipe_id);
@@ -1061,7 +1077,7 @@ private:
                         if (!recipe_response.successful()) {
                             PendingUpload diagnostic{
                                 "recipe",
-                                "/api/v1/recipes/" + recipe_id,
+                                recipe_path,
                                 {},
                             };
                             report_unavailable(

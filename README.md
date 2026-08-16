@@ -293,6 +293,18 @@ la ricetta validata con
 `GET /api/v1/recipes/{recipe_id}` prima dell'esecuzione. Per l'attivazione il
 payload deve includere anche `cultivation_id`.
 
+`recipes` conserva ogni versione come riga a se stante (chiave
+`(id, version)`): un salvataggio successivo non sovrascrive quelle precedenti.
+Se il payload del comando include anche `recipe_version`, il worker richiede
+esplicitamente `GET /api/v1/recipes/{recipe_id}?version={recipe_version}`
+invece dell'ultima pubblicata, cosi la versione confermata da una coltivazione
+resta quella davvero applicata anche se nel frattempo ne viene pubblicata una
+piu recente. Le coltivazioni backend (`POST /cultivations/{id}/confirm`)
+incorporano comunque la ricetta gia risolta per intero nel payload di
+`ActivateCultivation`, quindi normalmente il worker non deve nemmeno
+scaricarla: la richiesta versionata resta un ripiego per i comandi che
+includono solo `recipe_id`.
+
 Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
 canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del
 terriccio, `active_recipe_id`, `active_recipe_version`, `current_phase`,
@@ -997,16 +1009,11 @@ Le API Edge sono disponibili anche con prefisso `/api/v1`. Comprendono:
 
 - telemetria e snapshot degli attuatori per zona;
 - eventi Edge;
-<<<<<<< HEAD
 - elenco e distribuzione delle ricette, con lo storico delle versioni;
+- anagrafica delle piante, flag di quarantena e storico degli spostamenti;
 - accodamento, polling e conferma dei comandi runtime;
 - coltivazioni: bozza, conferma, esito di attivazione, lettura, pausa e
   conclusione, con al piu una coltivazione non conclusa per settore.
-=======
-- elenco e distribuzione delle ricette;
-- anagrafica delle piante, flag di quarantena e storico degli spostamenti;
-- accodamento, polling e conferma dei comandi runtime.
->>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
 
 Gli endpoint senza prefisso rimangono disponibili per compatibilita.
 

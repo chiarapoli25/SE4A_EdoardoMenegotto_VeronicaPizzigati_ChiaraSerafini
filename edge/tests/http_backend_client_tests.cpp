@@ -568,6 +568,55 @@ TEST(HttpBackendClientTest, DownloadsRecipeForCultivationActivation) {
     std::filesystem::remove_all(outbox);
 }
 
+TEST(HttpBackendClientTest, DownloadsPinnedRecipeVersionWhenSpecified) {
+    smarthydro::EventBus bus;
+    const auto outbox = temporary_outbox("pinned-recipe-version");
+    auto transport = std::make_shared<RecordingTransport>();
+    transport->command_response = R"json([
+        {
+            "command_id": "activate-1",
+            "command_type": "ActivateCultivation",
+            "payload": {
+                "cultivation_id": "cultivation-1",
+                "recipe_id": "tomato_demo_v1",
+                "recipe_version": 3
+            }
+        }
+    ])json";
+    {
+        std::ifstream input(SMARTHYDRO_EXAMPLE_RECIPE_PATH);
+        ASSERT_TRUE(input);
+        transport->recipe_response =
+            nlohmann::json::parse(input).dump();
+    }
+    smarthydro::HttpBackendConfig config;
+    config.boot_id = "boot-test";
+    config.outbox_directory = outbox;
+    config.command_poll_interval = std::chrono::milliseconds(10);
+    auto client = std::make_shared<smarthydro::HttpBackendClient>(
+        bus,
+        std::vector<std::string>{"zone-1"},
+        config,
+        transport);
+    client->start();
+
+    std::vector<smarthydro::RemoteRuntimeCommand> commands;
+    ASSERT_TRUE(wait_until([&] {
+        commands = client->take_commands();
+        return !commands.empty();
+    }));
+    client->stop();
+
+    ASSERT_EQ(commands.size(), 1U);
+    EXPECT_NE(
+        std::find(
+            transport->get_paths.begin(),
+            transport->get_paths.end(),
+            "/api/v1/recipes/tomato_demo_v1?version=3"),
+        transport->get_paths.end());
+    std::filesystem::remove_all(outbox);
+}
+
 TEST(HttpBackendClientTest, DeserializesZoneLifecycleCommands) {
     const auto pause = smarthydro::runtime_command_from_json(
         R"json({

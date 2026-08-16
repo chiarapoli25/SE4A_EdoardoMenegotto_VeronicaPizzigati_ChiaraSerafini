@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from .models import Recipe, RecipeCareProfile, SoilType
+from .repository import save_recipe
 
 
 DEFAULT_CATALOG_PATH = Path(
@@ -579,7 +580,13 @@ def seed_recipe_catalog(
     connection: sqlite3.Connection,
     catalog_path: Path | str = DEFAULT_CATALOG_PATH,
 ) -> int:
-    """Importa o migra il bootstrap, lasciando poi SQLite come autorita."""
+    """Importa o migra il bootstrap, lasciando poi SQLite come autorita.
+
+    @details `recipes` ha chiave primaria `(id, version)`: ogni versione e
+    una riga a se stante, non viene mai sovrascritta. Il seeding quindi
+    consulta `MAX(version)` per decidere se inserire una nuova riga, invece
+    di aggiornare in-place come faceva lo schema precedente a chiave singola.
+    """
     changed = 0
     for recipe in load_recipe_catalog(catalog_path):
         imported = connection.execute(
@@ -593,28 +600,12 @@ def seed_recipe_catalog(
         if imported is not None and imported[0] >= recipe.version:
             continue
 
-        stored = connection.execute(
-            "SELECT version FROM recipes WHERE id = ?",
+        current_version = connection.execute(
+            "SELECT MAX(version) FROM recipes WHERE id = ?",
             (recipe.id,),
-        ).fetchone()
-        if stored is None:
-            connection.execute(
-                """
-                INSERT INTO recipes (id, version, data, updated_at)
-                VALUES (?, ?, ?, datetime('now'))
-                """,
-                (recipe.id, recipe.version, recipe.model_dump_json()),
-            )
-            changed += 1
-        elif stored[0] < recipe.version:
-            connection.execute(
-                """
-                UPDATE recipes
-                SET version = ?, data = ?, updated_at = datetime('now')
-                WHERE id = ?
-                """,
-                (recipe.version, recipe.model_dump_json(), recipe.id),
-            )
+        ).fetchone()[0]
+        if current_version is None or current_version < recipe.version:
+            save_recipe(connection, recipe)
             changed += 1
 
         connection.execute(

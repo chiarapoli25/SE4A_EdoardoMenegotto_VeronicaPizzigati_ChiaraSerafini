@@ -16,6 +16,7 @@ from .features.cultivations.repository import (
     CultivationCompatibilityError,
     CultivationConflict,
     CultivationStateError,
+    apply_activation_command_result,
     complete_cultivation,
     confirm_cultivation,
     create_cultivation,
@@ -57,14 +58,12 @@ __all__ = [
     "RecipeVersionConflict",
     "TelemetryConflict",
     "ZoneConflict",
-<<<<<<< HEAD
+    "ZoneUpdateConflict",
+    "ZoneUpdateInvalid",
+    "apply_activation_command_result",
     "complete_cultivation",
     "confirm_cultivation",
     "create_cultivation",
-=======
-    "ZoneUpdateConflict",
-    "ZoneUpdateInvalid",
->>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
     "create_zone",
     "get_active_cultivation_for_zone",
     "get_connection",

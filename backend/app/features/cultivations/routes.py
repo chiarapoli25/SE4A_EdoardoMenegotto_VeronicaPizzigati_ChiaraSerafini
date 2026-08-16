@@ -11,7 +11,6 @@ from ...core.database import get_db
 from ..zones.repository import get_zone
 from .models import (
     Cultivation,
-    CultivationActivationResult,
     CultivationConfirm,
     CultivationCreate,
     CultivationProgress,
@@ -26,7 +25,6 @@ from .repository import (
     get_cultivation,
     list_cultivations,
     pause_cultivation,
-    record_activation_result,
     resume_cultivation,
 )
 
@@ -80,10 +78,14 @@ def confirm(
     confirmation: CultivationConfirm,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
-    """@brief Conferma una bozza e fissa la versione della ricetta.
+    """@brief Conferma una bozza, fissa la versione della ricetta e accoda
+    l'attivazione sulla coda comandi dell'Edge.
 
-    @details Non attiva ancora la coltivazione: l'esito dell'Edge va
-    riportato con `POST /{cultivation_id}/activation-result`.
+    @details Non attiva subito la coltivazione: accoda un comando
+    `ActivateCultivation` per il settore (vedi `POST /zones/{zone_id}/commands`)
+    e resta in stato `confirmed` finche l'Edge non riporta l'esito tramite
+    `POST /zones/{zone_id}/commands/{command_id}/result`, lo stesso endpoint
+    gia usato per tutti gli altri comandi runtime.
 
     @throws HTTPException 404 se la coltivazione non esiste, 409 se non e in
         stato bozza o se settore, specie, ricetta o substrato non sono
@@ -96,30 +98,6 @@ def confirm(
         raise HTTPException(status_code=409, detail=str(error)) from error
     assert confirmed is not None
     return confirmed
-
-
-@router.post("/{cultivation_id}/activation-result", response_model=Cultivation)
-def report_activation_result(
-    cultivation_id: str,
-    result: CultivationActivationResult,
-    connection: sqlite3.Connection = Depends(get_db),
-) -> Cultivation:
-    """@brief Riporta l'esito dell'attivazione da parte dell'Edge.
-
-    @details Un esito positivo porta la coltivazione ad `active`; un
-    fallimento la porta a `failed` conservando il motivo e senza mai
-    comandare gli attuatori da questo endpoint.
-
-    @throws HTTPException 404 se la coltivazione non esiste, 409 se non e in
-        stato confermato.
-    """
-    _require_cultivation(connection, cultivation_id)
-    try:
-        updated = record_activation_result(connection, cultivation_id, result)
-    except CultivationStateError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    assert updated is not None
-    return updated
 
 
 # --- Lettura ---------------------------------------------------------------

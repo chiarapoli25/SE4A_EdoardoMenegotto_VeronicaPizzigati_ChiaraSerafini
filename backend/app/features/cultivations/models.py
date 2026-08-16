@@ -16,8 +16,12 @@ Il ciclo di vita e composto da quattro contratti distinti:
   richiesta e ammessa solo se settore, specie, ricetta e substrato sono
   compatibili; la versione della ricetta viene fissata in questo momento e
   non cambia piu automaticamente, nemmeno se viene pubblicata una versione
-  successiva.
-- `CultivationActivationResult` (risposta): esito dell'attivazione lato Edge.
+  successiva. La conferma accoda un comando `ActivateCultivation` sulla
+  stessa coda usata dalle altre feature Edge (`features.commands`), con la
+  ricetta pinnata incorporata nel payload.
+- `CultivationActivationResult` (risposta): esito dell'attivazione,
+  ricostruito internamente quando l'Edge riporta il risultato del comando
+  `ActivateCultivation` tramite `POST /zones/{zone_id}/commands/{id}/result`.
   La coltivazione passa allo stato `active` solo dopo un esito positivo; un
   fallimento conserva il motivo in `error_message` e lascia lo stato
   `failed`, senza che gli attuatori vengano mai comandati da questo modulo.
@@ -140,3 +144,5 @@ class Cultivation(CultivationCreate):
     applied_time_scale: float | None = None
     ## @brief Motivo dell'ultimo fallimento di attivazione, se presente.
     error_message: str | None = None
+    ## @brief Comando `ActivateCultivation` accodato alla conferma, se presente.
+    activation_command_id: str | None = None

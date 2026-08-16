@@ -13,7 +13,6 @@ from ..features.actuators.models import (
     FertilizerQuantities,
     FertilizerValveStates,
 )
-<<<<<<< HEAD
 from ..features.cultivations.models import (
     Cultivation,
     CultivationActivationResult,
@@ -21,13 +20,12 @@ from ..features.cultivations.models import (
     CultivationCreate,
     CultivationProgress,
     CultivationStatus,
-=======
+)
 from ..features.plants.models import (
     Plant,
     PlantCreate,
     PlantMovement,
     PlantQuarantineUpdate,
->>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
 )
 from ..features.recipes.models import (
     ActuatorType,
@@ -76,16 +74,13 @@ __all__ = [
     "ActuatorSnapshotCreate",
     "ActuatorType",
     "ConfirmationState",
-<<<<<<< HEAD
+    "ControlInputSource",
     "Cultivation",
     "CultivationActivationResult",
     "CultivationConfirm",
     "CultivationCreate",
     "CultivationProgress",
     "CultivationStatus",
-=======
-    "ControlInputSource",
->>>>>>> 9739fd89a2d793974daf9df49e585172e2fac6ec
     "ControlDirection",
     "ControlledVariable",
     "ControllerConfiguration",

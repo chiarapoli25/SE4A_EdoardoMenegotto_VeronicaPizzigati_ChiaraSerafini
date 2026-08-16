@@ -626,6 +626,7 @@ def init_db(connection: sqlite3.Connection) -> None:
                 CHECK (requested_time_scale > 0),
             applied_time_scale REAL,
             error_message TEXT,
+            activation_command_id TEXT,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
             FOREIGN KEY (recipe_id, recipe_version)
                 REFERENCES recipes(id, version)
@@ -643,6 +644,12 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_cultivations_zone_created_at
         ON cultivations (zone_id, created_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cultivations_activation_command
+        ON cultivations (activation_command_id)
         """
     )
     _migrate_edge_session_columns(connection)
