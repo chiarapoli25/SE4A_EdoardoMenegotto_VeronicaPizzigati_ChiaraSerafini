@@ -589,8 +589,10 @@ Le API Edge sono disponibili anche con prefisso `/api/v1`. Comprendono:
 
 - telemetria e snapshot degli attuatori per zona;
 - eventi Edge;
-- elenco e distribuzione delle ricette;
-- accodamento, polling e conferma dei comandi runtime.
+- elenco e distribuzione delle ricette, con lo storico delle versioni;
+- accodamento, polling e conferma dei comandi runtime;
+- coltivazioni: bozza, conferma, esito di attivazione, lettura, pausa e
+  conclusione, con al piu una coltivazione non conclusa per settore.
 
 Gli endpoint senza prefisso rimangono disponibili per compatibilita.
 

@@ -1,0 +1,205 @@
+"""@file routes.py
+@brief Endpoint HTTP del workflow di coltivazione: bozza, conferma, lettura,
+pausa e conclusione.
+"""
+
+import sqlite3
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from ...core.database import get_db
+from ..zones.repository import get_zone
+from .models import (
+    Cultivation,
+    CultivationActivationResult,
+    CultivationConfirm,
+    CultivationCreate,
+    CultivationProgress,
+)
+from .repository import (
+    CultivationCompatibilityError,
+    CultivationConflict,
+    CultivationStateError,
+    complete_cultivation,
+    confirm_cultivation,
+    create_cultivation,
+    get_cultivation,
+    list_cultivations,
+    pause_cultivation,
+    record_activation_result,
+    resume_cultivation,
+)
+
+
+## @brief Router del workflow di coltivazione.
+router = APIRouter(prefix="/cultivations", tags=["cultivations"])
+
+
+def _require_cultivation(
+    connection: sqlite3.Connection, cultivation_id: str
+) -> Cultivation:
+    cultivation = get_cultivation(connection, cultivation_id)
+    if cultivation is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"cultivation {cultivation_id!r} not found",
+        )
+    return cultivation
+
+
+# --- Bozza -------------------------------------------------------------
+
+
+@router.post("", response_model=Cultivation, status_code=201)
+def open_cultivation(
+    cultivation: CultivationCreate,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Apre una bozza di coltivazione su un settore libero.
+
+    @throws HTTPException 404 se il settore non esiste, 409 se l'id e gia
+        usato o il settore ha gia una coltivazione non conclusa.
+    """
+    if get_zone(connection, cultivation.zone_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"zone {cultivation.zone_id!r} not found",
+        )
+    try:
+        return create_cultivation(connection, cultivation)
+    except CultivationConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+# --- Conferma ------------------------------------------------------------
+
+
+@router.post("/{cultivation_id}/confirm", response_model=Cultivation)
+def confirm(
+    cultivation_id: str,
+    confirmation: CultivationConfirm,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Conferma una bozza e fissa la versione della ricetta.
+
+    @details Non attiva ancora la coltivazione: l'esito dell'Edge va
+    riportato con `POST /{cultivation_id}/activation-result`.
+
+    @throws HTTPException 404 se la coltivazione non esiste, 409 se non e in
+        stato bozza o se settore, specie, ricetta o substrato non sono
+        compatibili.
+    """
+    _require_cultivation(connection, cultivation_id)
+    try:
+        confirmed = confirm_cultivation(connection, cultivation_id, confirmation)
+    except (CultivationStateError, CultivationCompatibilityError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    assert confirmed is not None
+    return confirmed
+
+
+@router.post("/{cultivation_id}/activation-result", response_model=Cultivation)
+def report_activation_result(
+    cultivation_id: str,
+    result: CultivationActivationResult,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Riporta l'esito dell'attivazione da parte dell'Edge.
+
+    @details Un esito positivo porta la coltivazione ad `active`; un
+    fallimento la porta a `failed` conservando il motivo e senza mai
+    comandare gli attuatori da questo endpoint.
+
+    @throws HTTPException 404 se la coltivazione non esiste, 409 se non e in
+        stato confermato.
+    """
+    _require_cultivation(connection, cultivation_id)
+    try:
+        updated = record_activation_result(connection, cultivation_id, result)
+    except CultivationStateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    assert updated is not None
+    return updated
+
+
+# --- Lettura ---------------------------------------------------------------
+
+
+@router.get("", response_model=list[Cultivation])
+def read_cultivations(
+    zone_id: str | None = Query(default=None),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> list[Cultivation]:
+    """@brief Elenca le coltivazioni, opzionalmente filtrate per settore."""
+    return list_cultivations(connection, zone_id)
+
+
+@router.get("/{cultivation_id}", response_model=Cultivation)
+def read_cultivation(
+    cultivation_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Recupera una coltivazione tramite identificativo."""
+    return _require_cultivation(connection, cultivation_id)
+
+
+# --- Pausa -------------------------------------------------------------
+
+
+@router.post("/{cultivation_id}/pause", response_model=Cultivation)
+def pause(
+    cultivation_id: str,
+    progress: CultivationProgress = CultivationProgress(),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Sospende una coltivazione attiva senza concluderla.
+
+    @throws HTTPException 404 se non esiste, 409 se non e in stato `active`.
+    """
+    _require_cultivation(connection, cultivation_id)
+    try:
+        paused = pause_cultivation(connection, cultivation_id, progress)
+    except CultivationStateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    assert paused is not None
+    return paused
+
+
+@router.post("/{cultivation_id}/resume", response_model=Cultivation)
+def resume(
+    cultivation_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Riprende una coltivazione sospesa.
+
+    @throws HTTPException 404 se non esiste, 409 se non e in stato `paused`.
+    """
+    _require_cultivation(connection, cultivation_id)
+    try:
+        resumed = resume_cultivation(connection, cultivation_id)
+    except CultivationStateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    assert resumed is not None
+    return resumed
+
+
+# --- Conclusione -------------------------------------------------------
+
+
+@router.post("/{cultivation_id}/complete", response_model=Cultivation)
+def complete(
+    cultivation_id: str,
+    progress: CultivationProgress = CultivationProgress(),
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Cultivation:
+    """@brief Conclude regolarmente una coltivazione e libera il settore.
+
+    @throws HTTPException 404 se non esiste, 409 se non e `active` o `paused`.
+    """
+    _require_cultivation(connection, cultivation_id)
+    try:
+        completed = complete_cultivation(connection, cultivation_id, progress)
+    except CultivationStateError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    assert completed is not None
+    return completed

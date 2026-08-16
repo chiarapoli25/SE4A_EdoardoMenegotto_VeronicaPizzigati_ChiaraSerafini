@@ -5,7 +5,7 @@
 import sqlite3
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...core.database import get_db
 from .export import (
@@ -64,10 +64,15 @@ def read_recipes(
 @router.get("/{recipe_id}", response_model=Recipe)
 def read_recipe(
     recipe_id: str,
+    version: int | None = Query(default=None, ge=1),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Recipe:
-    """@brief Recupera una ricetta tramite identificativo."""
-    recipe = get_recipe(connection, recipe_id)
+    """@brief Recupera una ricetta tramite identificativo.
+
+    @param version Versione esatta richiesta, oppure `None` per l'ultima
+        versione disponibile.
+    """
+    recipe = get_recipe(connection, recipe_id, version)
     if recipe is None:
         raise HTTPException(
             status_code=404,

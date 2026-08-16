@@ -53,6 +53,41 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
     }
 
 
+def _migrate_recipes_primary_key(connection: sqlite3.Connection) -> None:
+    """Ricrea `recipes` con chiave primaria (id, version) senza perdere dati.
+
+    @details Lo schema precedente usava `id` come unica chiave primaria e
+    ogni salvataggio sovrascriveva la versione precedente. Le coltivazioni
+    devono invece potersi riferire a una versione esatta e gia confermata,
+    quindi ogni versione va conservata come riga a se stante.
+    """
+    columns = connection.execute("PRAGMA table_info(recipes)").fetchall()
+    if not columns:
+        return
+    version_column = next((col for col in columns if col[1] == "version"), None)
+    if version_column is not None and version_column[5] != 0:
+        return
+    connection.execute("ALTER TABLE recipes RENAME TO recipes_legacy")
+    connection.execute(
+        """
+        CREATE TABLE recipes (
+            id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (id, version)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO recipes (id, version, data, updated_at)
+        SELECT id, version, data, updated_at FROM recipes_legacy
+        """
+    )
+    connection.execute("DROP TABLE recipes_legacy")
+
+
 def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
     """Ricrea le tabelle legacy aggiungendo `boot_id` senza perdere dati."""
     if (
@@ -140,17 +175,19 @@ def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
 def init_db(connection: sqlite3.Connection) -> None:
     """@brief Crea lo schema applicativo se non esiste.
 
-    @param connection Connessione sulla quale creare ricette, zone, telemetria
-        e snapshot degli attuatori.
+    @param connection Connessione sulla quale creare ricette, zone,
+        coltivazioni, telemetria e snapshot degli attuatori.
     @return Nessun valore.
     """
+    _migrate_recipes_primary_key(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS recipes (
-            id TEXT PRIMARY KEY,
+            id TEXT NOT NULL,
             version INTEGER NOT NULL,
             data TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (id, version)
         )
         """
     )
@@ -264,6 +301,49 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_runtime_commands_zone_status_created
         ON runtime_commands (zone_id, status, created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cultivations (
+            id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            plant_species TEXT NOT NULL,
+            recipe_id TEXT NOT NULL,
+            recipe_version INTEGER NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN (
+                    'draft', 'confirmed', 'active', 'paused',
+                    'completed', 'failed'
+                )),
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            confirmed_at TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            elapsed_simulation_seconds REAL NOT NULL DEFAULT 0
+                CHECK (elapsed_simulation_seconds >= 0),
+            requested_time_scale REAL NOT NULL DEFAULT 1.0
+                CHECK (requested_time_scale > 0),
+            applied_time_scale REAL,
+            error_message TEXT,
+            FOREIGN KEY (zone_id) REFERENCES zones(id),
+            FOREIGN KEY (recipe_id, recipe_version)
+                REFERENCES recipes(id, version)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cultivations_zone_not_concluded
+        ON cultivations (zone_id)
+        WHERE status NOT IN ('completed', 'failed')
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cultivations_zone_created_at
+        ON cultivations (zone_id, created_at DESC)
         """
     )
     _migrate_edge_session_columns(connection)
