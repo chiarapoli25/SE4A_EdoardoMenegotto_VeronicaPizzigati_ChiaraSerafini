@@ -298,6 +298,73 @@ def test_pause_wrong_state_returns_409(
     assert response.status_code == 409
 
 
+def test_resume_wrong_state_returns_409(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data)
+    client.post("/cultivations", json=draft_payload())
+
+    response = client.post("/cultivations/cult-1/resume")
+
+    assert response.status_code == 409
+
+
+def test_complete_wrong_state_returns_409(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data)
+    client.post("/cultivations", json=draft_payload())
+
+    response = client.post("/cultivations/cult-1/complete", json={})
+
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["confirm", "pause", "resume", "complete"],
+)
+def test_transition_on_missing_cultivation_returns_404(
+    client: TestClient, path: str
+) -> None:
+    response = client.post(f"/cultivations/does-not-exist/{path}", json={})
+
+    assert response.status_code == 404
+
+
+def test_confirm_rejects_substrate_mismatch_with_previous_run(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data, version=1)
+    draining_recipe = {
+        **example_recipe_data,
+        "id": "tomato_draining_v1",
+        "substrate": "draining",
+        "version": 1,
+    }
+    assert client.post("/recipes", json=draining_recipe).status_code == 201
+
+    # Primo ciclo: coltivato con substrato aerated-universal e concluso
+    # regolarmente, cosi da liberare il settore per un nuovo ciclo.
+    client.post("/cultivations", json=draft_payload())
+    command_id = confirm_and_get_command_id(client)
+    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
+    assert client.post("/cultivations/cult-1/complete", json={}).status_code == 200
+
+    # Secondo ciclo sullo stesso settore, ma con un substrato diverso.
+    client.post(
+        "/cultivations",
+        json=draft_payload("cult-2", recipe_id="tomato_draining_v1"),
+    )
+
+    response = client.post("/cultivations/cult-2/confirm", json={})
+
+    assert response.status_code == 409
+
+
 def test_read_missing_cultivation_returns_404(client: TestClient) -> None:
     response = client.get("/cultivations/does-not-exist")
 

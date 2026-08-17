@@ -150,6 +150,25 @@ def get_active_cultivation_for_zone(
     return None if row is None else _cultivation_from_row(row)
 
 
+def _require_status(
+    cultivation: Cultivation, expected: CultivationStatus, *, verb: str
+) -> None:
+    """@brief Impone che la coltivazione sia nello stato atteso.
+
+    @details Fattorizza il controllo ripetuto in ogni transizione a stato
+    singolo (conferma, esito attivazione, pausa, ripresa). `complete_cultivation`
+    ammette due stati di partenza e non usa questo helper.
+
+    @param verb Participio usato nel messaggio d'errore (es. "confirmed").
+    @throws CultivationStateError Se lo stato attuale non e quello atteso.
+    """
+    if cultivation.status is not expected:
+        raise CultivationStateError(
+            f"cultivation {cultivation.id!r} is {cultivation.status.value!r}; "
+            f"only a {expected.value} cultivation can be {verb}"
+        )
+
+
 def _last_run_substrate(
     connection: sqlite3.Connection, zone_id: str, exclude_cultivation_id: str
 ) -> str | None:
@@ -247,11 +266,7 @@ def confirm_cultivation(
     existing = get_cultivation(connection, cultivation_id)
     if existing is None:
         return None
-    if existing.status is not CultivationStatus.DRAFT:
-        raise CultivationStateError(
-            f"cultivation {cultivation_id!r} is {existing.status.value!r}; "
-            "only a draft can be confirmed"
-        )
+    _require_status(existing, CultivationStatus.DRAFT, verb="confirmed")
 
     zone = get_zone(connection, existing.zone_id)
     if zone is None:
@@ -316,7 +331,15 @@ def confirm_cultivation(
         ),
     )
     connection.commit()
-    return get_cultivation(connection, cultivation_id)
+    # Evita una SELECT di ri-lettura: i soli campi cambiati dall'UPDATE sono
+    # gia noti, quindi bastano per ricostruire lo stato aggiornato.
+    return existing.model_copy(
+        update={
+            "status": CultivationStatus.CONFIRMED,
+            "confirmed_at": confirmed_at,
+            "activation_command_id": activation_command_id,
+        }
+    )
 
 
 def record_activation_result(
@@ -340,11 +363,11 @@ def record_activation_result(
     existing = get_cultivation(connection, cultivation_id)
     if existing is None:
         return None
-    if existing.status is not CultivationStatus.CONFIRMED:
-        raise CultivationStateError(
-            f"cultivation {cultivation_id!r} is {existing.status.value!r}; "
-            "only a confirmed cultivation can receive an activation result"
-        )
+    _require_status(
+        existing,
+        CultivationStatus.CONFIRMED,
+        verb="updated with an activation result",
+    )
 
     now = datetime.now(timezone.utc)
     if result.success:
@@ -367,22 +390,37 @@ def record_activation_result(
                 cultivation_id,
             ),
         )
-    else:
-        connection.execute(
-            """
-            UPDATE cultivations
-            SET status = ?, completed_at = ?, error_message = ?
-            WHERE id = ?
-            """,
-            (
-                CultivationStatus.FAILED.value,
-                now.isoformat(),
-                result.error_message,
-                cultivation_id,
-            ),
+        connection.commit()
+        return existing.model_copy(
+            update={
+                "status": CultivationStatus.ACTIVE,
+                "started_at": now,
+                "applied_time_scale": applied_time_scale,
+                "error_message": None,
+            }
         )
+
+    connection.execute(
+        """
+        UPDATE cultivations
+        SET status = ?, completed_at = ?, error_message = ?
+        WHERE id = ?
+        """,
+        (
+            CultivationStatus.FAILED.value,
+            now.isoformat(),
+            result.error_message,
+            cultivation_id,
+        ),
+    )
     connection.commit()
-    return get_cultivation(connection, cultivation_id)
+    return existing.model_copy(
+        update={
+            "status": CultivationStatus.FAILED,
+            "completed_at": now,
+            "error_message": result.error_message,
+        }
+    )
 
 
 def apply_activation_command_result(
@@ -449,15 +487,15 @@ def _enqueue_lifecycle_command(
         pass
 
 
-def _apply_progress(
-    connection: sqlite3.Connection, cultivation_id: str, progress: CultivationProgress
-) -> None:
-    """@brief Aggiorna i secondi di simulazione se il chiamante li riporta."""
-    if progress.elapsed_simulation_seconds is not None:
-        connection.execute(
-            "UPDATE cultivations SET elapsed_simulation_seconds = ? WHERE id = ?",
-            (progress.elapsed_simulation_seconds, cultivation_id),
-        )
+def _resolved_elapsed_seconds(
+    existing: Cultivation, progress: CultivationProgress
+) -> float:
+    """@brief Secondi di simulazione da persistere, riportati o invariati."""
+    return (
+        progress.elapsed_simulation_seconds
+        if progress.elapsed_simulation_seconds is not None
+        else existing.elapsed_simulation_seconds
+    )
 
 
 def pause_cultivation(
@@ -472,21 +510,25 @@ def pause_cultivation(
     existing = get_cultivation(connection, cultivation_id)
     if existing is None:
         return None
-    if existing.status is not CultivationStatus.ACTIVE:
-        raise CultivationStateError(
-            f"cultivation {cultivation_id!r} is {existing.status.value!r}; "
-            "only an active cultivation can be paused"
-        )
-    _apply_progress(connection, cultivation_id, progress)
+    _require_status(existing, CultivationStatus.ACTIVE, verb="paused")
+    elapsed = _resolved_elapsed_seconds(existing, progress)
     connection.execute(
-        "UPDATE cultivations SET status = ? WHERE id = ?",
-        (CultivationStatus.PAUSED.value, cultivation_id),
+        """
+        UPDATE cultivations SET status = ?, elapsed_simulation_seconds = ?
+        WHERE id = ?
+        """,
+        (CultivationStatus.PAUSED.value, elapsed, cultivation_id),
     )
     connection.commit()
     _enqueue_lifecycle_command(
         connection, existing.zone_id, cultivation_id, CommandType.PAUSE_CULTIVATION
     )
-    return get_cultivation(connection, cultivation_id)
+    return existing.model_copy(
+        update={
+            "status": CultivationStatus.PAUSED,
+            "elapsed_simulation_seconds": elapsed,
+        }
+    )
 
 
 def resume_cultivation(
@@ -499,11 +541,7 @@ def resume_cultivation(
     existing = get_cultivation(connection, cultivation_id)
     if existing is None:
         return None
-    if existing.status is not CultivationStatus.PAUSED:
-        raise CultivationStateError(
-            f"cultivation {cultivation_id!r} is {existing.status.value!r}; "
-            "only a paused cultivation can be resumed"
-        )
+    _require_status(existing, CultivationStatus.PAUSED, verb="resumed")
     connection.execute(
         "UPDATE cultivations SET status = ? WHERE id = ?",
         (CultivationStatus.ACTIVE.value, cultivation_id),
@@ -512,7 +550,7 @@ def resume_cultivation(
     _enqueue_lifecycle_command(
         connection, existing.zone_id, cultivation_id, CommandType.RESUME_CULTIVATION
     )
-    return get_cultivation(connection, cultivation_id)
+    return existing.model_copy(update={"status": CultivationStatus.ACTIVE})
 
 
 def complete_cultivation(
@@ -523,7 +561,8 @@ def complete_cultivation(
     """@brief Conclude regolarmente una coltivazione attiva o sospesa.
 
     @details Conclude la coltivazione e libera il settore, che torna
-    disponibile per una nuova bozza.
+    disponibile per una nuova bozza. Ammette due stati di partenza (`active`
+    o `paused`), quindi non usa `_require_status`.
 
     @throws CultivationStateError Se la coltivazione non e `active` o `paused`.
     """
@@ -535,14 +574,29 @@ def complete_cultivation(
             f"cultivation {cultivation_id!r} is {existing.status.value!r}; "
             "only an active or paused cultivation can be completed"
         )
-    _apply_progress(connection, cultivation_id, progress)
+    elapsed = _resolved_elapsed_seconds(existing, progress)
     completed_at = datetime.now(timezone.utc)
     connection.execute(
-        "UPDATE cultivations SET status = ?, completed_at = ? WHERE id = ?",
-        (CultivationStatus.COMPLETED.value, completed_at.isoformat(), cultivation_id),
+        """
+        UPDATE cultivations
+        SET status = ?, completed_at = ?, elapsed_simulation_seconds = ?
+        WHERE id = ?
+        """,
+        (
+            CultivationStatus.COMPLETED.value,
+            completed_at.isoformat(),
+            elapsed,
+            cultivation_id,
+        ),
     )
     connection.commit()
     _enqueue_lifecycle_command(
         connection, existing.zone_id, cultivation_id, CommandType.STOP_CULTIVATION
     )
-    return get_cultivation(connection, cultivation_id)
+    return existing.model_copy(
+        update={
+            "status": CultivationStatus.COMPLETED,
+            "completed_at": completed_at,
+            "elapsed_simulation_seconds": elapsed,
+        }
+    )

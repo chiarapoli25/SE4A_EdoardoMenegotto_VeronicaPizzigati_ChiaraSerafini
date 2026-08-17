@@ -83,9 +83,16 @@ def create_command(
             f"command_id {command.command_id!r} already exists with different data"
         ) from error
     connection.commit()
-    stored = get_command(connection, command.command_id)
-    assert stored is not None
-    return stored
+    # Evita la SELECT di ri-lettura sul percorso comune (nessun conflitto):
+    # ogni campo della riga appena inserita e gia noto a questo punto.
+    return RuntimeCommand(
+        command_id=command.command_id,
+        zone_id=zone_id,
+        command_type=command.command_type,
+        payload=command.payload,
+        status=CommandStatus.PENDING,
+        created_at=created_at,
+    )
 
 
 def list_pending_commands(
@@ -160,4 +167,11 @@ def complete_command(
                 (recipe_id, zone_id),
             )
     connection.commit()
-    return get_command(connection, command_id)
+    return existing.model_copy(
+        update={
+            "status": result.status,
+            "completed_at": completed_at,
+            "result_message": result.message,
+            "result_replayed": result.replayed,
+        }
+    )

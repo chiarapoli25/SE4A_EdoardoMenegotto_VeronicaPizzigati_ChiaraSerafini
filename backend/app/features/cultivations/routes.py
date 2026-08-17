@@ -4,6 +4,7 @@ pausa e conclusione.
 """
 
 import sqlite3
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -43,6 +44,31 @@ def _require_cultivation(
             detail=f"cultivation {cultivation_id!r} not found",
         )
     return cultivation
+
+
+def _run_transition(
+    operation: Callable[[], Cultivation | None], cultivation_id: str
+) -> Cultivation:
+    """@brief Esegue una transizione di stato mappando gli errori di dominio.
+
+    @details Le funzioni di transizione di `repository.py` verificano gia da
+    sole l'esistenza della coltivazione (restituendo `None` se assente): usare
+    direttamente il loro risultato evita la doppia lettura che si avrebbe
+    interrogando prima `_require_cultivation` e poi la funzione stessa.
+
+    @throws HTTPException 404 se la coltivazione non esiste, 409 se lo stato
+        corrente o la compatibilita non ammettono la transizione richiesta.
+    """
+    try:
+        result = operation()
+    except (CultivationStateError, CultivationCompatibilityError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"cultivation {cultivation_id!r} not found",
+        )
+    return result
 
 
 # --- Bozza -------------------------------------------------------------
@@ -91,13 +117,10 @@ def confirm(
         stato bozza o se settore, specie, ricetta o substrato non sono
         compatibili.
     """
-    _require_cultivation(connection, cultivation_id)
-    try:
-        confirmed = confirm_cultivation(connection, cultivation_id, confirmation)
-    except (CultivationStateError, CultivationCompatibilityError) as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    assert confirmed is not None
-    return confirmed
+    return _run_transition(
+        lambda: confirm_cultivation(connection, cultivation_id, confirmation),
+        cultivation_id,
+    )
 
 
 # --- Lettura ---------------------------------------------------------------
@@ -134,13 +157,10 @@ def pause(
 
     @throws HTTPException 404 se non esiste, 409 se non e in stato `active`.
     """
-    _require_cultivation(connection, cultivation_id)
-    try:
-        paused = pause_cultivation(connection, cultivation_id, progress)
-    except CultivationStateError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    assert paused is not None
-    return paused
+    return _run_transition(
+        lambda: pause_cultivation(connection, cultivation_id, progress),
+        cultivation_id,
+    )
 
 
 @router.post("/{cultivation_id}/resume", response_model=Cultivation)
@@ -152,13 +172,10 @@ def resume(
 
     @throws HTTPException 404 se non esiste, 409 se non e in stato `paused`.
     """
-    _require_cultivation(connection, cultivation_id)
-    try:
-        resumed = resume_cultivation(connection, cultivation_id)
-    except CultivationStateError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    assert resumed is not None
-    return resumed
+    return _run_transition(
+        lambda: resume_cultivation(connection, cultivation_id),
+        cultivation_id,
+    )
 
 
 # --- Conclusione -------------------------------------------------------
@@ -174,10 +191,7 @@ def complete(
 
     @throws HTTPException 404 se non esiste, 409 se non e `active` o `paused`.
     """
-    _require_cultivation(connection, cultivation_id)
-    try:
-        completed = complete_cultivation(connection, cultivation_id, progress)
-    except CultivationStateError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    assert completed is not None
-    return completed
+    return _run_transition(
+        lambda: complete_cultivation(connection, cultivation_id, progress),
+        cultivation_id,
+    )

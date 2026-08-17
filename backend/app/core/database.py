@@ -34,7 +34,20 @@ def get_connection(
     # worker thread differenti. La connessione resta comunque confinata alla
     # singola richiesta, ma SQLite deve consentirne l'uso sequenziale fra i due
     # thread gestiti da Starlette.
-    return sqlite3.connect(database_path, check_same_thread=False)
+    connection = sqlite3.connect(database_path, check_same_thread=False)
+    # Sotto scritture concorrenti (es. due conferme di coltivazione su zone
+    # diverse nello stesso istante) SQLite puo rifiutare subito una scrittura
+    # con "database is locked" invece di attendere il rilascio del lock.
+    # busy_timeout fa attendere il driver fino a 5s prima di sollevare
+    # l'errore, che in pratica elimina i falsi conflitti sotto carico normale.
+    connection.execute("PRAGMA busy_timeout = 5000")
+    if database_path != ":memory:":
+        # WAL consente letture concorrenti mentre e in corso una scrittura
+        # (le richieste GET non vengono piu bloccate da un confirm/pause in
+        # volo). Non e supportato dai database in memoria usati dai test.
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
+    return connection
 
 
 def get_db() -> Generator[sqlite3.Connection, None, None]:
@@ -644,6 +657,12 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_cultivations_zone_created_at
         ON cultivations (zone_id, created_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cultivations_zone_status
+        ON cultivations (zone_id, status)
         """
     )
     connection.execute(
