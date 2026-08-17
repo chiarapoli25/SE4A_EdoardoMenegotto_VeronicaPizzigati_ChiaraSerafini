@@ -193,18 +193,21 @@ def _last_run_substrate(
 
 
 def create_cultivation(
-    connection: sqlite3.Connection, cultivation: CultivationCreate
+    connection: sqlite3.Connection, zone_id: str, cultivation: CultivationCreate
 ) -> Cultivation:
     """@brief Salva una nuova bozza di coltivazione.
 
     @param connection Connessione SQLite sulla quale salvare.
-    @param cultivation Settore, specie e ricetta desiderati per il ciclo.
+    @param zone_id Settore che ospitera la coltivazione (dal path HTTP).
+    @param cultivation Specie e ricetta desiderati per il ciclo.
     @return Coltivazione persistita con stato iniziale `draft`.
     @throws CultivationConflict Se l'id e gia usato o il settore ha gia una
         coltivazione non conclusa.
     """
     created_at = datetime.now(timezone.utc)
-    stored = Cultivation(**cultivation.model_dump(), created_at=created_at)
+    stored = Cultivation(
+        **cultivation.model_dump(), zone_id=zone_id, created_at=created_at
+    )
     try:
         connection.execute(
             """
@@ -231,7 +234,7 @@ def create_cultivation(
     except sqlite3.IntegrityError as error:
         raise CultivationConflict(
             f"cultivation id {cultivation.id!r} already exists, or zone "
-            f"{cultivation.zone_id!r} already has a non-concluded cultivation"
+            f"{zone_id!r} already has a non-concluded cultivation"
         ) from error
     connection.commit()
     return stored
@@ -239,6 +242,7 @@ def create_cultivation(
 
 def confirm_cultivation(
     connection: sqlite3.Connection,
+    zone_id: str,
     cultivation_id: str,
     confirm: CultivationConfirm,
 ) -> Cultivation | None:
@@ -253,10 +257,11 @@ def confirm_cultivation(
     pubblicata una versione successiva.
 
     @param connection Connessione SQLite sulla quale operare.
+    @param zone_id Settore atteso dal path HTTP `/zones/{zone_id}/...`.
     @param cultivation_id Identificativo della coltivazione da confermare.
     @param confirm Richiesta di conferma.
-    @return Coltivazione aggiornata allo stato `confirmed`, oppure `None` se
-        l'identificativo non esiste.
+    @return Coltivazione aggiornata allo stato `starting`, oppure `None` se
+        l'identificativo non esiste o non appartiene a `zone_id`.
     @throws CultivationStateError Se la coltivazione non e in stato `draft`.
     @throws CultivationCompatibilityError Se settore, specie, ricetta o
         substrato non sono compatibili.
@@ -264,7 +269,7 @@ def confirm_cultivation(
     del confirm  # nessun dato proprio: la conferma opera sulla bozza salvata.
 
     existing = get_cultivation(connection, cultivation_id)
-    if existing is None:
+    if existing is None or existing.zone_id != zone_id:
         return None
     _require_status(existing, CultivationStatus.DRAFT, verb="confirmed")
 
@@ -324,7 +329,7 @@ def confirm_cultivation(
         WHERE id = ?
         """,
         (
-            CultivationStatus.CONFIRMED.value,
+            CultivationStatus.STARTING.value,
             confirmed_at.isoformat(),
             activation_command_id,
             cultivation_id,
@@ -335,7 +340,7 @@ def confirm_cultivation(
     # gia noti, quindi bastano per ricostruire lo stato aggiornato.
     return existing.model_copy(
         update={
-            "status": CultivationStatus.CONFIRMED,
+            "status": CultivationStatus.STARTING,
             "confirmed_at": confirmed_at,
             "activation_command_id": activation_command_id,
         }
@@ -358,14 +363,14 @@ def record_activation_result(
     @return Coltivazione aggiornata, oppure `None` se l'identificativo non
         esiste.
     @throws CultivationStateError Se la coltivazione non e in stato
-        `confirmed`.
+        `starting`.
     """
     existing = get_cultivation(connection, cultivation_id)
     if existing is None:
         return None
     _require_status(
         existing,
-        CultivationStatus.CONFIRMED,
+        CultivationStatus.STARTING,
         verb="updated with an activation result",
     )
 
@@ -436,7 +441,7 @@ def apply_activation_command_result(
     riporta un esito (`POST .../commands/{id}/result`) sia anche l'unico che
     fa avanzare lo stato della coltivazione. E' tollerante verso i replay
     idempotenti del comando: se la coltivazione non e (piu) in stato
-    `confirmed` non solleva errori, restituisce semplicemente lo stato
+    `starting` non solleva errori, restituisce semplicemente lo stato
     corrente.
 
     @param command_id Identificativo del comando appena completato.
@@ -447,7 +452,7 @@ def apply_activation_command_result(
         corrisponde a nessuna attivazione di coltivazione.
     """
     existing = _get_cultivation_by_activation_command(connection, command_id)
-    if existing is None or existing.status is not CultivationStatus.CONFIRMED:
+    if existing is None or existing.status is not CultivationStatus.STARTING:
         return existing
     result = CultivationActivationResult(
         success=status is CommandStatus.SUCCEEDED,
@@ -500,6 +505,7 @@ def _resolved_elapsed_seconds(
 
 def pause_cultivation(
     connection: sqlite3.Connection,
+    zone_id: str,
     cultivation_id: str,
     progress: CultivationProgress,
 ) -> Cultivation | None:
@@ -508,7 +514,7 @@ def pause_cultivation(
     @throws CultivationStateError Se la coltivazione non e in stato `active`.
     """
     existing = get_cultivation(connection, cultivation_id)
-    if existing is None:
+    if existing is None or existing.zone_id != zone_id:
         return None
     _require_status(existing, CultivationStatus.ACTIVE, verb="paused")
     elapsed = _resolved_elapsed_seconds(existing, progress)
@@ -532,14 +538,14 @@ def pause_cultivation(
 
 
 def resume_cultivation(
-    connection: sqlite3.Connection, cultivation_id: str
+    connection: sqlite3.Connection, zone_id: str, cultivation_id: str
 ) -> Cultivation | None:
     """@brief Riprende una coltivazione sospesa.
 
     @throws CultivationStateError Se la coltivazione non e in stato `paused`.
     """
     existing = get_cultivation(connection, cultivation_id)
-    if existing is None:
+    if existing is None or existing.zone_id != zone_id:
         return None
     _require_status(existing, CultivationStatus.PAUSED, verb="resumed")
     connection.execute(
@@ -555,6 +561,7 @@ def resume_cultivation(
 
 def complete_cultivation(
     connection: sqlite3.Connection,
+    zone_id: str,
     cultivation_id: str,
     progress: CultivationProgress,
 ) -> Cultivation | None:
@@ -567,7 +574,7 @@ def complete_cultivation(
     @throws CultivationStateError Se la coltivazione non e `active` o `paused`.
     """
     existing = get_cultivation(connection, cultivation_id)
-    if existing is None:
+    if existing is None or existing.zone_id != zone_id:
         return None
     if existing.status not in (CultivationStatus.ACTIVE, CultivationStatus.PAUSED):
         raise CultivationStateError(

@@ -30,6 +30,7 @@ from .features.cultivations.repository import (
 from .features.recipes.repository import (
     RecipeVersionConflict,
     get_recipe,
+    list_recipe_versions,
     list_recipes,
     save_recipe,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "list_cultivations",
     "list_telemetry",
     "list_actuator_snapshots",
+    "list_recipe_versions",
     "list_recipes",
     "list_zones",
     "pause_cultivation",

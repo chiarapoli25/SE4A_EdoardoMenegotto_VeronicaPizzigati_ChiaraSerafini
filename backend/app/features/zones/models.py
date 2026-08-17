@@ -200,6 +200,50 @@ class Zone(ZoneCreate):
     time_scale: float = Field(default=1.0, ge=1.0, le=60.0)
 
 
+class SimulationSpeedRequest(BaseModel):
+    """@brief Nuova velocita di simulazione richiesta dalla dashboard.
+
+    @details Non scrive subito `Zone.time_scale`: accoda un comando
+    `SetSimulationSpeed` sulla stessa coda Edge usata dalle altre feature
+    (`features.commands`). La zona riflette la nuova velocita solo quando
+    l'Edge riporta l'esito del comando, come per `ActivateCultivation`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ## @brief Rapporto richiesto fra tempo simulato e reale.
+    time_scale: float = Field(ge=1.0, le=60.0)
+
+
+class ZoneRuntime(BaseModel):
+    """@brief Proiezione runtime corrente di un settore: stato, fase, tempi e velocita.
+
+    @details Sottoinsieme di `Zone` pensato per i client che vogliono solo il
+    runtime applicativo, senza i campi anagrafici del settore.
+    """
+
+    ## @brief Identificativo del settore.
+    zone_id: str
+    ## @brief Lifecycle applicativo corrente, pubblicato dall'Edge.
+    lifecycle_state: ZoneLifecycleState
+    ## @brief Stato corrente della FSM di sicurezza.
+    operational_state: OperationalState
+    ## @brief Nome della fase di coltivazione corrente, se presente.
+    current_phase: str | None
+    ## @brief Ricetta attiva osservata dall'Edge, se presente.
+    active_recipe_id: str | None
+    ## @brief Versione della ricetta attiva osservata dall'Edge.
+    active_recipe_version: int | None
+    ## @brief Strategy correnti per tutte le variabili controllate.
+    current_strategies: ControlStrategies
+    ## @brief Setpoint correnti della fase attiva.
+    current_setpoints: ControlSetpoints
+    ## @brief Rapporto corrente fra tempo simulato e reale.
+    time_scale: float
+    ## @brief Timestamp UTC dell'ultimo contatto Edge, oppure `None`.
+    last_edge_contact: AwareDatetime | None = None
+
+
 class ZoneUpdate(BaseModel):
     """@brief Modifiche parziali ammesse per un settore esistente.
 

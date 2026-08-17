@@ -307,6 +307,65 @@ def test_init_db_migrates_schema_to_accept_quarantine() -> None:
     assert stored == (5, None)
 
 
+def test_init_db_migrates_cultivation_confirmed_status_to_starting() -> None:
+    legacy = sqlite3.connect(":memory:")
+    legacy.execute(
+        """
+        CREATE TABLE cultivations (
+            id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            plant_species TEXT NOT NULL,
+            recipe_id TEXT NOT NULL,
+            recipe_version INTEGER NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN (
+                    'draft', 'confirmed', 'active', 'paused',
+                    'completed', 'failed'
+                )),
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            confirmed_at TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            elapsed_simulation_seconds REAL NOT NULL DEFAULT 0,
+            requested_time_scale REAL NOT NULL DEFAULT 1.0,
+            applied_time_scale REAL,
+            error_message TEXT,
+            activation_command_id TEXT
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO cultivations (
+            id, zone_id, plant_species, recipe_id, recipe_version, status,
+            created_at, confirmed_at, elapsed_simulation_seconds,
+            requested_time_scale, activation_command_id
+        )
+        VALUES (
+            'cult-legacy', 'zone-legacy', 'Tomato', 'recipe-legacy', 1,
+            'confirmed', '2024-01-01T00:00:00+00:00',
+            '2024-01-01T00:05:00+00:00', 0, 1.0, 'cult-legacy-activate'
+        )
+        """
+    )
+
+    try:
+        init_db(legacy)
+        stored = legacy.execute(
+            "SELECT status FROM cultivations WHERE id = 'cult-legacy'"
+        ).fetchone()
+        schema_row = legacy.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cultivations'"
+        ).fetchone()
+    finally:
+        legacy.close()
+
+    assert stored == ("starting",)
+    assert "'starting'" in schema_row[0]
+    assert "'confirmed'" not in schema_row[0]
+
+
 def test_init_db_adds_soil_probe_telemetry_to_existing_schema() -> None:
     legacy = sqlite3.connect(":memory:")
     legacy.execute(

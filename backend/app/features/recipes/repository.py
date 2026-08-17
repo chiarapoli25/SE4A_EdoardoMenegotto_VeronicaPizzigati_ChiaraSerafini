@@ -88,3 +88,23 @@ def list_recipes(connection: sqlite3.Connection) -> list[Recipe]:
         """
     ).fetchall()
     return [Recipe.model_validate_json(row[0]) for row in rows]
+
+
+def list_recipe_versions(
+    connection: sqlite3.Connection, recipe_id: str
+) -> list[Recipe]:
+    """@brief Elenca tutte le versioni salvate di una singola ricetta.
+
+    @details A differenza di `list_recipes` (che restituisce solo l'ultima
+    versione di ogni id), qui si vuole l'intero storico di un singolo `id`,
+    utile per confrontare o riproporre versioni precedenti.
+
+    @param recipe_id Identificativo della ricetta di cui elencare le versioni.
+    @return Versioni ordinate dalla piu vecchia alla piu recente; lista vuota
+        se `recipe_id` non esiste.
+    """
+    rows = connection.execute(
+        "SELECT data FROM recipes WHERE id = ? ORDER BY version",
+        (recipe_id,),
+    ).fetchall()
+    return [Recipe.model_validate_json(row[0]) for row in rows]

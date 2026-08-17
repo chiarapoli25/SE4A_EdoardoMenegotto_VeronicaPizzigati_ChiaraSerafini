@@ -8,17 +8,23 @@ cancelli le informazioni precedenti: un settore puo avere molte coltivazioni
 storiche, ma una sola coltivazione non conclusa alla volta (vincolo applicato
 anche a livello di persistenza in `core.database`).
 
+Tutti gli endpoint HTTP sono annidati sotto `/zones/{zone_id}/cultivations`:
+il settore identifica sempre lo scope della richiesta e non compare piu nel
+corpo di `CultivationCreate` (lo stesso pattern gia usato da
+`features.commands.RuntimeCommandCreate`/`RuntimeCommand`).
+
 Il ciclo di vita e composto da quattro contratti distinti:
 
-- `CultivationCreate` (bozza): l'agronomo assegna un settore, una specie e la
-  ricetta desiderata, senza ancora impegnare l'Edge.
+- `CultivationCreate` (bozza): l'agronomo assegna una specie e la ricetta
+  desiderata per il settore indicato nel path, senza ancora impegnare l'Edge.
 - `CultivationConfirm` (conferma): l'agronomo richiede l'attivazione. La
   richiesta e ammessa solo se settore, specie, ricetta e substrato sono
   compatibili; la versione della ricetta viene fissata in questo momento e
   non cambia piu automaticamente, nemmeno se viene pubblicata una versione
-  successiva. La conferma accoda un comando `ActivateCultivation` sulla
-  stessa coda usata dalle altre feature Edge (`features.commands`), con la
-  ricetta pinnata incorporata nel payload.
+  successiva. La coltivazione passa allo stato `starting` e la conferma
+  accoda un comando `ActivateCultivation` sulla stessa coda usata dalle altre
+  feature Edge (`features.commands`), con la ricetta pinnata incorporata nel
+  payload.
 - `CultivationActivationResult` (risposta): esito dell'attivazione,
   ricostruito internamente quando l'Edge riporta il risultato del comando
   `ActivateCultivation` tramite `POST /zones/{zone_id}/commands/{id}/result`.
@@ -40,7 +46,7 @@ class CultivationStatus(str, Enum):
     ## @brief Assegnazione creata ma non ancora confermata.
     DRAFT = "draft"
     ## @brief Confermata dall'agronomo, in attesa dell'esito dell'Edge.
-    CONFIRMED = "confirmed"
+    STARTING = "starting"
     ## @brief Attivata con successo: la ricetta e in esecuzione sul settore.
     ACTIVE = "active"
     ## @brief Sospesa temporaneamente senza essere conclusa.
@@ -58,7 +64,12 @@ CONCLUDED_CULTIVATION_STATUSES = frozenset(
 
 
 class CultivationCreate(BaseModel):
-    """@brief Dati necessari per aprire una bozza di coltivazione."""
+    """@brief Dati necessari per aprire una bozza di coltivazione.
+
+    @details Il settore non compare qui: arriva dal path
+    `/zones/{zone_id}/cultivations` della richiesta HTTP, esattamente come
+    per `RuntimeCommandCreate`.
+    """
 
     ## @brief Identificativo univoco usato negli endpoint HTTP.
     id: str = Field(
@@ -66,8 +77,6 @@ class CultivationCreate(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
     )
-    ## @brief Settore fisico occupato dalla coltivazione.
-    zone_id: str = Field(min_length=1, max_length=64)
     ## @brief Specie vegetale coltivata in questo ciclo.
     plant_species: str = Field(min_length=1, max_length=100)
     ## @brief Ricetta desiderata per il ciclo di coltivazione.
@@ -128,11 +137,13 @@ class CultivationProgress(BaseModel):
 class Cultivation(CultivationCreate):
     """@brief Stato persistente completo di una coltivazione."""
 
+    ## @brief Settore fisico occupato dalla coltivazione.
+    zone_id: str = Field(min_length=1, max_length=64)
     ## @brief Stato corrente del ciclo di vita.
     status: CultivationStatus = CultivationStatus.DRAFT
     ## @brief Timestamp UTC di creazione della bozza.
     created_at: AwareDatetime
-    ## @brief Timestamp UTC della conferma, oppure `None`.
+    ## @brief Timestamp UTC della conferma (transizione a `starting`), oppure `None`.
     confirmed_at: AwareDatetime | None = None
     ## @brief Timestamp UTC dell'attivazione riuscita, oppure `None`.
     started_at: AwareDatetime | None = None

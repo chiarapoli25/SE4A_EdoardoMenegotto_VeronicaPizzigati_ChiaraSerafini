@@ -53,25 +53,36 @@ def create_recipe(
 
 def draft_payload(
     cultivation_id: str = "cult-1",
-    zone_id: str = "r1-s1",
     plant_species: str = "Tomato",
     recipe_id: str = "tomato_demo_v1",
     recipe_version: int = 1,
 ) -> dict:
     return {
         "id": cultivation_id,
-        "zone_id": zone_id,
         "plant_species": plant_species,
         "recipe_id": recipe_id,
         "recipe_version": recipe_version,
     }
 
 
-def confirm_and_get_command_id(client: TestClient, cultivation_id: str = "cult-1") -> str:
+def open_draft(
+    client: TestClient, zone_id: str = "r1-s1", **payload_overrides
+) -> None:
+    response = client.post(
+        f"/zones/{zone_id}/cultivations", json=draft_payload(**payload_overrides)
+    )
+    assert response.status_code == 201
+
+
+def confirm_and_get_command_id(
+    client: TestClient, zone_id: str = "r1-s1", cultivation_id: str = "cult-1"
+) -> str:
     """Conferma la bozza e restituisce l'id del comando ActivateCultivation accodato."""
-    confirmed = client.post(f"/cultivations/{cultivation_id}/confirm", json={})
+    confirmed = client.post(
+        f"/zones/{zone_id}/cultivations/{cultivation_id}/confirm", json={}
+    )
     assert confirmed.status_code == 200
-    assert confirmed.json()["status"] == "confirmed"
+    assert confirmed.json()["status"] == "starting"
     command_id = confirmed.json()["activation_command_id"]
     assert command_id
     return command_id
@@ -96,7 +107,7 @@ def test_open_draft_requires_existing_zone(
 ) -> None:
     create_recipe(client, example_recipe_data)
 
-    response = client.post("/cultivations", json=draft_payload())
+    response = client.post("/zones/r1-s1/cultivations", json=draft_payload())
 
     assert response.status_code == 404
 
@@ -106,14 +117,15 @@ def test_confirm_enqueues_activate_cultivation_command(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    created = client.post("/cultivations", json=draft_payload())
+    created = client.post("/zones/r1-s1/cultivations", json=draft_payload())
     assert created.status_code == 201
     assert created.json()["status"] == "draft"
+    assert created.json()["zone_id"] == "r1-s1"
 
-    confirmed = client.post("/cultivations/cult-1/confirm", json={})
+    confirmed = client.post("/zones/r1-s1/cultivations/cult-1/confirm", json={})
 
     assert confirmed.status_code == 200
-    assert confirmed.json()["status"] == "confirmed"
+    assert confirmed.json()["status"] == "starting"
     command_id = confirmed.json()["activation_command_id"]
     assert command_id
 
@@ -131,12 +143,12 @@ def test_positive_command_result_activates_the_cultivation(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
     command_id = confirm_and_get_command_id(client)
 
     report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
 
-    cultivation = client.get("/cultivations/cult-1").json()
+    cultivation = client.get("/zones/r1-s1/cultivations/cult-1").json()
     assert cultivation["status"] == "active"
     assert cultivation["started_at"] is not None
 
@@ -146,18 +158,20 @@ def test_rejected_command_result_fails_cultivation_and_frees_zone(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
     command_id = confirm_and_get_command_id(client)
 
     report_command_result(client, "r1-s1", command_id, "rejected", "edge unreachable")
 
-    cultivation = client.get("/cultivations/cult-1").json()
+    cultivation = client.get("/zones/r1-s1/cultivations/cult-1").json()
     assert cultivation["status"] == "failed"
     assert cultivation["error_message"] == "edge unreachable"
     assert cultivation["started_at"] is None
 
     # Il settore e libero: si puo aprire una nuova bozza.
-    reopened = client.post("/cultivations", json=draft_payload("cult-2"))
+    reopened = client.post(
+        "/zones/r1-s1/cultivations", json=draft_payload("cult-2")
+    )
     assert reopened.status_code == 201
 
 
@@ -166,13 +180,13 @@ def test_replaying_the_same_command_result_is_a_no_op(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
     command_id = confirm_and_get_command_id(client)
 
     report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
     report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
 
-    cultivation = client.get("/cultivations/cult-1").json()
+    cultivation = client.get("/zones/r1-s1/cultivations/cult-1").json()
     assert cultivation["status"] == "active"
 
 
@@ -181,9 +195,14 @@ def test_only_one_non_concluded_cultivation_per_zone(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    assert client.post("/cultivations", json=draft_payload()).status_code == 201
+    assert (
+        client.post("/zones/r1-s1/cultivations", json=draft_payload()).status_code
+        == 201
+    )
 
-    conflict = client.post("/cultivations", json=draft_payload("cult-2"))
+    conflict = client.post(
+        "/zones/r1-s1/cultivations", json=draft_payload("cult-2")
+    )
 
     assert conflict.status_code == 409
 
@@ -193,12 +212,9 @@ def test_confirm_rejects_species_mismatch(
 ) -> None:
     create_zone(client, species="Tomato")
     create_recipe(client, example_recipe_data)
-    client.post(
-        "/cultivations",
-        json=draft_payload(plant_species="Basilico"),
-    )
+    open_draft(client, plant_species="Basilico")
 
-    response = client.post("/cultivations/cult-1/confirm", json={})
+    response = client.post("/zones/r1-s1/cultivations/cult-1/confirm", json={})
 
     assert response.status_code == 409
 
@@ -208,9 +224,9 @@ def test_confirm_rejects_missing_recipe_version(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data, version=1)
-    client.post("/cultivations", json=draft_payload(recipe_version=5))
+    open_draft(client, recipe_version=5)
 
-    response = client.post("/cultivations/cult-1/confirm", json={})
+    response = client.post("/zones/r1-s1/cultivations/cult-1/confirm", json={})
 
     assert response.status_code == 409
 
@@ -220,12 +236,12 @@ def test_confirm_fixes_recipe_version_even_after_new_version_is_published(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data, version=1)
-    client.post("/cultivations", json=draft_payload(recipe_version=1))
+    open_draft(client, recipe_version=1)
 
     # Una nuova versione della ricetta viene pubblicata dopo la bozza.
     create_recipe(client, example_recipe_data, version=2)
 
-    confirmed = client.post("/cultivations/cult-1/confirm", json={})
+    confirmed = client.post("/zones/r1-s1/cultivations/cult-1/confirm", json={})
 
     assert confirmed.status_code == 200
     assert confirmed.json()["recipe_version"] == 1
@@ -241,12 +257,49 @@ def test_confirm_wrong_state_returns_409(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
-    assert client.post("/cultivations/cult-1/confirm", json={}).status_code == 200
+    open_draft(client)
+    assert (
+        client.post("/zones/r1-s1/cultivations/cult-1/confirm", json={}).status_code
+        == 200
+    )
 
-    again = client.post("/cultivations/cult-1/confirm", json={})
+    again = client.post("/zones/r1-s1/cultivations/cult-1/confirm", json={})
 
     assert again.status_code == 409
+
+
+def test_confirm_rejects_substrate_mismatch_with_previous_run(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data, version=1)
+    draining_recipe = {
+        **example_recipe_data,
+        "id": "tomato_draining_v1",
+        "substrate": "draining",
+        "version": 1,
+    }
+    assert client.post("/recipes", json=draining_recipe).status_code == 201
+
+    # Primo ciclo: coltivato con substrato aerated-universal e concluso
+    # regolarmente, cosi da liberare il settore per un nuovo ciclo.
+    open_draft(client)
+    command_id = confirm_and_get_command_id(client)
+    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
+    assert (
+        client.post("/zones/r1-s1/cultivations/cult-1/complete", json={}).status_code
+        == 200
+    )
+
+    # Secondo ciclo sullo stesso settore, ma con un substrato diverso.
+    client.post(
+        "/zones/r1-s1/cultivations",
+        json=draft_payload("cult-2", recipe_id="tomato_draining_v1"),
+    )
+
+    response = client.post("/zones/r1-s1/cultivations/cult-2/confirm", json={})
+
+    assert response.status_code == 409
 
 
 def test_pause_resume_and_complete_workflow(
@@ -254,24 +307,24 @@ def test_pause_resume_and_complete_workflow(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
     command_id = confirm_and_get_command_id(client)
     report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
 
     paused = client.post(
-        "/cultivations/cult-1/pause",
+        "/zones/r1-s1/cultivations/cult-1/pause",
         json={"elapsed_simulation_seconds": 3600},
     )
     assert paused.status_code == 200
     assert paused.json()["status"] == "paused"
     assert paused.json()["elapsed_simulation_seconds"] == 3600
 
-    resumed = client.post("/cultivations/cult-1/resume")
+    resumed = client.post("/zones/r1-s1/cultivations/cult-1/resume")
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "active"
 
     completed = client.post(
-        "/cultivations/cult-1/complete",
+        "/zones/r1-s1/cultivations/cult-1/complete",
         json={"elapsed_simulation_seconds": 7200},
     )
     assert completed.status_code == 200
@@ -291,9 +344,9 @@ def test_pause_wrong_state_returns_409(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
 
-    response = client.post("/cultivations/cult-1/pause")
+    response = client.post("/zones/r1-s1/cultivations/cult-1/pause")
 
     assert response.status_code == 409
 
@@ -303,9 +356,9 @@ def test_resume_wrong_state_returns_409(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
 
-    response = client.post("/cultivations/cult-1/resume")
+    response = client.post("/zones/r1-s1/cultivations/cult-1/resume")
 
     assert response.status_code == 409
 
@@ -315,9 +368,9 @@ def test_complete_wrong_state_returns_409(
 ) -> None:
     create_zone(client)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload())
+    open_draft(client)
 
-    response = client.post("/cultivations/cult-1/complete", json={})
+    response = client.post("/zones/r1-s1/cultivations/cult-1/complete", json={})
 
     assert response.status_code == 409
 
@@ -329,44 +382,57 @@ def test_complete_wrong_state_returns_409(
 def test_transition_on_missing_cultivation_returns_404(
     client: TestClient, path: str
 ) -> None:
-    response = client.post(f"/cultivations/does-not-exist/{path}", json={})
+    create_zone(client)
+
+    response = client.post(
+        f"/zones/r1-s1/cultivations/does-not-exist/{path}", json={}
+    )
 
     assert response.status_code == 404
 
 
-def test_confirm_rejects_substrate_mismatch_with_previous_run(
+def test_transition_returns_404_when_zone_path_does_not_match(
     client: TestClient, example_recipe_data: dict
 ) -> None:
-    create_zone(client)
-    create_recipe(client, example_recipe_data, version=1)
-    draining_recipe = {
-        **example_recipe_data,
-        "id": "tomato_draining_v1",
-        "substrate": "draining",
-        "version": 1,
-    }
-    assert client.post("/recipes", json=draining_recipe).status_code == 201
+    create_zone(client, "r1-s1", "Tomato", sector_number=1)
+    create_zone(client, "r1-s2", "Basilico", sector_number=2)
+    create_recipe(client, example_recipe_data)
+    open_draft(client, "r1-s1")
 
-    # Primo ciclo: coltivato con substrato aerated-universal e concluso
-    # regolarmente, cosi da liberare il settore per un nuovo ciclo.
-    client.post("/cultivations", json=draft_payload())
-    command_id = confirm_and_get_command_id(client)
-    report_command_result(client, "r1-s1", command_id, "succeeded", "recipe applied")
-    assert client.post("/cultivations/cult-1/complete", json={}).status_code == 200
+    # cult-1 appartiene a r1-s1: confermarla dal path di r1-s2 non deve
+    # trovarla, esattamente come se non esistesse.
+    response = client.post("/zones/r1-s2/cultivations/cult-1/confirm", json={})
 
-    # Secondo ciclo sullo stesso settore, ma con un substrato diverso.
-    client.post(
-        "/cultivations",
-        json=draft_payload("cult-2", recipe_id="tomato_draining_v1"),
-    )
-
-    response = client.post("/cultivations/cult-2/confirm", json={})
-
-    assert response.status_code == 409
+    assert response.status_code == 404
 
 
 def test_read_missing_cultivation_returns_404(client: TestClient) -> None:
-    response = client.get("/cultivations/does-not-exist")
+    create_zone(client)
+
+    response = client.get("/zones/r1-s1/cultivations/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_read_active_cultivation_returns_current_non_concluded_cultivation(
+    client: TestClient, example_recipe_data: dict
+) -> None:
+    create_zone(client)
+    create_recipe(client, example_recipe_data)
+    open_draft(client)
+
+    active = client.get("/zones/r1-s1/cultivations/active")
+
+    assert active.status_code == 200
+    assert active.json()["id"] == "cult-1"
+
+
+def test_read_active_cultivation_returns_404_when_none(
+    client: TestClient,
+) -> None:
+    create_zone(client)
+
+    response = client.get("/zones/r1-s1/cultivations/active")
 
     assert response.status_code == 404
 
@@ -377,12 +443,12 @@ def test_list_cultivations_filters_by_zone(
     create_zone(client, "r1-s1", "Tomato", sector_number=1)
     create_zone(client, "r1-s2", "Basilico", sector_number=2)
     create_recipe(client, example_recipe_data)
-    client.post("/cultivations", json=draft_payload("cult-1", "r1-s1"))
+    open_draft(client, "r1-s1")
     client.post(
-        "/cultivations",
-        json=draft_payload("cult-2", "r1-s2", plant_species="Basilico"),
+        "/zones/r1-s2/cultivations",
+        json=draft_payload("cult-2", plant_species="Basilico"),
     )
 
-    filtered = client.get("/cultivations", params={"zone_id": "r1-s1"})
+    filtered = client.get("/zones/r1-s1/cultivations")
 
     assert [item["id"] for item in filtered.json()] == ["cult-1"]

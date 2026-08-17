@@ -466,6 +466,66 @@ def test_patch_zone_rejects_unmodifiable_or_null_required_fields(
     assert null_name.status_code == 422
 
 
+def test_set_simulation_speed_enqueues_a_command(client: TestClient) -> None:
+    client.post("/zones", json=zone_payload())
+
+    response = client.patch(
+        "/zones/r1-s1/simulation-speed", json={"time_scale": 10.0}
+    )
+
+    assert response.status_code == 202
+    assert response.json()["command_type"] == "SetSimulationSpeed"
+    assert response.json()["payload"] == {"time_scale": 10.0}
+    assert response.json()["status"] == "pending"
+
+    # Non scrive subito la zona: la velocita resta quella di default finche
+    # l'Edge non riporta l'esito del comando.
+    zone = client.get("/zones/r1-s1").json()
+    assert zone["time_scale"] == 1.0
+
+    pending = client.get("/zones/r1-s1/commands").json()
+    assert response.json()["command_id"] in {c["command_id"] for c in pending}
+
+
+def test_set_simulation_speed_rejects_out_of_range_value(client: TestClient) -> None:
+    client.post("/zones", json=zone_payload())
+
+    response = client.patch(
+        "/zones/r1-s1/simulation-speed", json={"time_scale": 120.0}
+    )
+
+    assert response.status_code == 422
+
+
+def test_set_simulation_speed_missing_zone_returns_404(client: TestClient) -> None:
+    response = client.patch(
+        "/zones/does-not-exist/simulation-speed", json={"time_scale": 5.0}
+    )
+
+    assert response.status_code == 404
+
+
+def test_read_zone_runtime_reflects_zone_projection(client: TestClient) -> None:
+    client.post("/zones", json=zone_payload())
+
+    runtime = client.get("/zones/r1-s1/runtime")
+
+    assert runtime.status_code == 200
+    body = runtime.json()
+    assert body["zone_id"] == "r1-s1"
+    assert body["lifecycle_state"] == "Idle"
+    assert body["operational_state"] == "Nominal"
+    assert body["time_scale"] == 1.0
+    assert body["current_phase"] is None
+    assert body["active_recipe_id"] is None
+
+
+def test_read_zone_runtime_missing_zone_returns_404(client: TestClient) -> None:
+    response = client.get("/zones/does-not-exist/runtime")
+
+    assert response.status_code == 404
+
+
 def test_patch_missing_zone_returns_404(client: TestClient) -> None:
     response = client.patch(
         "/api/v1/zones/does-not-exist",

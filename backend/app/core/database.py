@@ -105,6 +105,64 @@ def _migrate_recipes_primary_key(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE recipes_legacy")
 
 
+def _migrate_cultivation_status_starting(connection: sqlite3.Connection) -> None:
+    """Rinomina lo stato `confirmed` in `starting` sulle installazioni precedenti.
+
+    @details Il CHECK di SQLite fa parte dello schema e non si puo alterare
+    in place: la tabella va ricreata, come per `_migrate_recipes_primary_key`.
+    """
+    schema_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cultivations'"
+    ).fetchone()
+    schema = "" if schema_row is None else (schema_row[0] or "")
+    if not schema or "'starting'" in schema:
+        return
+    connection.execute("ALTER TABLE cultivations RENAME TO cultivations_legacy")
+    connection.execute(
+        """
+        CREATE TABLE cultivations (
+            id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            plant_species TEXT NOT NULL,
+            recipe_id TEXT NOT NULL,
+            recipe_version INTEGER NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN (
+                    'draft', 'starting', 'active', 'paused',
+                    'completed', 'failed'
+                )),
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            confirmed_at TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            elapsed_simulation_seconds REAL NOT NULL DEFAULT 0
+                CHECK (elapsed_simulation_seconds >= 0),
+            requested_time_scale REAL NOT NULL DEFAULT 1.0
+                CHECK (requested_time_scale > 0),
+            applied_time_scale REAL,
+            error_message TEXT,
+            activation_command_id TEXT,
+            FOREIGN KEY (zone_id) REFERENCES zones(id),
+            FOREIGN KEY (recipe_id, recipe_version)
+                REFERENCES recipes(id, version)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO cultivations
+        SELECT id, zone_id, plant_species, recipe_id, recipe_version,
+               CASE WHEN status = 'confirmed' THEN 'starting' ELSE status END,
+               created_by, created_at, confirmed_at, started_at, completed_at,
+               elapsed_simulation_seconds, requested_time_scale,
+               applied_time_scale, error_message, activation_command_id
+        FROM cultivations_legacy
+        """
+    )
+    connection.execute("DROP TABLE cultivations_legacy")
+
+
 def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
     """Ricrea le tabelle legacy aggiungendo `boot_id` senza perdere dati."""
     if (
@@ -615,6 +673,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON runtime_commands (zone_id, status, created_at)
         """
     )
+    _migrate_cultivation_status_starting(connection)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS cultivations (
@@ -625,7 +684,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             recipe_version INTEGER NOT NULL,
             status TEXT NOT NULL
                 CHECK (status IN (
-                    'draft', 'confirmed', 'active', 'paused',
+                    'draft', 'starting', 'active', 'paused',
                     'completed', 'failed'
                 )),
             created_by TEXT,

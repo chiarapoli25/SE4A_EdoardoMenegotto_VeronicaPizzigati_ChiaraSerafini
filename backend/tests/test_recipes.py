@@ -278,3 +278,73 @@ def test_create_recipe_rejects_invalid_payload(client: TestClient) -> None:
     response = client.post("/recipes", json={"id": "incomplete"})
 
     assert response.status_code == 422
+
+
+def test_recipes_can_be_filtered_by_plant_species(client: TestClient) -> None:
+    response = client.get("/recipes", params={"plant_species": "Calathea"})
+
+    assert response.status_code == 200
+    plant_types = {recipe["plant_type"] for recipe in response.json()}
+    assert plant_types == {"Calathea"}
+
+
+def test_plant_species_filter_is_case_insensitive(client: TestClient) -> None:
+    response = client.get("/recipes", params={"plant_species": "calathea"})
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["id"] == "recipe-calathea"
+
+
+def test_plant_species_filter_with_no_match_returns_empty_list(
+    client: TestClient,
+) -> None:
+    response = client.get("/recipes", params={"plant_species": "Unicorno"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_read_recipe_versions_lists_every_stored_version(
+    client: TestClient,
+) -> None:
+    recipe = client.get("/recipes/recipe-lithops").json()
+    original_version = recipe["version"]
+    recipe["version"] += 1
+    assert client.post("/recipes", json=recipe).status_code == 201
+
+    response = client.get("/recipes/recipe-lithops/versions")
+
+    assert response.status_code == 200
+    assert [item["version"] for item in response.json()] == [
+        original_version,
+        original_version + 1,
+    ]
+
+
+def test_read_recipe_versions_missing_recipe_returns_404(
+    client: TestClient,
+) -> None:
+    response = client.get("/recipes/does-not-exist/versions")
+
+    assert response.status_code == 404
+
+
+def test_read_recipe_version_returns_the_exact_version(
+    client: TestClient,
+) -> None:
+    recipe = client.get("/recipes/recipe-lithops").json()
+    original_version = recipe["version"]
+    recipe["version"] += 1
+    client.post("/recipes", json=recipe)
+
+    response = client.get(f"/recipes/recipe-lithops/versions/{original_version}")
+
+    assert response.status_code == 200
+    assert response.json()["version"] == original_version
+
+
+def test_read_recipe_version_missing_returns_404(client: TestClient) -> None:
+    response = client.get("/recipes/recipe-lithops/versions/99")
+
+    assert response.status_code == 404

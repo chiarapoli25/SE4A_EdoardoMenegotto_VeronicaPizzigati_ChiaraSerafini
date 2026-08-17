@@ -3,13 +3,16 @@
 """
 
 import sqlite3
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
+from ..commands.models import CommandType, RuntimeCommand, RuntimeCommandCreate
+from ..commands.repository import RuntimeCommandConflict, create_command
 from ..recipes.models import Recipe
 from ..recipes.repository import get_recipe
-from .models import Zone, ZoneCreate, ZoneUpdate
+from .models import SimulationSpeedRequest, Zone, ZoneCreate, ZoneRuntime, ZoneUpdate
 from .repository import (
     ZoneConflict,
     ZoneUpdateConflict,
@@ -156,3 +159,65 @@ def modify_zone(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except ZoneUpdateConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.patch(
+    "/{zone_id}/simulation-speed", response_model=RuntimeCommand, status_code=202
+)
+def set_simulation_speed(
+    zone_id: str,
+    request: SimulationSpeedRequest,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> RuntimeCommand:
+    """@brief Imposta la velocita di simulazione richiesta dalla dashboard.
+
+    @details Come `ActivateCultivation`, non scrive subito `time_scale`
+    sulla zona: accoda un comando `SetSimulationSpeed` sulla coda dell'Edge
+    (`POST /zones/{zone_id}/commands`) e restituisce il comando accodato
+    (`202 Accepted`, non ancora applicato). La zona riflette la nuova
+    velocita solo quando l'Edge riporta l'esito tramite
+    `POST /zones/{zone_id}/commands/{command_id}/result`.
+
+    @throws HTTPException 404 se la zona non esiste.
+    """
+    if get_zone(connection, zone_id) is None:
+        raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
+    command_id = f"{zone_id}-simulation-speed-{uuid.uuid4().hex[:8]}"
+    try:
+        return create_command(
+            connection,
+            zone_id,
+            RuntimeCommandCreate(
+                command_id=command_id,
+                command_type=CommandType.SET_SIMULATION_SPEED,
+                payload={"time_scale": request.time_scale},
+            ),
+        )
+    except RuntimeCommandConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.get("/{zone_id}/runtime", response_model=ZoneRuntime)
+def read_zone_runtime(
+    zone_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> ZoneRuntime:
+    """@brief Espone stato, fase, tempi e velocita correnti del settore.
+
+    @throws HTTPException 404 se la zona non esiste.
+    """
+    zone = get_zone(connection, zone_id)
+    if zone is None:
+        raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
+    return ZoneRuntime(
+        zone_id=zone.id,
+        lifecycle_state=zone.lifecycle_state,
+        operational_state=zone.operational_state,
+        current_phase=zone.current_phase,
+        active_recipe_id=zone.active_recipe_id,
+        active_recipe_version=zone.active_recipe_version,
+        current_strategies=zone.current_strategies,
+        current_setpoints=zone.current_setpoints,
+        time_scale=zone.time_scale,
+        last_edge_contact=zone.last_edge_contact,
+    )
