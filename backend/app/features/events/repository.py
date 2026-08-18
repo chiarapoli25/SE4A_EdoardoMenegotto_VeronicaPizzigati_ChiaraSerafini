@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
+from ..cultivations.repository import CULTIVATION_EVENT_TYPES, apply_cultivation_event
 from .models import EdgeEvent, EdgeEventCreate
 
 
@@ -203,6 +204,17 @@ def save_event(
         ) from error
 
     _apply_recipe_state(connection, zone_id, event)
+    if event.event_type in CULTIVATION_EVENT_TYPES:
+        # Notifica di lifecycle riportata dall'Edge: riconciliata in modo
+        # tollerante da `features.cultivations`, tramite `cultivation_id` nel
+        # payload. E' un canale distinto dalla proiezione corrente della
+        # zona sopra: puo restare un no-op (id assente, stato incompatibile)
+        # senza mai far fallire l'ingestione dell'evento.
+        cultivation_id = event.payload.get("cultivation_id")
+        if isinstance(cultivation_id, str) and cultivation_id:
+            apply_cultivation_event(
+                connection, zone_id, cultivation_id, event.event_type, event.payload
+            )
     connection.execute(
         """
         UPDATE zones

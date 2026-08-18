@@ -22,6 +22,8 @@ from .models import (
     CultivationConfirm,
     CultivationCreate,
     CultivationProgress,
+    CultivationResumeRequest,
+    CultivationStopRequest,
 )
 from .repository import (
     CultivationCompatibilityError,
@@ -208,6 +210,7 @@ def pause(
 def resume(
     zone_id: str,
     cultivation_id: str,
+    request: CultivationResumeRequest = CultivationResumeRequest(),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Riprende una coltivazione sospesa.
@@ -216,7 +219,9 @@ def resume(
         stato `paused`.
     """
     return _run_transition(
-        lambda: resume_cultivation(connection, zone_id, cultivation_id),
+        lambda: resume_cultivation(
+            connection, zone_id, cultivation_id, request.time_scale
+        ),
         cultivation_id,
     )
 
@@ -228,7 +233,7 @@ def resume(
 def complete(
     zone_id: str,
     cultivation_id: str,
-    progress: CultivationProgress = CultivationProgress(),
+    request: CultivationStopRequest = CultivationStopRequest(),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Conclude regolarmente una coltivazione e libera il settore.
@@ -237,6 +242,8 @@ def complete(
         `active` o `paused`.
     """
     return _run_transition(
-        lambda: complete_cultivation(connection, zone_id, cultivation_id, progress),
+        lambda: complete_cultivation(
+            connection, zone_id, cultivation_id, request, request.reason
+        ),
         cultivation_id,
     )

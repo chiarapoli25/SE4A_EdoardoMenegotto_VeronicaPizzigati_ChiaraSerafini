@@ -163,6 +163,45 @@ def _migrate_cultivation_status_starting(connection: sqlite3.Connection) -> None
     connection.execute("DROP TABLE cultivations_legacy")
 
 
+def _migrate_cultivation_current_phase_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """Aggiunge la fase corrente allo storico coltivazioni preesistente.
+
+    @details Il valore rispecchia `zones.current_phase` al momento
+    dell'ultimo evento `RecipePhaseChanged`/`RecipeCompleted` o del risultato
+    strutturato di `ActivateCultivation` interpretato per questa
+    coltivazione, cosi che lo storico resti leggibile anche dopo che la zona
+    e passata a una coltivazione successiva (che azzera la propria proiezione
+    corrente).
+    """
+    if (
+        _table_columns(connection, "cultivations")
+        and "current_phase" not in _table_columns(connection, "cultivations")
+    ):
+        connection.execute(
+            "ALTER TABLE cultivations ADD COLUMN current_phase TEXT"
+        )
+
+
+def _migrate_runtime_command_result_column(connection: sqlite3.Connection) -> None:
+    """Aggiunge il risultato strutturato ai comandi runtime preesistenti.
+
+    @details Oltre al messaggio libero gia previsto, l'Edge puo riportare un
+    oggetto JSON con i dettagli dell'esito (es. `applied_time_scale`,
+    `current_phase`): viene conservato per intero e interpretato dal modulo
+    di dominio competente (`features.cultivations`), senza che la coda
+    comandi debba conoscerne la struttura.
+    """
+    if (
+        _table_columns(connection, "runtime_commands")
+        and "result_data" not in _table_columns(connection, "runtime_commands")
+    ):
+        connection.execute(
+            "ALTER TABLE runtime_commands ADD COLUMN result_data TEXT"
+        )
+
+
 def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
     """Ricrea le tabelle legacy aggiungendo `boot_id` senza perdere dati."""
     if (
@@ -663,10 +702,12 @@ def init_db(connection: sqlite3.Connection) -> None:
             completed_at TEXT,
             result_message TEXT,
             result_replayed INTEGER,
+            result_data TEXT,
             FOREIGN KEY (zone_id) REFERENCES zones(id)
         )
         """
     )
+    _migrate_runtime_command_result_column(connection)
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_runtime_commands_zone_status_created
@@ -697,6 +738,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             requested_time_scale REAL NOT NULL DEFAULT 1.0
                 CHECK (requested_time_scale > 0),
             applied_time_scale REAL,
+            current_phase TEXT,
             error_message TEXT,
             activation_command_id TEXT,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
@@ -705,6 +747,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    _migrate_cultivation_current_phase_column(connection)
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_cultivations_zone_not_concluded

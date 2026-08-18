@@ -305,6 +305,69 @@ incorporano comunque la ricetta gia risolta per intero nel payload di
 scaricarla: la richiesta versionata resta un ripiego per i comandi che
 includono solo `recipe_id`.
 
+### Contratti dei comandi di coltivazione e risultati strutturati
+
+I comandi Edge legati al ciclo di vita di una coltivazione portano sempre
+`cultivation_id` nel payload, oltre ai campi specifici dell'operazione:
+
+- `ActivateCultivation`: `cultivation_id`, `recipe_id`, `recipe_version`,
+  `initial_time_scale` (e la ricetta gia risolta per intero, vedi sopra).
+- `SetSimulationSpeed`: `time_scale` e, quando il settore ha una
+  coltivazione non conclusa, anche `cultivation_id`.
+- `PauseCultivation`: solo `cultivation_id`.
+- `ResumeCultivation`: `cultivation_id` e, se richiesta una nuova velocita
+  alla ripresa, `time_scale` (omesso per mantenere l'ultima applicata).
+- `StopCultivation`: `cultivation_id` e `reason` (il motivo dell'arresto,
+  anche `null` se non fornito).
+
+`POST /zones/{zone_id}/commands/{command_id}/result` accetta, oltre al
+messaggio libero (`message`) e allo stato finale (`status`), un campo
+opzionale `result` con i dettagli strutturati dell'esito, ad esempio:
+
+```json
+{
+  "status": "succeeded",
+  "message": "cultivation activated",
+  "result": {
+    "cultivation_id": "cultivation-123",
+    "recipe_id": "tomato-demo",
+    "recipe_version": 2,
+    "applied_time_scale": 1.0,
+    "current_phase": "Germinazione"
+  }
+}
+```
+
+Per il comando `ActivateCultivation`, `result.applied_time_scale` e
+`result.current_phase` vengono letti dalla riconciliazione e scritti sulla
+coltivazione corrispondente; se assenti si ricade rispettivamente sulla
+velocita richiesta e su `null`.
+
+L'Edge puo anche notificare in modo proattivo il backend con eventi dedicati
+(`POST /zones/{zone_id}/events`), interpretati da `features.cultivations` in
+modo tollerante (nessun errore su stati incompatibili o duplicati, e senza
+accodare a loro volta nuovi comandi): `CultivationActivationStarted`
+(puramente informativo), `CultivationActivated`/`CultivationActivationFailed`
+(equivalenti al risultato del comando di attivazione, utili se arrivano prima
+o al posto di esso), `CultivationPaused`, `CultivationResumed`,
+`CultivationStopped`. `RecipePhaseChanged` continua ad aggiornare
+`zones.current_phase` come proiezione corrente della zona (gia esistente).
+
+### Autenticazione: nota di progettazione aperta
+
+Il Bearer token usato oggi dall'Edge (`SMARTHYDRO_EDGE_TOKEN` o analogo, da
+verificare nella configurazione corrente) e una credenziale tecnica
+macchina-a-macchina, non un login utente: identifica un Edge, non un
+agronomo. `created_by` (bozza) e `confirmed_by`/l'operatore che conferma non
+sono oggi ricavati da alcuna sessione autenticata.
+
+Se la dashboard dovra richiedere un accesso autenticato agli operatori, va
+introdotto uno strato separato (utenti, sessioni o JWT, ruoli, log di audit)
+che non sostituisce il token Edge ma si affianca ad esso. Questa parte non e
+stata implementata in questo giro di modifiche perche la portata (schema
+utenti, gestione password/sessioni, autorizzazioni per ruolo, audit trail)
+richiede una decisione esplicita su priorita e ampiezza prima di procedere.
+
 Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
 canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del
 terriccio, `active_recipe_id`, `active_recipe_version`, `current_phase`,

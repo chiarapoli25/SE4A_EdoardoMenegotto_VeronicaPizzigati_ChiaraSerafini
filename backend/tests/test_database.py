@@ -366,6 +366,109 @@ def test_init_db_migrates_cultivation_confirmed_status_to_starting() -> None:
     assert "'confirmed'" not in schema_row[0]
 
 
+def test_init_db_adds_current_phase_to_legacy_cultivations() -> None:
+    legacy = sqlite3.connect(":memory:")
+    legacy.execute(
+        """
+        CREATE TABLE cultivations (
+            id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            plant_species TEXT NOT NULL,
+            recipe_id TEXT NOT NULL,
+            recipe_version INTEGER NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN (
+                    'draft', 'starting', 'active', 'paused',
+                    'completed', 'failed'
+                )),
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            confirmed_at TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            elapsed_simulation_seconds REAL NOT NULL DEFAULT 0,
+            requested_time_scale REAL NOT NULL DEFAULT 1.0,
+            applied_time_scale REAL,
+            error_message TEXT,
+            activation_command_id TEXT
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO cultivations (
+            id, zone_id, plant_species, recipe_id, recipe_version, status,
+            created_at
+        )
+        VALUES (
+            'cult-legacy', 'zone-legacy', 'Tomato', 'recipe-legacy', 1,
+            'active', '2024-01-01T00:00:00+00:00'
+        )
+        """
+    )
+
+    try:
+        init_db(legacy)
+        columns = {
+            row[1] for row in legacy.execute("PRAGMA table_info(cultivations)").fetchall()
+        }
+        stored = legacy.execute(
+            "SELECT current_phase FROM cultivations WHERE id = 'cult-legacy'"
+        ).fetchone()
+    finally:
+        legacy.close()
+
+    assert "current_phase" in columns
+    assert stored == (None,)
+
+
+def test_init_db_adds_result_data_to_legacy_runtime_commands() -> None:
+    legacy = sqlite3.connect(":memory:")
+    legacy.execute(
+        """
+        CREATE TABLE runtime_commands (
+            command_id TEXT PRIMARY KEY,
+            zone_id TEXT NOT NULL,
+            command_type TEXT NOT NULL,
+            payload_data TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('pending', 'succeeded', 'rejected')),
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            result_message TEXT,
+            result_replayed INTEGER
+        )
+        """
+    )
+    legacy.execute(
+        """
+        INSERT INTO runtime_commands (
+            command_id, zone_id, command_type, payload_data, status,
+            created_at
+        )
+        VALUES (
+            'command-legacy', 'zone-legacy', 'EmergencyStop', '{}', 'pending',
+            '2024-01-01T00:00:00+00:00'
+        )
+        """
+    )
+
+    try:
+        init_db(legacy)
+        columns = {
+            row[1]
+            for row in legacy.execute("PRAGMA table_info(runtime_commands)").fetchall()
+        }
+        stored = legacy.execute(
+            "SELECT result_data FROM runtime_commands WHERE command_id = 'command-legacy'"
+        ).fetchone()
+    finally:
+        legacy.close()
+
+    assert "result_data" in columns
+    assert stored == (None,)
+
+
 def test_init_db_adds_soil_probe_telemetry_to_existing_schema() -> None:
     legacy = sqlite3.connect(":memory:")
     legacy.execute(

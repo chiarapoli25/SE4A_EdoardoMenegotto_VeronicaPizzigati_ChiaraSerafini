@@ -64,6 +64,7 @@ def report_command_result(
         # Le coltivazioni non hanno un endpoint di esito proprio: riusano
         # questo stesso report per far avanzare cultivations.status.
         apply_activation_command_result(
-            connection, command_id, stored.status, stored.result_message
+            connection, command_id, stored.status, stored.result_message,
+            stored.result,
         )
     return stored

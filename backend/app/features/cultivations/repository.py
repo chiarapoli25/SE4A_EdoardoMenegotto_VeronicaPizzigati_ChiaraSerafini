@@ -37,6 +37,10 @@ from .models import (
     CultivationStatus,
 )
 
+## @brief Chiavi del risultato strutturato usate dalla riconciliazione.
+_RESULT_APPLIED_TIME_SCALE = "applied_time_scale"
+_RESULT_CURRENT_PHASE = "current_phase"
+
 
 class CultivationConflict(Exception):
     """@brief Segnala un identificativo gia usato o un settore gia occupato."""
@@ -54,7 +58,7 @@ _COLUMNS = (
     "id, zone_id, plant_species, recipe_id, recipe_version, status, "
     "created_by, created_at, confirmed_at, started_at, completed_at, "
     "elapsed_simulation_seconds, requested_time_scale, applied_time_scale, "
-    "error_message, activation_command_id"
+    "current_phase, error_message, activation_command_id"
 )
 
 ## @brief Stati che non occupano piu in modo esclusivo il settore.
@@ -85,8 +89,9 @@ def _cultivation_from_row(row: tuple) -> Cultivation:
         elapsed_simulation_seconds=row[11],
         requested_time_scale=row[12],
         applied_time_scale=row[13],
-        error_message=row[14],
-        activation_command_id=row[15],
+        current_phase=row[14],
+        error_message=row[15],
+        activation_command_id=row[16],
     )
 
 
@@ -316,6 +321,11 @@ def confirm_cultivation(
                 "cultivation_id": cultivation_id,
                 "recipe_id": recipe.id,
                 "recipe_version": recipe.version,
+                "initial_time_scale": existing.requested_time_scale,
+                # Ricetta incorporata per intero: evita che l'Edge debba
+                # risolvere di nuovo `recipe_id`/`recipe_version` (vedi
+                # l'auto-fetch versionato in `http_backend_client.cpp` come
+                # solo fallback per i comandi che non la incorporano).
                 "recipe": recipe.model_dump(mode="json"),
             },
         ),
@@ -381,17 +391,23 @@ def record_activation_result(
             if result.applied_time_scale is not None
             else existing.requested_time_scale
         )
+        current_phase = (
+            result.current_phase
+            if result.current_phase is not None
+            else existing.current_phase
+        )
         connection.execute(
             """
             UPDATE cultivations
             SET status = ?, started_at = ?, applied_time_scale = ?,
-                error_message = NULL
+                current_phase = ?, error_message = NULL
             WHERE id = ?
             """,
             (
                 CultivationStatus.ACTIVE.value,
                 now.isoformat(),
                 applied_time_scale,
+                current_phase,
                 cultivation_id,
             ),
         )
@@ -401,6 +417,7 @@ def record_activation_result(
                 "status": CultivationStatus.ACTIVE,
                 "started_at": now,
                 "applied_time_scale": applied_time_scale,
+                "current_phase": current_phase,
                 "error_message": None,
             }
         )
@@ -433,6 +450,7 @@ def apply_activation_command_result(
     command_id: str,
     status: CommandStatus,
     message: str | None,
+    result: dict | None = None,
 ) -> Cultivation | None:
     """@brief Riconcilia l'esito di un comando `ActivateCultivation` completato.
 
@@ -447,22 +465,35 @@ def apply_activation_command_result(
     @param command_id Identificativo del comando appena completato.
     @param status Stato finale del comando (`succeeded` o `rejected`).
     @param message Messaggio riportato dall'Edge, usato come motivo in caso
-        di fallimento.
+        di fallimento (i "risultati strutturati" non hanno un campo testuale
+        proprio per l'errore).
+    @param result Dettagli strutturati opzionali riportati dall'Edge, ad
+        esempio `{"applied_time_scale": 1.0, "current_phase": "Germinazione"}`.
+        Valori non riconosciuti o del tipo sbagliato sono ignorati.
     @return La coltivazione coinvolta, oppure `None` se `command_id` non
         corrisponde a nessuna attivazione di coltivazione.
     """
     existing = _get_cultivation_by_activation_command(connection, command_id)
     if existing is None or existing.status is not CultivationStatus.STARTING:
         return existing
-    result = CultivationActivationResult(
+    result = result or {}
+    applied_time_scale = result.get(_RESULT_APPLIED_TIME_SCALE)
+    if not isinstance(applied_time_scale, (int, float)) or applied_time_scale <= 0:
+        applied_time_scale = None
+    current_phase = result.get(_RESULT_CURRENT_PHASE)
+    if not isinstance(current_phase, str) or not current_phase:
+        current_phase = None
+    activation_result = CultivationActivationResult(
         success=status is CommandStatus.SUCCEEDED,
+        applied_time_scale=applied_time_scale,
+        current_phase=current_phase if status is CommandStatus.SUCCEEDED else None,
         error_message=(
             None
             if status is CommandStatus.SUCCEEDED
             else (message or "activation rejected by the Edge")
         ),
     )
-    return record_activation_result(connection, existing.id, result)
+    return record_activation_result(connection, existing.id, activation_result)
 
 
 def _enqueue_lifecycle_command(
@@ -470,6 +501,7 @@ def _enqueue_lifecycle_command(
     zone_id: str,
     cultivation_id: str,
     command_type: CommandType,
+    payload: dict | None = None,
 ) -> None:
     """@brief Notifica un cambio di lifecycle alla stessa coda Edge.
 
@@ -480,13 +512,21 @@ def _enqueue_lifecycle_command(
     Il fallimento dell'accodamento (identificativo gia usato con dati
     diversi, caso limite) non deve impedire la transizione locale, quindi
     viene ignorato.
+
+    @param payload Corpo del comando; contiene sempre almeno `cultivation_id`
+        (vedi contratti `PauseCultivation`/`ResumeCultivation`/
+        `StopCultivation`/`SetSimulationSpeed`).
     """
     command_id = f"{cultivation_id}-{command_type.value.lower()}-{uuid.uuid4().hex[:8]}"
     try:
         create_command(
             connection,
             zone_id,
-            RuntimeCommandCreate(command_id=command_id, command_type=command_type),
+            RuntimeCommandCreate(
+                command_id=command_id,
+                command_type=command_type,
+                payload=payload or {"cultivation_id": cultivation_id},
+            ),
         )
     except (RuntimeCommandConflict, sqlite3.Error):
         pass
@@ -501,6 +541,120 @@ def _resolved_elapsed_seconds(
         if progress.elapsed_simulation_seconds is not None
         else existing.elapsed_simulation_seconds
     )
+
+
+## @brief Tipi di evento Edge interpretati da `apply_cultivation_event`.
+CULTIVATION_EVENT_TYPES = frozenset(
+    {
+        "CultivationActivationStarted",
+        "CultivationActivated",
+        "CultivationActivationFailed",
+        "CultivationPaused",
+        "CultivationResumed",
+        "CultivationStopped",
+    }
+)
+
+
+def apply_cultivation_event(
+    connection: sqlite3.Connection,
+    zone_id: str,
+    cultivation_id: str,
+    event_type: str,
+    payload: dict,
+) -> Cultivation | None:
+    """@brief Riconcilia in modo tollerante un evento di lifecycle riportato dall'Edge.
+
+    @details Usata da `features.events.repository` per i tipi elencati in
+    `CULTIVATION_EVENT_TYPES`. A differenza dei comandi (dove il backend e
+    sempre l'iniziatore e attende un esito), questi sono notifiche
+    Edge -> backend: non accodano mai un nuovo comando, perche l'Edge ha gia
+    agito autonomamente. Sono no-op silenziosi (nessuna eccezione, nessuna
+    scrittura) quando l'identificativo non esiste nella zona indicata o
+    quando lo stato attuale non ammette piu la transizione corrispondente
+    (replay, evento duplicato, oppure arrivato dopo che il comando
+    equivalente e gia stato riconciliato).
+
+    @return La coltivazione coinvolta (aggiornata o invariata), oppure
+        `None` se l'identificativo non esiste nella zona.
+    """
+    existing = get_cultivation(connection, cultivation_id)
+    if existing is None or existing.zone_id != zone_id:
+        return None
+
+    if (
+        event_type == "CultivationActivated"
+        and existing.status is CultivationStatus.STARTING
+    ):
+        applied_time_scale = payload.get(_RESULT_APPLIED_TIME_SCALE)
+        if not isinstance(applied_time_scale, (int, float)) or applied_time_scale <= 0:
+            applied_time_scale = None
+        current_phase = payload.get(_RESULT_CURRENT_PHASE)
+        if not isinstance(current_phase, str) or not current_phase:
+            current_phase = None
+        return record_activation_result(
+            connection,
+            cultivation_id,
+            CultivationActivationResult(
+                success=True,
+                applied_time_scale=applied_time_scale,
+                current_phase=current_phase,
+            ),
+        )
+
+    if (
+        event_type == "CultivationActivationFailed"
+        and existing.status is CultivationStatus.STARTING
+    ):
+        error_message = payload.get("error_message") or payload.get("reason")
+        if not isinstance(error_message, str) or not error_message:
+            error_message = "activation reported as failed by the Edge"
+        return record_activation_result(
+            connection,
+            cultivation_id,
+            CultivationActivationResult(success=False, error_message=error_message),
+        )
+
+    if event_type == "CultivationPaused" and existing.status is CultivationStatus.ACTIVE:
+        connection.execute(
+            "UPDATE cultivations SET status = ? WHERE id = ?",
+            (CultivationStatus.PAUSED.value, cultivation_id),
+        )
+        connection.commit()
+        return existing.model_copy(update={"status": CultivationStatus.PAUSED})
+
+    if event_type == "CultivationResumed" and existing.status is CultivationStatus.PAUSED:
+        connection.execute(
+            "UPDATE cultivations SET status = ? WHERE id = ?",
+            (CultivationStatus.ACTIVE.value, cultivation_id),
+        )
+        connection.commit()
+        return existing.model_copy(update={"status": CultivationStatus.ACTIVE})
+
+    if event_type == "CultivationStopped" and existing.status in (
+        CultivationStatus.ACTIVE,
+        CultivationStatus.PAUSED,
+    ):
+        completed_at = datetime.now(timezone.utc)
+        connection.execute(
+            """
+            UPDATE cultivations SET status = ?, completed_at = ?
+            WHERE id = ?
+            """,
+            (CultivationStatus.COMPLETED.value, completed_at.isoformat(), cultivation_id),
+        )
+        connection.commit()
+        return existing.model_copy(
+            update={
+                "status": CultivationStatus.COMPLETED,
+                "completed_at": completed_at,
+            }
+        )
+
+    # `CultivationActivationStarted` e qualunque evento non compatibile con
+    # lo stato corrente restano puramente informativi: sono comunque
+    # conservati nello storico `edge_events` da `features.events`.
+    return existing
 
 
 def pause_cultivation(
@@ -527,7 +681,11 @@ def pause_cultivation(
     )
     connection.commit()
     _enqueue_lifecycle_command(
-        connection, existing.zone_id, cultivation_id, CommandType.PAUSE_CULTIVATION
+        connection,
+        existing.zone_id,
+        cultivation_id,
+        CommandType.PAUSE_CULTIVATION,
+        {"cultivation_id": cultivation_id},
     )
     return existing.model_copy(
         update={
@@ -538,10 +696,16 @@ def pause_cultivation(
 
 
 def resume_cultivation(
-    connection: sqlite3.Connection, zone_id: str, cultivation_id: str
+    connection: sqlite3.Connection,
+    zone_id: str,
+    cultivation_id: str,
+    time_scale: float | None = None,
 ) -> Cultivation | None:
     """@brief Riprende una coltivazione sospesa.
 
+    @param time_scale Nuova velocita da riapplicare alla ripresa, oppure
+        `None` per mantenere l'ultima velocita applicata (comando Edge
+        `ResumeCultivation(cultivation_id, time_scale?)`).
     @throws CultivationStateError Se la coltivazione non e in stato `paused`.
     """
     existing = get_cultivation(connection, cultivation_id)
@@ -553,8 +717,15 @@ def resume_cultivation(
         (CultivationStatus.ACTIVE.value, cultivation_id),
     )
     connection.commit()
+    payload: dict = {"cultivation_id": cultivation_id}
+    if time_scale is not None:
+        payload["time_scale"] = time_scale
     _enqueue_lifecycle_command(
-        connection, existing.zone_id, cultivation_id, CommandType.RESUME_CULTIVATION
+        connection,
+        existing.zone_id,
+        cultivation_id,
+        CommandType.RESUME_CULTIVATION,
+        payload,
     )
     return existing.model_copy(update={"status": CultivationStatus.ACTIVE})
 
@@ -564,6 +735,7 @@ def complete_cultivation(
     zone_id: str,
     cultivation_id: str,
     progress: CultivationProgress,
+    reason: str | None = None,
 ) -> Cultivation | None:
     """@brief Conclude regolarmente una coltivazione attiva o sospesa.
 
@@ -571,6 +743,8 @@ def complete_cultivation(
     disponibile per una nuova bozza. Ammette due stati di partenza (`active`
     o `paused`), quindi non usa `_require_status`.
 
+    @param reason Motivo dell'arresto, riportato all'Edge nel comando
+        `StopCultivation(cultivation_id, reason)` e conservato per l'audit.
     @throws CultivationStateError Se la coltivazione non e `active` o `paused`.
     """
     existing = get_cultivation(connection, cultivation_id)
@@ -598,7 +772,11 @@ def complete_cultivation(
     )
     connection.commit()
     _enqueue_lifecycle_command(
-        connection, existing.zone_id, cultivation_id, CommandType.STOP_CULTIVATION
+        connection,
+        existing.zone_id,
+        cultivation_id,
+        CommandType.STOP_CULTIVATION,
+        {"cultivation_id": cultivation_id, "reason": reason},
     )
     return existing.model_copy(
         update={

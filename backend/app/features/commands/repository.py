@@ -27,6 +27,7 @@ def _command_from_row(row: tuple) -> RuntimeCommand:
         completed_at=row[6],
         result_message=row[7],
         result_replayed=None if row[8] is None else bool(row[8]),
+        result=None if row[9] is None else json.loads(row[9]),
     )
 
 
@@ -37,7 +38,8 @@ def get_command(
     row = connection.execute(
         """
         SELECT command_id, zone_id, command_type, payload_data, status,
-               created_at, completed_at, result_message, result_replayed
+               created_at, completed_at, result_message, result_replayed,
+               result_data
         FROM runtime_commands
         WHERE command_id = ?
         """,
@@ -103,7 +105,8 @@ def list_pending_commands(
     rows = connection.execute(
         """
         SELECT command_id, zone_id, command_type, payload_data, status,
-               created_at, completed_at, result_message, result_replayed
+               created_at, completed_at, result_message, result_replayed,
+               result_data
         FROM runtime_commands
         WHERE zone_id = ? AND status = 'pending'
         ORDER BY created_at, command_id
@@ -128,17 +131,23 @@ def complete_command(
             existing.status is result.status
             and existing.result_message == result.message
             and existing.result_replayed == result.replayed
+            and existing.result == result.result
         ):
             return existing
         raise RuntimeCommandConflict(
             f"command {command_id!r} already has a different final result"
         )
     completed_at = datetime.now(timezone.utc)
+    result_data = (
+        None
+        if result.result is None
+        else json.dumps(result.result, sort_keys=True, separators=(",", ":"))
+    )
     connection.execute(
         """
         UPDATE runtime_commands
         SET status = ?, completed_at = ?, result_message = ?,
-            result_replayed = ?
+            result_replayed = ?, result_data = ?
         WHERE command_id = ? AND zone_id = ?
         """,
         (
@@ -146,6 +155,7 @@ def complete_command(
             completed_at.isoformat(),
             result.message,
             int(result.replayed),
+            result_data,
             command_id,
             zone_id,
         ),
@@ -173,5 +183,6 @@ def complete_command(
             "completed_at": completed_at,
             "result_message": result.message,
             "result_replayed": result.replayed,
+            "result": result.result,
         }
     )

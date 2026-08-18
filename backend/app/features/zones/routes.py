@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ...core.database import get_db
 from ..commands.models import CommandType, RuntimeCommand, RuntimeCommandCreate
 from ..commands.repository import RuntimeCommandConflict, create_command
+from ..cultivations.repository import get_active_cultivation_for_zone
 from ..recipes.models import Recipe
 from ..recipes.repository import get_recipe
 from .models import SimulationSpeedRequest, Zone, ZoneCreate, ZoneRuntime, ZoneUpdate
@@ -176,13 +177,20 @@ def set_simulation_speed(
     (`POST /zones/{zone_id}/commands`) e restituisce il comando accodato
     (`202 Accepted`, non ancora applicato). La zona riflette la nuova
     velocita solo quando l'Edge riporta l'esito tramite
-    `POST /zones/{zone_id}/commands/{command_id}/result`.
+    `POST /zones/{zone_id}/commands/{command_id}/result`. Il payload include
+    `cultivation_id` quando il settore ha una coltivazione non conclusa, cosi
+    che l'Edge e la riconciliazione lato backend possano riferirsi alla
+    stessa entita delle altre operazioni di lifecycle.
 
     @throws HTTPException 404 se la zona non esiste.
     """
     if get_zone(connection, zone_id) is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
     command_id = f"{zone_id}-simulation-speed-{uuid.uuid4().hex[:8]}"
+    payload: dict = {"time_scale": request.time_scale}
+    active_cultivation = get_active_cultivation_for_zone(connection, zone_id)
+    if active_cultivation is not None:
+        payload["cultivation_id"] = active_cultivation.id
     try:
         return create_command(
             connection,
@@ -190,7 +198,7 @@ def set_simulation_speed(
             RuntimeCommandCreate(
                 command_id=command_id,
                 command_type=CommandType.SET_SIMULATION_SPEED,
-                payload={"time_scale": request.time_scale},
+                payload=payload,
             ),
         )
     except RuntimeCommandConflict as error:

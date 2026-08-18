@@ -107,6 +107,8 @@ class CultivationActivationResult(BaseModel):
     success: bool
     ## @brief Fattore di accelerazione realmente applicato in caso di successo.
     applied_time_scale: float | None = Field(default=None, gt=0.0)
+    ## @brief Fase corrente riportata nel risultato strutturato, se presente.
+    current_phase: str | None = Field(default=None, min_length=1, max_length=100)
     ## @brief Motivo del fallimento; obbligatorio quando `success` e `False`.
     error_message: str | None = Field(default=None, min_length=1, max_length=1000)
 
@@ -134,6 +136,30 @@ class CultivationProgress(BaseModel):
     elapsed_simulation_seconds: float | None = Field(default=None, ge=0.0)
 
 
+class CultivationResumeRequest(BaseModel):
+    """@brief Richiesta di ripresa, con velocita opzionale da riapplicare.
+
+    @details Corrisponde al comando Edge `ResumeCultivation(cultivation_id,
+    time_scale?)`: se omessa, l'Edge riprende con l'ultima velocita
+    applicata.
+    """
+
+    ## @brief Nuova velocita richiesta alla ripresa, oppure `None` per mantenere l'ultima applicata.
+    time_scale: float | None = Field(default=None, gt=0.0)
+
+
+class CultivationStopRequest(CultivationProgress):
+    """@brief Richiesta di conclusione, con il motivo dell'arresto.
+
+    @details Corrisponde al comando Edge `StopCultivation(cultivation_id,
+    reason)`: a differenza della pausa, la conclusione e definitiva e libera
+    il settore, quindi il motivo viene conservato per l'audit.
+    """
+
+    ## @brief Motivo dell'arresto, riportato all'Edge e conservato per l'audit.
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class Cultivation(CultivationCreate):
     """@brief Stato persistente completo di una coltivazione."""
 
@@ -153,6 +179,9 @@ class Cultivation(CultivationCreate):
     elapsed_simulation_seconds: float = Field(default=0.0, ge=0.0)
     ## @brief Fattore di accelerazione realmente applicato dall'Edge.
     applied_time_scale: float | None = None
+    ## @brief Fase corrente della ricetta, aggiornata da `RecipePhaseChanged`
+    ## e dai risultati strutturati riportati dall'Edge.
+    current_phase: str | None = Field(default=None, max_length=100)
     ## @brief Motivo dell'ultimo fallimento di attivazione, se presente.
     error_message: str | None = None
     ## @brief Comando `ActivateCultivation` accodato alla conferma, se presente.

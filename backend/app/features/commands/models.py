@@ -43,12 +43,19 @@ class RuntimeCommand(RuntimeCommandCreate):
     completed_at: AwareDatetime | None = None
     result_message: str | None = None
     result_replayed: bool | None = None
+    ## @brief Dettagli strutturati dell'esito, se l'Edge li ha riportati.
+    result: dict[str, Any] | None = None
 
 
 class RuntimeCommandResultCreate(BaseModel):
     status: CommandStatus
     message: str = Field(min_length=1, max_length=1000)
     replayed: bool = False
+    ## @brief Dettagli strutturati dell'esito (es. `applied_time_scale`,
+    ## `current_phase`), interpretati dal modulo di dominio del comando.
+    ## `message` resta il solo campo testuale libero, usato ad es. come
+    ## motivo in caso di rifiuto.
+    result: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _require_final_status(self) -> "RuntimeCommandResultCreate":

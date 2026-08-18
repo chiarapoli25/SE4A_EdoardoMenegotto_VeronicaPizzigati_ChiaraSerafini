@@ -19,7 +19,9 @@ from ..features.cultivations.models import (
     CultivationConfirm,
     CultivationCreate,
     CultivationProgress,
+    CultivationResumeRequest,
     CultivationStatus,
+    CultivationStopRequest,
 )
 from ..features.plants.models import (
     Plant,
@@ -82,7 +84,9 @@ __all__ = [
     "CultivationConfirm",
     "CultivationCreate",
     "CultivationProgress",
+    "CultivationResumeRequest",
     "CultivationStatus",
+    "CultivationStopRequest",
     "ControlDirection",
     "ControlledVariable",
     "ControllerConfiguration",
