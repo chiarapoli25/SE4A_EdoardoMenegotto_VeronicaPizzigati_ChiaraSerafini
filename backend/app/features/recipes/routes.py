@@ -8,6 +8,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...core.database import get_db
+from ..audit.models import AuditOutcome
+from ..audit.repository import record_audit_event
 from ..auth.dependencies import require_roles
 from ..auth.models import CULTIVATION_WRITE_ROLES, User
 from .models import Recipe
@@ -40,12 +42,31 @@ def create_recipe(
     (vedi `http_backend_client.cpp`): un Edge non ha ne puo ottenere un login
     da dashboard.
     """
-    del current_user
     try:
         save_recipe(connection, recipe)
     except RecipeVersionConflict as error:
+        record_audit_event(
+            connection,
+            action="recipe.create",
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="recipe",
+            resource_id=recipe.id,
+            detail={"version": recipe.version, "reason": str(error)},
+        )
         raise HTTPException(status_code=409, detail=str(error)) from error
 
+    record_audit_event(
+        connection,
+        action="recipe.create",
+        outcome=AuditOutcome.SUCCESS,
+        actor_username=current_user.username,
+        actor_role=current_user.role.value,
+        resource_type="recipe",
+        resource_id=recipe.id,
+        detail={"version": recipe.version},
+    )
     return recipe
 
 

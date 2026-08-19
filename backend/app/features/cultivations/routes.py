@@ -17,6 +17,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
+from ..audit.models import AuditOutcome
+from ..audit.repository import record_audit_event
 from ..auth.dependencies import get_current_user, require_roles
 from ..auth.models import CULTIVATION_WRITE_ROLES, User
 from ..zones.repository import get_zone
@@ -65,15 +67,24 @@ def _require_cultivation_in_zone(
 
 
 def _run_transition(
-    operation: Callable[[], Cultivation | None], cultivation_id: str
+    connection: sqlite3.Connection,
+    action: str,
+    current_user: User,
+    zone_id: str,
+    cultivation_id: str,
+    operation: Callable[[], Cultivation | None],
 ) -> Cultivation:
     """@brief Esegue una transizione di stato mappando gli errori di dominio.
 
     @details Le funzioni di transizione di `repository.py` verificano gia da
     sole l'esistenza della coltivazione e la sua appartenenza a `zone_id`
     (restituendo `None` in entrambi i casi): usare direttamente il loro
-    risultato evita una doppia lettura.
+    risultato evita una doppia lettura. Ogni esito (successo, stato non
+    ammesso, non trovata) viene anche registrato nel log di audit
+    (`features.audit`) con l'utente autenticato che ha richiesto la
+    transizione.
 
+    @param action Azione registrata nel log di audit, `cultivation.<verbo>`.
     @throws HTTPException 404 se la coltivazione non esiste nella zona
         indicata, 409 se lo stato corrente o la compatibilita non ammettono
         la transizione richiesta.
@@ -81,12 +92,42 @@ def _run_transition(
     try:
         result = operation()
     except (CultivationStateError, CultivationCompatibilityError) as error:
+        record_audit_event(
+            connection,
+            action=action,
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="cultivation",
+            resource_id=cultivation_id,
+            detail={"zone_id": zone_id, "reason": str(error)},
+        )
         raise HTTPException(status_code=409, detail=str(error)) from error
     if result is None:
+        record_audit_event(
+            connection,
+            action=action,
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="cultivation",
+            resource_id=cultivation_id,
+            detail={"zone_id": zone_id, "reason": "not found"},
+        )
         raise HTTPException(
             status_code=404,
             detail=f"cultivation {cultivation_id!r} not found",
         )
+    record_audit_event(
+        connection,
+        action=action,
+        outcome=AuditOutcome.SUCCESS,
+        actor_username=current_user.username,
+        actor_role=current_user.role.value,
+        resource_type="cultivation",
+        resource_id=cultivation_id,
+        detail={"zone_id": zone_id, "status": result.status.value},
+    )
     return result
 
 
@@ -113,9 +154,30 @@ def open_cultivation(
     _require_zone(connection, zone_id)
     cultivation = cultivation.model_copy(update={"created_by": current_user.username})
     try:
-        return create_cultivation(connection, zone_id, cultivation)
+        created = create_cultivation(connection, zone_id, cultivation)
     except CultivationConflict as error:
+        record_audit_event(
+            connection,
+            action="cultivation.create",
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="cultivation",
+            resource_id=cultivation.id,
+            detail={"zone_id": zone_id, "reason": str(error)},
+        )
         raise HTTPException(status_code=409, detail=str(error)) from error
+    record_audit_event(
+        connection,
+        action="cultivation.create",
+        outcome=AuditOutcome.SUCCESS,
+        actor_username=current_user.username,
+        actor_role=current_user.role.value,
+        resource_type="cultivation",
+        resource_id=created.id,
+        detail={"zone_id": zone_id, "status": created.status.value},
+    )
+    return created
 
 
 # --- Lettura ---------------------------------------------------------------
@@ -199,10 +261,14 @@ def confirm(
         sono compatibili.
     """
     return _run_transition(
+        connection,
+        "cultivation.confirm",
+        current_user,
+        zone_id,
+        cultivation_id,
         lambda: confirm_cultivation(
             connection, zone_id, cultivation_id, confirmation, current_user.username
         ),
-        cultivation_id,
     )
 
 
@@ -226,10 +292,13 @@ def pause(
     @throws HTTPException 404 se non esiste nella zona, 409 se non e in
         stato `active`.
     """
-    del current_user
     return _run_transition(
-        lambda: pause_cultivation(connection, zone_id, cultivation_id, progress),
+        connection,
+        "cultivation.pause",
+        current_user,
+        zone_id,
         cultivation_id,
+        lambda: pause_cultivation(connection, zone_id, cultivation_id, progress),
     )
 
 
@@ -246,12 +315,15 @@ def resume(
     @throws HTTPException 404 se non esiste nella zona, 409 se non e in
         stato `paused`.
     """
-    del current_user
     return _run_transition(
+        connection,
+        "cultivation.resume",
+        current_user,
+        zone_id,
+        cultivation_id,
         lambda: resume_cultivation(
             connection, zone_id, cultivation_id, request.time_scale
         ),
-        cultivation_id,
     )
 
 
@@ -271,10 +343,13 @@ def complete(
     @throws HTTPException 404 se non esiste nella zona, 409 se non e
         `active` o `paused`.
     """
-    del current_user
     return _run_transition(
+        connection,
+        "cultivation.complete",
+        current_user,
+        zone_id,
+        cultivation_id,
         lambda: complete_cultivation(
             connection, zone_id, cultivation_id, request, request.reason
         ),
-        cultivation_id,
     )

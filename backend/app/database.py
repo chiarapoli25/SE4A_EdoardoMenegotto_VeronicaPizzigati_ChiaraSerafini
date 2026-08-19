@@ -12,6 +12,7 @@ from .features.actuators.repository import (
     list_actuator_snapshots,
     save_actuator_snapshot,
 )
+from .features.audit.repository import list_audit_events, record_audit_event
 from .features.auth.repository import (
     UsernameConflict,
     authenticate_user,
@@ -91,11 +92,13 @@ __all__ = [
     "list_telemetry",
     "list_actuator_snapshots",
     "list_recipe_versions",
+    "list_audit_events",
     "list_recipes",
     "list_users",
     "list_zones",
     "pause_cultivation",
     "record_activation_result",
+    "record_audit_event",
     "resume_cultivation",
     "save_recipe",
     "save_actuator_snapshot",

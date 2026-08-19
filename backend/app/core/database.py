@@ -809,6 +809,39 @@ def init_db(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            actor_username TEXT,
+            actor_role TEXT,
+            action TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure')),
+            resource_type TEXT,
+            resource_id TEXT,
+            detail_data TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_log_occurred_at
+        ON audit_log (occurred_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_log_actor_username
+        ON audit_log (actor_username, occurred_at DESC)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_log_resource
+        ON audit_log (resource_type, resource_id, occurred_at DESC)
+        """
+    )
     _migrate_edge_session_columns(connection)
     _migrate_soil_probe_columns(connection)
     _migrate_telemetry_state_columns(connection)

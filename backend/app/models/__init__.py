@@ -13,6 +13,7 @@ from ..features.actuators.models import (
     FertilizerQuantities,
     FertilizerValveStates,
 )
+from ..features.audit.models import AuditLogEntry, AuditOutcome
 from ..features.auth.models import (
     LoginRequest,
     TokenResponse,
@@ -84,6 +85,8 @@ __all__ = [
     "ActuatorSnapshot",
     "ActuatorSnapshotCreate",
     "ActuatorType",
+    "AuditLogEntry",
+    "AuditOutcome",
     "ConfirmationState",
     "ControlInputSource",
     "LoginRequest",

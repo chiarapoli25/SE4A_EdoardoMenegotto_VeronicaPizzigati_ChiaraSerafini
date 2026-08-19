@@ -389,9 +389,10 @@ apre la bozza (ignorando qualunque valore inviato nel corpo della
 richiesta), e `confirmed_by` all'utente autenticato che la conferma.
 
 Questa e volutamente un'implementazione minimale: niente self-registration,
-gestione utenti via API, reset password o audit log dedicato (oggi la
-tracciabilita e limitata a `created_by`/`confirmed_by`, `created_at` e
-`confirmed_at` sui record delle coltivazioni).
+gestione utenti via API o reset password. Il log di audit dedicato esiste
+(vedi sotto); resta invece limitata a `created_by`/`confirmed_by`,
+`created_at` e `confirmed_at` la tracciabilita specifica sui record delle
+coltivazioni.
 
 Lo stesso schema (login, ruoli) protegge ora anche i settori e le ricette:
 
@@ -430,6 +431,32 @@ manifesto, `/api/v1/recipes/{id}` in sola lettura, e la coda comandi per
 tutto il resto); resta pero una duplicazione vestigiale della superficie
 `/api/v1` da tenere presente se in futuro si volesse davvero esporla a un
 Edge.
+
+### Log di audit
+
+Oltre alla tracciabilita gia presente sui singoli record (`created_by`,
+`confirmed_by`, ...), `features.audit` registra in una tabella dedicata
+(`audit_log`) ogni operazione sensibile della dashboard, sia quando riesce
+sia quando viene rifiutata:
+
+- `auth.login` (successo e fallimento, con lo `username` tentato anche
+  quando le credenziali sono sbagliate o l'account non esiste);
+- `cultivation.create`, `cultivation.confirm`, `cultivation.pause`,
+  `cultivation.resume`, `cultivation.complete`;
+- `zone.register`, `zone.modify`;
+- `recipe.create`.
+
+Ogni voce salva `occurred_at`, l'utente e il ruolo autenticato che ha
+effettuato la richiesta (quando noto), l'azione nella forma
+`<dominio>.<verbo>`, l'esito (`success`/`failure`), il tipo e
+l'identificativo della risorsa coinvolta, ed eventuali dettagli liberi
+(es. lo `zone_id` di una coltivazione, il motivo di un rifiuto).
+
+`GET /audit-log` espone il log, piu recenti prima, filtrabile per
+`actor_username`, `action`, `resource_type`, `resource_id`, `outcome` e
+limitabile con `limit` (default 100, max 1000). Richiede il ruolo `admin`:
+il log puo contenere dettagli operativi non destinati a tutti gli utenti
+autenticati.
 
 Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
 canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del
@@ -907,7 +934,8 @@ pomodoro su substrato universale aerato. I coefficienti sono didattici.
 
 La directory `config/recipe_catalog/recipes/` contiene un file JSON di
 bootstrap per ciascuna delle 20 piante, cinque per ognuno dei quattro reparti
-produttivi. `config/recipe_catalog/profiles.json` raccoglie i profili condivisi
+produttivi (l'elenco esatto e i relativi parametri di cura sono quelli del
+"Ricettario Serra" fornito dal team). `config/recipe_catalog/profiles.json` raccoglie i profili condivisi
 di luce, irrigazione e concimazione e quattro sequenze di fasi riutilizzabili:
 fogliame, fioritura, succulente e produzione. Ogni file pianta puo scegliere
 una sequenza diversa e sovrascrivere durata, fotoperiodo, fattori dei setpoint o

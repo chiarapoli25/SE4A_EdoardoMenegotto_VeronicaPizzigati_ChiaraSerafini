@@ -14,6 +14,7 @@ from .core.database import get_connection, get_db, init_db
 from .core.config import offline_threshold_seconds
 from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
+from .features.audit.routes import router as audit_router
 from .features.auth.routes import router as auth_router
 from .features.commands.routes import router as command_router
 from .features.cultivations.routes import router as cultivation_router
@@ -70,6 +71,9 @@ app.include_router(system_router)
 # fuori dal giro di token tecnico `require_api_token` applicato sotto a
 # `/api/v1` (vedi `core.security`).
 app.include_router(auth_router)
+# Log di audit: consultato solo dagli admin della dashboard, stesso motivo
+# di auth_router per restare fuori da `/api/v1`.
+app.include_router(audit_router)
 app.include_router(zone_router)
 app.include_router(edge_router)
 app.include_router(telemetry_router)

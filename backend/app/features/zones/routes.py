@@ -9,6 +9,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
+from ..audit.models import AuditOutcome
+from ..audit.repository import record_audit_event
 from ..auth.dependencies import get_current_user, require_roles
 from ..auth.models import User, UserRole
 from ..commands.models import CommandType, RuntimeCommand, RuntimeCommandCreate
@@ -80,7 +82,6 @@ def register_zone(
     @return Zona creata con stato iniziale `offline`.
     @throws HTTPException Se id o posizione sono gia occupati.
     """
-    del current_user
     if zone.active_recipe_id is not None:
         recipe = get_recipe(connection, zone.active_recipe_id)
         if recipe is None:
@@ -94,9 +95,29 @@ def register_zone(
             zone.plant_species,
         )
     try:
-        return create_zone(connection, zone)
+        created = create_zone(connection, zone)
     except ZoneConflict as error:
+        record_audit_event(
+            connection,
+            action="zone.register",
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="zone",
+            resource_id=zone.id,
+            detail={"reason": str(error)},
+        )
         raise HTTPException(status_code=409, detail=str(error)) from error
+    record_audit_event(
+        connection,
+        action="zone.register",
+        outcome=AuditOutcome.SUCCESS,
+        actor_username=current_user.username,
+        actor_role=current_user.role.value,
+        resource_type="zone",
+        resource_id=created.id,
+    )
+    return created
 
 
 @router.get("", response_model=list[Zone])
@@ -145,9 +166,18 @@ def modify_zone(
     infrastrutturali del settore (assegnazione Edge, stato amministrativo),
     non lo stato operativo di una coltivazione.
     """
-    del current_user
     zone = get_zone(connection, zone_id)
     if zone is None:
+        record_audit_event(
+            connection,
+            action="zone.modify",
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="zone",
+            resource_id=zone_id,
+            detail={"reason": "not found"},
+        )
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
 
     candidate_recipe_id = (
@@ -174,11 +204,41 @@ def modify_zone(
         )
 
     try:
-        return update_zone(connection, zone, update)
+        updated = update_zone(connection, zone, update)
     except ZoneUpdateInvalid as error:
+        record_audit_event(
+            connection,
+            action="zone.modify",
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="zone",
+            resource_id=zone_id,
+            detail={"reason": str(error)},
+        )
         raise HTTPException(status_code=422, detail=str(error)) from error
     except ZoneUpdateConflict as error:
+        record_audit_event(
+            connection,
+            action="zone.modify",
+            outcome=AuditOutcome.FAILURE,
+            actor_username=current_user.username,
+            actor_role=current_user.role.value,
+            resource_type="zone",
+            resource_id=zone_id,
+            detail={"reason": str(error)},
+        )
         raise HTTPException(status_code=409, detail=str(error)) from error
+    record_audit_event(
+        connection,
+        action="zone.modify",
+        outcome=AuditOutcome.SUCCESS,
+        actor_username=current_user.username,
+        actor_role=current_user.role.value,
+        resource_type="zone",
+        resource_id=zone_id,
+    )
+    return updated
 
 
 @router.patch(
