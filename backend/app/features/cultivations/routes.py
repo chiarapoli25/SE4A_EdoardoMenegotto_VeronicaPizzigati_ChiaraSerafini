@@ -12,10 +12,13 @@ che la coltivazione appartenga a `zone_id`).
 
 import sqlite3
 from collections.abc import Callable
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
+from ..auth.dependencies import get_current_user, require_roles
+from ..auth.models import CULTIVATION_WRITE_ROLES, User
 from ..zones.repository import get_zone
 from .models import (
     Cultivation,
@@ -94,14 +97,21 @@ def _run_transition(
 def open_cultivation(
     zone_id: str,
     cultivation: CultivationCreate,
+    current_user: Annotated[User, Depends(require_roles(*CULTIVATION_WRITE_ROLES))],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Apre una bozza di coltivazione su un settore libero.
+
+    @details Richiede il ruolo `agronomist` o `admin`. `created_by` viene
+    sempre impostato all'utente autenticato che effettua la richiesta,
+    anche se il corpo della richiesta ne indica uno diverso: non deve poter
+    essere falsificato dal chiamante.
 
     @throws HTTPException 404 se il settore non esiste, 409 se l'id e gia
         usato o il settore ha gia una coltivazione non conclusa.
     """
     _require_zone(connection, zone_id)
+    cultivation = cultivation.model_copy(update={"created_by": current_user.username})
     try:
         return create_cultivation(connection, zone_id, cultivation)
     except CultivationConflict as error:
@@ -114,12 +124,14 @@ def open_cultivation(
 @router.get("", response_model=list[Cultivation])
 def read_cultivations(
     zone_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[Cultivation]:
     """@brief Elenca lo storico delle coltivazioni del settore.
 
     @throws HTTPException 404 se il settore non esiste.
     """
+    del current_user  # richiede solo un login valido, nessun ruolo specifico.
     _require_zone(connection, zone_id)
     return list_cultivations(connection, zone_id)
 
@@ -127,6 +139,7 @@ def read_cultivations(
 @router.get("/active", response_model=Cultivation)
 def read_active_cultivation(
     zone_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Restituisce la coltivazione corrente (non conclusa) del settore.
@@ -134,6 +147,7 @@ def read_active_cultivation(
     @throws HTTPException 404 se il settore non esiste o non ha una
         coltivazione non conclusa in questo momento.
     """
+    del current_user
     _require_zone(connection, zone_id)
     active = get_active_cultivation_for_zone(connection, zone_id)
     if active is None:
@@ -148,9 +162,11 @@ def read_active_cultivation(
 def read_cultivation(
     zone_id: str,
     cultivation_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Recupera una coltivazione del settore tramite identificativo."""
+    del current_user
     return _require_cultivation_in_zone(connection, zone_id, cultivation_id)
 
 
@@ -162,25 +178,30 @@ def confirm(
     zone_id: str,
     cultivation_id: str,
     confirmation: CultivationConfirm,
+    current_user: Annotated[User, Depends(require_roles(*CULTIVATION_WRITE_ROLES))],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Conferma una bozza, fissa la versione della ricetta e accoda
     l'attivazione sulla coda comandi dell'Edge.
 
-    @details Verifica che il settore esista e non abbia gia una coltivazione
-    attiva, che la ricetta e la versione esistano, e che specie e substrato
-    siano compatibili; salva quindi la coltivazione in stato `starting` e
-    accoda un unico comando `ActivateCultivation` idempotente (vedi
-    `POST /zones/{zone_id}/commands`). Resta `starting` finche l'Edge non
-    riporta l'esito tramite `POST /zones/{zone_id}/commands/{command_id}/result`,
-    lo stesso endpoint gia usato per tutti gli altri comandi runtime.
+    @details Richiede il ruolo `agronomist` o `admin`. Verifica che il
+    settore esista e non abbia gia una coltivazione attiva, che la ricetta e
+    la versione esistano, e che specie e substrato siano compatibili; salva
+    quindi la coltivazione in stato `starting`, registra l'utente autenticato
+    in `confirmed_by` e accoda un unico comando `ActivateCultivation`
+    idempotente (vedi `POST /zones/{zone_id}/commands`). Resta `starting`
+    finche l'Edge non riporta l'esito tramite
+    `POST /zones/{zone_id}/commands/{command_id}/result`, lo stesso endpoint
+    gia usato per tutti gli altri comandi runtime.
 
     @throws HTTPException 404 se la coltivazione non esiste nella zona, 409
         se non e in stato bozza o se settore, specie, ricetta o substrato non
         sono compatibili.
     """
     return _run_transition(
-        lambda: confirm_cultivation(connection, zone_id, cultivation_id, confirmation),
+        lambda: confirm_cultivation(
+            connection, zone_id, cultivation_id, confirmation, current_user.username
+        ),
         cultivation_id,
     )
 
@@ -192,14 +213,20 @@ def confirm(
 def pause(
     zone_id: str,
     cultivation_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     progress: CultivationProgress = CultivationProgress(),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
     """@brief Sospende una coltivazione attiva senza concluderla.
 
+    @details Richiede un login valido, senza restrizioni di ruolo: a
+    differenza dell'apertura/conferma, che impegnano il settore, operare un
+    ciclo gia avviato e ammesso anche a `operator`.
+
     @throws HTTPException 404 se non esiste nella zona, 409 se non e in
         stato `active`.
     """
+    del current_user
     return _run_transition(
         lambda: pause_cultivation(connection, zone_id, cultivation_id, progress),
         cultivation_id,
@@ -210,6 +237,7 @@ def pause(
 def resume(
     zone_id: str,
     cultivation_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     request: CultivationResumeRequest = CultivationResumeRequest(),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
@@ -218,6 +246,7 @@ def resume(
     @throws HTTPException 404 se non esiste nella zona, 409 se non e in
         stato `paused`.
     """
+    del current_user
     return _run_transition(
         lambda: resume_cultivation(
             connection, zone_id, cultivation_id, request.time_scale
@@ -233,6 +262,7 @@ def resume(
 def complete(
     zone_id: str,
     cultivation_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     request: CultivationStopRequest = CultivationStopRequest(),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
@@ -241,6 +271,7 @@ def complete(
     @throws HTTPException 404 se non esiste nella zona, 409 se non e
         `active` o `paused`.
     """
+    del current_user
     return _run_transition(
         lambda: complete_cultivation(
             connection, zone_id, cultivation_id, request, request.reason

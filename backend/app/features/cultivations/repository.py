@@ -58,7 +58,7 @@ _COLUMNS = (
     "id, zone_id, plant_species, recipe_id, recipe_version, status, "
     "created_by, created_at, confirmed_at, started_at, completed_at, "
     "elapsed_simulation_seconds, requested_time_scale, applied_time_scale, "
-    "current_phase, error_message, activation_command_id"
+    "current_phase, error_message, activation_command_id, confirmed_by"
 )
 
 ## @brief Stati che non occupano piu in modo esclusivo il settore.
@@ -92,6 +92,7 @@ def _cultivation_from_row(row: tuple) -> Cultivation:
         current_phase=row[14],
         error_message=row[15],
         activation_command_id=row[16],
+        confirmed_by=row[17],
     )
 
 
@@ -250,6 +251,7 @@ def confirm_cultivation(
     zone_id: str,
     cultivation_id: str,
     confirm: CultivationConfirm,
+    confirmed_by: str | None = None,
 ) -> Cultivation | None:
     """@brief Conferma una bozza, fissa la ricetta e accoda l'attivazione Edge.
 
@@ -265,6 +267,8 @@ def confirm_cultivation(
     @param zone_id Settore atteso dal path HTTP `/zones/{zone_id}/...`.
     @param cultivation_id Identificativo della coltivazione da confermare.
     @param confirm Richiesta di conferma.
+    @param confirmed_by Utente autenticato che ha eseguito la conferma (vedi
+        `features.auth`); `None` se la richiesta non e autenticata.
     @return Coltivazione aggiornata allo stato `starting`, oppure `None` se
         l'identificativo non esiste o non appartiene a `zone_id`.
     @throws CultivationStateError Se la coltivazione non e in stato `draft`.
@@ -335,13 +339,15 @@ def confirm_cultivation(
     connection.execute(
         """
         UPDATE cultivations
-        SET status = ?, confirmed_at = ?, activation_command_id = ?
+        SET status = ?, confirmed_at = ?, activation_command_id = ?,
+            confirmed_by = ?
         WHERE id = ?
         """,
         (
             CultivationStatus.STARTING.value,
             confirmed_at.isoformat(),
             activation_command_id,
+            confirmed_by,
             cultivation_id,
         ),
     )
@@ -353,6 +359,7 @@ def confirm_cultivation(
             "status": CultivationStatus.STARTING,
             "confirmed_at": confirmed_at,
             "activation_command_id": activation_command_id,
+            "confirmed_by": confirmed_by,
         }
     )
 

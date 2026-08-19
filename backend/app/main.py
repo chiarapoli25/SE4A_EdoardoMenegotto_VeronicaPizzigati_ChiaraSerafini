@@ -14,6 +14,7 @@ from .core.database import get_connection, get_db, init_db
 from .core.config import offline_threshold_seconds
 from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
+from .features.auth.routes import router as auth_router
 from .features.commands.routes import router as command_router
 from .features.cultivations.routes import router as cultivation_router
 from .features.events.routes import router as event_router
@@ -65,6 +66,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 
 app.include_router(system_router)
+# Login della dashboard: identifica una persona, non un Edge, quindi resta
+# fuori dal giro di token tecnico `require_api_token` applicato sotto a
+# `/api/v1` (vedi `core.security`).
+app.include_router(auth_router)
 app.include_router(zone_router)
 app.include_router(edge_router)
 app.include_router(telemetry_router)

@@ -353,20 +353,48 @@ o al posto di esso), `CultivationPaused`, `CultivationResumed`,
 `CultivationStopped`. `RecipePhaseChanged` continua ad aggiornare
 `zones.current_phase` come proiezione corrente della zona (gia esistente).
 
-### Autenticazione: nota di progettazione aperta
+### Autenticazione della dashboard
 
-Il Bearer token usato oggi dall'Edge (`SMARTHYDRO_EDGE_TOKEN` o analogo, da
-verificare nella configurazione corrente) e una credenziale tecnica
-macchina-a-macchina, non un login utente: identifica un Edge, non un
-agronomo. `created_by` (bozza) e `confirmed_by`/l'operatore che conferma non
-sono oggi ricavati da alcuna sessione autenticata.
+Il Bearer token esistente (`SMARTHYDRO_API_TOKEN`, verificato da
+`core.security.require_api_token` sui soli endpoint sotto `/api/v1`) resta
+una credenziale tecnica condivisa da tutti gli Edge: identifica "un Edge",
+non una persona, ed e opzionale (se la variabile non e impostata, quegli
+endpoint restano aperti).
 
-Se la dashboard dovra richiedere un accesso autenticato agli operatori, va
-introdotto uno strato separato (utenti, sessioni o JWT, ruoli, log di audit)
-che non sostituisce il token Edge ma si affianca ad esso. Questa parte non e
-stata implementata in questo giro di modifiche perche la portata (schema
-utenti, gestione password/sessioni, autorizzazioni per ruolo, audit trail)
-richiede una decisione esplicita su priorita e ampiezza prima di procedere.
+Per la dashboard esiste ora uno strato separato e indipendente,
+`features.auth`, pensato per un numero limitato di operatori (agronomi,
+operatori, amministratori) e non per la registrazione pubblica:
+
+- `POST /auth/login` con `{"username", "password"}` restituisce un JWT
+  (`access_token`, `token_type: "bearer"`, `expires_at`) firmato HS256 e
+  valido per `SMARTHYDRO_AUTH_TOKEN_TTL_SECONDS` secondi (default 8 ore, un
+  turno). Va inviato come `Authorization: Bearer <token>`.
+- `GET /auth/me` restituisce l'utente associato al token corrente.
+- Non esiste un endpoint di registrazione: un account si crea con
+  `python -m backend.scripts.create_user --username ... --role
+  {agronomist,operator,admin}` (password richiesta in modo interattivo se
+  non passata con `--password`), eseguito da chi amministra il backend.
+- `SMARTHYDRO_AUTH_SECRET` va sempre impostata in un ambiente esposto: senza,
+  il backend firma i token con una chiave di sviluppo nota pubblicamente in
+  questo repository (`core/config.py`), falsificabile da chiunque legga il
+  codice sorgente.
+
+Ogni ruolo puo leggere le coltivazioni del settore; aprire una bozza e
+confermarla (`POST /zones/{zone_id}/cultivations`,
+`POST /zones/{zone_id}/cultivations/{id}/confirm`) richiede il ruolo
+`agronomist` o `admin`, perche impegnano davvero il settore e l'Edge.
+Pausa, ripresa e conclusione di un ciclo gia avviato restano ammesse anche a
+`operator`. `created_by` viene sempre impostato all'utente autenticato che
+apre la bozza (ignorando qualunque valore inviato nel corpo della
+richiesta), e `confirmed_by` all'utente autenticato che la conferma.
+
+Questa e volutamente un'implementazione minimale: niente self-registration,
+gestione utenti via API, reset password o audit log dedicato (oggi la
+tracciabilita e limitata a `created_by`/`confirmed_by`, `created_at` e
+`confirmed_at` sui record delle coltivazioni). Restano fuori dall'ambito di
+questo giro di modifiche gli altri endpoint della dashboard (settori,
+ricette): valutare se estendervi lo stesso schema e un passo successivo
+naturale, ma non e stato fatto qui per contenere l'ampiezza del cambiamento.
 
 Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
 canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del

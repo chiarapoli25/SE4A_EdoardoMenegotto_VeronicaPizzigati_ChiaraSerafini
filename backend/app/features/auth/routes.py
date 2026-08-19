@@ -1,0 +1,50 @@
+"""@file routes.py
+@brief Endpoint HTTP di login della dashboard.
+"""
+
+import sqlite3
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from ...core.config import auth_secret, auth_token_ttl_seconds
+from ...core.database import get_db
+from .dependencies import get_current_user
+from .models import LoginRequest, TokenResponse, User
+from .repository import authenticate_user
+from .security import create_access_token
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.post("/login", response_model=TokenResponse)
+def login(
+    credentials: LoginRequest,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> TokenResponse:
+    """@brief Verifica le credenziali ed emette un token di accesso.
+
+    @details Restituisce sempre lo stesso messaggio generico sia per uno
+    `username` inesistente sia per una password errata, per non rivelare
+    quali account esistono.
+
+    @throws HTTPException 401 se le credenziali non sono valide o l'account
+        e disattivato.
+    """
+    user = authenticate_user(connection, credentials.username, credentials.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid username or password")
+    token, expires_at = create_access_token(
+        {"sub": user.username, "role": user.role.value},
+        auth_secret(),
+        auth_token_ttl_seconds(),
+    )
+    return TokenResponse(access_token=token, expires_at=expires_at, user=user)
+
+
+@router.get("/me", response_model=User)
+def read_current_user(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """@brief Restituisce l'utente associato al token corrente."""
+    return current_user

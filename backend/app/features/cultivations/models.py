@@ -171,6 +171,8 @@ class Cultivation(CultivationCreate):
     created_at: AwareDatetime
     ## @brief Timestamp UTC della conferma (transizione a `starting`), oppure `None`.
     confirmed_at: AwareDatetime | None = None
+    ## @brief Utente autenticato che ha confermato l'attivazione, se presente.
+    confirmed_by: str | None = Field(default=None, max_length=100)
     ## @brief Timestamp UTC dell'attivazione riuscita, oppure `None`.
     started_at: AwareDatetime | None = None
     ## @brief Timestamp UTC della conclusione o del fallimento, oppure `None`.

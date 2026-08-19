@@ -3,24 +3,51 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.app.core.config import auth_secret, auth_token_ttl_seconds
 from backend.app.database import init_db
+from backend.app.features.auth.models import UserCreate, UserRole
+from backend.app.features.auth.repository import create_user
+from backend.app.features.auth.security import create_access_token
 from backend.app.main import app, get_db
 
 
+def issue_token(connection: sqlite3.Connection, username: str, role: UserRole) -> str:
+    """Crea un utente e restituisce un token valido, senza passare da HTTP."""
+    user = create_user(
+        connection,
+        UserCreate(username=username, password="Test-password-1", role=role),
+    )
+    token, _ = create_access_token(
+        {"sub": user.username, "role": user.role.value},
+        auth_secret(),
+        auth_token_ttl_seconds(),
+    )
+    return token
+
+
 @pytest.fixture()
-def client() -> TestClient:
-    connection = sqlite3.connect(":memory:", check_same_thread=False)
-    init_db(connection)
+def connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    init_db(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
+def client(connection: sqlite3.Connection) -> TestClient:
+    """Client autenticato come agronomo: puo eseguire l'intero workflow."""
 
     def override_get_db():
         yield connection
 
     app.dependency_overrides[get_db] = override_get_db
+    token = issue_token(connection, "agronomist-1", UserRole.AGRONOMIST)
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"Authorization": f"Bearer {token}"})
     finally:
         app.dependency_overrides.clear()
-        connection.close()
 
 
 def create_zone(

@@ -202,6 +202,25 @@ def _migrate_runtime_command_result_column(connection: sqlite3.Connection) -> No
         )
 
 
+def _migrate_cultivation_confirmed_by_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """Aggiunge l'operatore che ha confermato l'attivazione allo storico esistente.
+
+    @details Distinto da `created_by` (chi apre la bozza): la conferma e
+    l'azione che impegna davvero il settore e l'Edge, quindi va tracciata
+    separatamente. Popolato dall'utente autenticato che chiama
+    `POST /zones/{zone_id}/cultivations/{id}/confirm`.
+    """
+    if (
+        _table_columns(connection, "cultivations")
+        and "confirmed_by" not in _table_columns(connection, "cultivations")
+    ):
+        connection.execute(
+            "ALTER TABLE cultivations ADD COLUMN confirmed_by TEXT"
+        )
+
+
 def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
     """Ricrea le tabelle legacy aggiungendo `boot_id` senza perdere dati."""
     if (
@@ -741,6 +760,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             current_phase TEXT,
             error_message TEXT,
             activation_command_id TEXT,
+            confirmed_by TEXT,
             FOREIGN KEY (zone_id) REFERENCES zones(id),
             FOREIGN KEY (recipe_id, recipe_version)
                 REFERENCES recipes(id, version)
@@ -748,6 +768,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
     )
     _migrate_cultivation_current_phase_column(connection)
+    _migrate_cultivation_confirmed_by_column(connection)
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_cultivations_zone_not_concluded
@@ -771,6 +792,21 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_cultivations_activation_command
         ON cultivations (activation_command_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL
+                CHECK (role IN ('agronomist', 'operator', 'admin')),
+            full_name TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1
+                CHECK (is_active IN (0, 1)),
+            created_at TEXT NOT NULL
+        )
         """
     )
     _migrate_edge_session_columns(connection)

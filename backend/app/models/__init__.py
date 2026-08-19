@@ -13,6 +13,13 @@ from ..features.actuators.models import (
     FertilizerQuantities,
     FertilizerValveStates,
 )
+from ..features.auth.models import (
+    LoginRequest,
+    TokenResponse,
+    User,
+    UserCreate,
+    UserRole,
+)
 from ..features.cultivations.models import (
     Cultivation,
     CultivationActivationResult,
@@ -79,6 +86,11 @@ __all__ = [
     "ActuatorType",
     "ConfirmationState",
     "ControlInputSource",
+    "LoginRequest",
+    "TokenResponse",
+    "User",
+    "UserCreate",
+    "UserRole",
     "Cultivation",
     "CultivationActivationResult",
     "CultivationConfirm",
