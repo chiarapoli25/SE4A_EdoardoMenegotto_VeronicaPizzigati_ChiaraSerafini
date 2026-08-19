@@ -3,10 +3,13 @@
 """
 
 import sqlite3
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ...core.database import get_db
+from ..auth.dependencies import require_roles
+from ..auth.models import CULTIVATION_WRITE_ROLES, User
 from .models import Recipe
 from .repository import (
     RecipeVersionConflict,
@@ -24,9 +27,20 @@ router = APIRouter(prefix="/recipes", tags=["recipes"])
 @router.post("", response_model=Recipe, status_code=201)
 def create_recipe(
     recipe: Recipe,
+    current_user: Annotated[User, Depends(require_roles(*CULTIVATION_WRITE_ROLES))],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Recipe:
-    """Valida e salva integralmente la ricetta in SQLite."""
+    """Valida e salva integralmente la ricetta in SQLite.
+
+    @details Richiede il ruolo `agronomist` o `admin`: pubblicare una nuova
+    versione e un'attivita di autoring, non di sola lettura. Le rotte di
+    lettura sotto `/recipes` restano invece senza autenticazione utente,
+    perche `GET /recipes/{recipe_id}` e usata anche dall'Edge per risolvere
+    una ricetta non incorporata per intero nel comando `ActivateCultivation`
+    (vedi `http_backend_client.cpp`): un Edge non ha ne puo ottenere un login
+    da dashboard.
+    """
+    del current_user
     try:
         save_recipe(connection, recipe)
     except RecipeVersionConflict as error:

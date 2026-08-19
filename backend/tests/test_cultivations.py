@@ -37,13 +37,19 @@ def connection() -> sqlite3.Connection:
 
 @pytest.fixture()
 def client(connection: sqlite3.Connection) -> TestClient:
-    """Client autenticato come agronomo: puo eseguire l'intero workflow."""
+    """Client autenticato come admin: puo registrare settori e coltivazioni.
+
+    @details `admin` e sovrainsieme di `agronomist` sulle rotte di
+    coltivazione (`CULTIVATION_WRITE_ROLES`), quindi lo stesso client puo
+    anche registrare i settori usati come fixture da `create_zone` (rotta
+    che, su `features.zones`, richiede specificamente `admin`).
+    """
 
     def override_get_db():
         yield connection
 
     app.dependency_overrides[get_db] = override_get_db
-    token = issue_token(connection, "agronomist-1", UserRole.AGRONOMIST)
+    token = issue_token(connection, "admin-1", UserRole.ADMIN)
     try:
         yield TestClient(app, headers={"Authorization": f"Bearer {token}"})
     finally:

@@ -1,15 +1,19 @@
 import sqlite3
 import time
+from typing import Callable
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.database import init_db
+from backend.app.features.auth.models import UserRole
 from backend.app.main import app, get_db
 
 
 @pytest.fixture()
-def client() -> TestClient:
+def client(
+    issue_token: Callable[[sqlite3.Connection, str, UserRole], str],
+) -> TestClient:
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     init_db(connection)
 
@@ -18,7 +22,8 @@ def client() -> TestClient:
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        test_client = TestClient(app)
+        token = issue_token(connection, "admin-1", UserRole.ADMIN)
+        test_client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
         zone_response = test_client.post(
             "/zones",
             json={

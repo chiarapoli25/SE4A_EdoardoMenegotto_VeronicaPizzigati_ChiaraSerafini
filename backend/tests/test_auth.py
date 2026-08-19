@@ -53,6 +53,23 @@ def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def admin_headers(connection: sqlite3.Connection, username: str = "bootstrap-admin") -> dict:
+    """Crea (se serve) un admin e restituisce i suoi header di autenticazione.
+
+    @details Usata quando un test deve registrare un settore
+    (`POST /zones` richiede il ruolo `admin`) prima di esercitare un ruolo
+    diverso su un'altra rotta.
+    """
+    user = create_user(
+        connection,
+        UserCreate(username=username, password="password123", role=UserRole.ADMIN),
+    )
+    token, _ = create_access_token(
+        {"sub": user.username, "role": user.role.value}, auth_secret(), 3600
+    )
+    return auth_headers(token)
+
+
 # --- Hashing password -------------------------------------------------------
 
 
@@ -242,14 +259,7 @@ def test_operator_cannot_open_a_cultivation_draft(
         connection,
         UserCreate(username="op-1", password="password123", role=UserRole.OPERATOR),
     )
-    agronomist_token, _ = create_access_token(
-        {"sub": "bootstrap-agronomist", "role": "agronomist"}, auth_secret(), 3600
-    )
-    create_user(
-        connection,
-        UserCreate(username="bootstrap-agronomist", password="password123", role=UserRole.AGRONOMIST),
-    )
-    create_zone(client, auth_headers(agronomist_token))
+    create_zone(client, admin_headers(connection))
     operator_token, _ = create_access_token(
         {"sub": operator.username, "role": operator.role.value}, auth_secret(), 3600
     )
@@ -286,7 +296,7 @@ def test_operator_can_pause_an_active_cultivation(
         {"sub": operator.username, "role": operator.role.value}, auth_secret(), 3600
     )
     agronomist_headers = auth_headers(agronomist_token)
-    create_zone(client, agronomist_headers)
+    create_zone(client, admin_headers(connection))
     assert client.post(
         "/recipes", json={**example_recipe_data, "version": 1}, headers=agronomist_headers
     ).status_code == 201
@@ -341,7 +351,7 @@ def test_created_by_and_confirmed_by_come_from_the_authenticated_user(
         {"sub": confirmer.username, "role": confirmer.role.value}, auth_secret(), 3600
     )
     creator_headers = auth_headers(creator_token)
-    create_zone(client, creator_headers)
+    create_zone(client, admin_headers(connection))
     assert client.post(
         "/recipes", json={**example_recipe_data, "version": 1}, headers=creator_headers
     ).status_code == 201

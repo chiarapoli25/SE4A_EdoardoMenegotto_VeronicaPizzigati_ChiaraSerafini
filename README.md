@@ -391,10 +391,45 @@ richiesta), e `confirmed_by` all'utente autenticato che la conferma.
 Questa e volutamente un'implementazione minimale: niente self-registration,
 gestione utenti via API, reset password o audit log dedicato (oggi la
 tracciabilita e limitata a `created_by`/`confirmed_by`, `created_at` e
-`confirmed_at` sui record delle coltivazioni). Restano fuori dall'ambito di
-questo giro di modifiche gli altri endpoint della dashboard (settori,
-ricette): valutare se estendervi lo stesso schema e un passo successivo
-naturale, ma non e stato fatto qui per contenere l'ampiezza del cambiamento.
+`confirmed_at` sui record delle coltivazioni).
+
+Lo stesso schema (login, ruoli) protegge ora anche i settori e le ricette:
+
+- **Settori** (`features.zones.router`, prefisso `/zones`): registrare
+  (`POST`) e modificare (`PATCH /{zone_id}`) un settore richiede il ruolo
+  `admin` (operazione infrastrutturale). Lettura (`GET`) e imposta velocita
+  di simulazione (`PATCH /{zone_id}/simulation-speed`) richiedono solo un
+  login valido, senza restrizioni di ruolo. `edge_router` (prefisso
+  `/edges`, usato dagli Edge per sincronizzare il proprio manifesto di
+  settori) resta **intenzionalmente fuori**: non e mai chiamato da una
+  persona.
+- **Ricette** (`features.recipes.router`, prefisso `/recipes`): pubblicare
+  una nuova versione (`POST`) richiede `agronomist` o `admin`. Le rotte di
+  lettura restano **senza login utente**, perche `GET /recipes/{recipe_id}`
+  e usata anche dall'Edge per risolvere una ricetta non incorporata per
+  intero nel comando `ActivateCultivation` (vedi sopra, e
+  `http_backend_client.cpp`): un Edge non ha un login da dashboard, quindi
+  proteggere anche le letture avrebbe rotto quel fetch.
+- **Telemetria** (`features.telemetry.router`, prefisso
+  `/zones/{zone_id}/telemetry`): le letture (`GET`, `GET /latest`)
+  richiedono un login valido. L'ingestione (`POST`, usata dall'Edge per
+  inviare un campione) resta senza login utente, per lo stesso motivo delle
+  ricette: e un endpoint macchina-a-macchina.
+
+**Limite noto**: queste stesse rotte (`zones`, il `POST` di `recipes`,
+oltre a `cultivations`) sono anche montate sotto `/api/v1` insieme al resto
+dell'API "nuovi client Edge" (protetta, se configurata, dal solo token
+`SMARTHYDRO_API_TOKEN`). Poiche entrambi i controlli leggono lo stesso
+header `Authorization` ma si aspettano un formato diverso (token tecnico
+condiviso contro JWT utente), quando `SMARTHYDRO_API_TOKEN` e configurato
+quella copia sotto `/api/v1` di queste rotte specifiche diventa
+irraggiungibile con una singola richiesta. Non e un problema per l'uso
+reale: nessun Edge chiama `/api/v1/zones`, `/api/v1/recipes` (`POST`) o le
+rotte di `cultivations` (usano `/api/v1/edges/{edge_id}/zones` per il
+manifesto, `/api/v1/recipes/{id}` in sola lettura, e la coda comandi per
+tutto il resto); resta pero una duplicazione vestigiale della superficie
+`/api/v1` da tenere presente se in futuro si volesse davvero esporla a un
+Edge.
 
 Ogni `TelemetrySample` e uno snapshot atomico dello stato della zona. Oltre ai
 canali ambientali contiene le stime N/P/K, l'EC apparente e corretta del

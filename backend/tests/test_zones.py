@@ -1,26 +1,40 @@
 import sqlite3
+from typing import Callable
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.database import init_db
+from backend.app.features.auth.models import UserRole
 from backend.app.main import app, get_db
 
 
 @pytest.fixture()
-def client() -> TestClient:
-    connection = sqlite3.connect(":memory:", check_same_thread=False)
-    init_db(connection)
+def connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    init_db(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
+def client(
+    connection: sqlite3.Connection,
+    issue_token: Callable[[sqlite3.Connection, str, UserRole], str],
+) -> TestClient:
+    """Client autenticato come admin: puo registrare e modificare settori."""
 
     def override_get_db():
         yield connection
 
     app.dependency_overrides[get_db] = override_get_db
+    token = issue_token(connection, "admin-1", UserRole.ADMIN)
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"Authorization": f"Bearer {token}"})
     finally:
         app.dependency_overrides.clear()
-        connection.close()
 
 
 def zone_payload(

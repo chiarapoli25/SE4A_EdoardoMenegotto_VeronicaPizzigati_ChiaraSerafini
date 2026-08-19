@@ -4,10 +4,13 @@
 
 import sqlite3
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...core.database import get_db
+from ..auth.dependencies import get_current_user, require_roles
+from ..auth.models import User, UserRole
 from ..commands.models import CommandType, RuntimeCommand, RuntimeCommandCreate
 from ..commands.repository import RuntimeCommandConflict, create_command
 from ..cultivations.repository import get_active_cultivation_for_zone
@@ -64,15 +67,20 @@ def _assert_recipe_matches_zone(
 @router.post("", response_model=Zone, status_code=201)
 def register_zone(
     zone: ZoneCreate,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN))],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Zone:
     """@brief Registra uno dei settori fisici della serra.
+
+    @details Richiede il ruolo `admin`: la registrazione di un settore e
+    un'operazione infrastrutturale, distinta dalle attivita di coltivazione.
 
     @param zone Identita, posizione e specie del settore.
     @param connection Connessione SQLite associata alla richiesta.
     @return Zona creata con stato iniziale `offline`.
     @throws HTTPException Se id o posizione sono gia occupati.
     """
+    del current_user
     if zone.active_recipe_id is not None:
         recipe = get_recipe(connection, zone.active_recipe_id)
         if recipe is None:
@@ -93,9 +101,11 @@ def register_zone(
 
 @router.get("", response_model=list[Zone])
 def read_zones(
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[Zone]:
     """@brief Elenca i settori ordinati per reparto e numero."""
+    del current_user
     return list_zones(connection)
 
 
@@ -111,9 +121,11 @@ def read_edge_zones(
 @router.get("/{zone_id}", response_model=Zone)
 def read_zone(
     zone_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Zone:
     """@brief Recupera un settore tramite identificativo."""
+    del current_user
     zone = get_zone(connection, zone_id)
     if zone is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
@@ -124,9 +136,16 @@ def read_zone(
 def modify_zone(
     zone_id: str,
     update: ZoneUpdate,
+    current_user: Annotated[User, Depends(require_roles(UserRole.ADMIN))],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Zone:
-    """@brief Modifica i dati configurabili di un settore esistente."""
+    """@brief Modifica i dati configurabili di un settore esistente.
+
+    @details Richiede il ruolo `admin`, come la registrazione: cambia dati
+    infrastrutturali del settore (assegnazione Edge, stato amministrativo),
+    non lo stato operativo di una coltivazione.
+    """
+    del current_user
     zone = get_zone(connection, zone_id)
     if zone is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
@@ -168,6 +187,7 @@ def modify_zone(
 def set_simulation_speed(
     zone_id: str,
     request: SimulationSpeedRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> RuntimeCommand:
     """@brief Imposta la velocita di simulazione richiesta dalla dashboard.
@@ -182,8 +202,13 @@ def set_simulation_speed(
     che l'Edge e la riconciliazione lato backend possano riferirsi alla
     stessa entita delle altre operazioni di lifecycle.
 
+    @details Richiede solo un login valido (nessuna restrizione di ruolo),
+    come pausa/ripresa delle coltivazioni: e un'azione operativa, non
+    infrastrutturale.
+
     @throws HTTPException 404 se la zona non esiste.
     """
+    del current_user
     if get_zone(connection, zone_id) is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
     command_id = f"{zone_id}-simulation-speed-{uuid.uuid4().hex[:8]}"
@@ -208,12 +233,14 @@ def set_simulation_speed(
 @router.get("/{zone_id}/runtime", response_model=ZoneRuntime)
 def read_zone_runtime(
     zone_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> ZoneRuntime:
     """@brief Espone stato, fase, tempi e velocita correnti del settore.
 
     @throws HTTPException 404 se la zona non esiste.
     """
+    del current_user
     zone = get_zone(connection, zone_id)
     if zone is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")

@@ -1,30 +1,44 @@
 import json
 import sqlite3
+from typing import Callable
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.database import init_db
+from backend.app.features.auth.models import UserRole
 from backend.app.main import app, get_db
 from backend.app.models import ControlledVariable
 
 
 @pytest.fixture()
-def client() -> TestClient:
+def connection() -> sqlite3.Connection:
     # Connessione in memoria condivisa fra le richieste: una nuova per
     # ognuna, come farebbe get_db(), perderebbe i dati scritti dalle altre.
-    connection = sqlite3.connect(":memory:", check_same_thread=False)
-    init_db(connection)
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    init_db(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture()
+def client(
+    connection: sqlite3.Connection,
+    issue_token: Callable[[sqlite3.Connection, str, UserRole], str],
+) -> TestClient:
+    """Client autenticato come agronomo: puo pubblicare nuove ricette."""
 
     def override_get_db():
         yield connection
 
     app.dependency_overrides[get_db] = override_get_db
+    token = issue_token(connection, "agronomist-1", UserRole.AGRONOMIST)
     try:
-        yield TestClient(app)
+        yield TestClient(app, headers={"Authorization": f"Bearer {token}"})
     finally:
         app.dependency_overrides.clear()
-        connection.close()
 
 
 def test_create_recipe_then_read_it_back(

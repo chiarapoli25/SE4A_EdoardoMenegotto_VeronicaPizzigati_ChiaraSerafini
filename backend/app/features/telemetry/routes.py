@@ -3,11 +3,14 @@
 """
 
 import sqlite3
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime
 
 from ...core.database import get_db
+from ..auth.dependencies import get_current_user
+from ..auth.models import User
 from ..zones.repository import get_zone
 from .models import TelemetryCreate, TelemetrySample
 from .repository import (
@@ -37,7 +40,12 @@ def create_telemetry(
     telemetry: TelemetryCreate,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> TelemetrySample:
-    """@brief Riceve e salva un campione inviato dall'Edge."""
+    """@brief Riceve e salva un campione inviato dall'Edge.
+
+    @details Resta senza login utente: e un endpoint di ingestione
+    macchina-a-macchina (protetto, se configurato, dal token Edge
+    `SMARTHYDRO_API_TOKEN` su `/api/v1`), non un'azione da dashboard.
+    """
     _require_zone(connection, zone_id)
     try:
         return save_telemetry(connection, zone_id, telemetry)
@@ -48,9 +56,11 @@ def create_telemetry(
 @router.get("/latest", response_model=TelemetrySample)
 def read_latest_telemetry(
     zone_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     connection: sqlite3.Connection = Depends(get_db),
 ) -> TelemetrySample:
     """@brief Restituisce l'ultima misura disponibile per una zona."""
+    del current_user
     _require_zone(connection, zone_id)
     telemetry = get_latest_telemetry(connection, zone_id)
     if telemetry is None:
@@ -64,12 +74,14 @@ def read_latest_telemetry(
 @router.get("", response_model=list[TelemetrySample])
 def read_telemetry_history(
     zone_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     recorded_from: AwareDatetime | None = Query(default=None, alias="from"),
     recorded_to: AwareDatetime | None = Query(default=None, alias="to"),
     limit: int = Query(default=100, ge=1, le=1000),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[TelemetrySample]:
     """@brief Restituisce lo storico filtrabile dei sensori."""
+    del current_user
     _require_zone(connection, zone_id)
     if (
         recorded_from is not None
