@@ -1,18 +1,58 @@
 <!doctype html>
-<html lang="en">
+<html lang="it">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>SmartHydro Dashboard</title>
+    <title>SmartHydro · Control Room</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main class="status-card">
-      <h1>SmartHydro Dashboard</h1>
-      <p>System status: <strong id="system-status">initialization completed</strong></p>
-      <p>Version: 0.1.0</p>
-      <button id="check-status" type="button">Check local status</button>
-    </main>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">Smart<span class="brand-accent">Hydro</span></div>
+        <nav class="nav" id="main-nav">
+          <button type="button" class="nav-item" data-view="home">
+            <span class="nav-dot"></span>Reparti della serra
+          </button>
+          <button type="button" class="nav-item" data-view="recipes">
+            <span class="nav-dot"></span>Ricette
+          </button>
+          <button type="button" class="nav-item" data-view="control">
+            <span class="nav-dot"></span>Controllo
+          </button>
+        </nav>
+        <div class="sidebar-footer" id="system-status">
+          <span class="status-dot" id="system-status-dot"></span>
+          <div>
+            <div class="status-name" id="system-status-name">SmartHydro Backend</div>
+            <div class="status-detail" id="system-status-detail">connessione…</div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-titles">
+            <h1 id="page-title">Reparti della serra</h1>
+            <p id="page-subtitle">Caricamento in corso…</p>
+          </div>
+        </header>
+
+        <section id="view-home" class="view"></section>
+        <section id="view-recipes" class="view hidden"></section>
+        <section id="view-recipe" class="view hidden"></section>
+        <section id="view-control" class="view hidden"></section>
+      </main>
+    </div>
+
+    <div id="modal-overlay" class="modal-overlay hidden">
+      <div id="modal-content" class="modal-content" role="dialog" aria-modal="true"></div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
 
     <script src="script.js"></script>
   </body>
