@@ -193,7 +193,10 @@ def ensure_cultivation(zone_id: str, recipe_id: str) -> None:
 
 def enqueue_command(zone_id: str, command_id: str, command_type: str, payload: dict) -> bool:
     """Puro input verso la coda comandi dell'Edge: nessun dato calcolato a
-    mano, solo la richiesta che un chiamante legittimo può fare."""
+    mano, solo la richiesta che un chiamante legittimo può fare. Non aspetta
+    l'esito: per i comandi dove l'ordine con un comando successivo conta
+    (es. ResetFault prima di ResetEmergency) usa
+    enqueue_and_wait_command()."""
     status, body = request(
         "POST",
         f"/zones/{zone_id}/commands",
@@ -207,6 +210,71 @@ def enqueue_command(zone_id: str, command_id: str, command_type: str, payload: d
         return False
     print(f"[seed] comando {command_type} accodato su {zone_id} (command_id={command_id})")
     return True
+
+
+def enqueue_and_wait_command(
+    zone_id: str,
+    command_id: str,
+    command_type: str,
+    payload: dict,
+    *,
+    timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
+) -> str | None:
+    """Accoda un comando e ne attende l'ESITO reale (succeeded/rejected)
+    prima di restituire il controllo, invece di limitarsi a verificare che
+    sia stato accodato (status 201 = pending). Il polling ripete la STESSA
+    POST (stesso command_id, stesso payload): per costruzione questo non
+    riesegue il comando, restituisce solo lo stato corrente della riga già
+    persistita (vedi backend/app/features/commands/repository.py
+    create_command: un command_id già esistente con payload identico
+    restituisce la riga esistente, qualunque sia il suo status). È quindi
+    ancora puro input, non una nuova API.
+
+    Usata soprattutto quando l'ordine tra due comandi conta (es. ResetFault
+    deve essere REALMENTE applicato — non solo accodato — prima di
+    ResetEmergency, altrimenti il reset manuale rischia di essere valutato
+    dalla FSM mentre il detector osserva ancora il guasto e viene
+    rifiutato in silenzio).
+
+    Restituisce lo status finale ("succeeded" o "rejected"), oppure None se
+    il comando non è stato accodato o se scade il timeout mentre resta
+    'pending' (l'Edge non l'ha ancora processato)."""
+    command_payload = {
+        "command_id": command_id,
+        "command_type": command_type,
+        "payload": payload,
+    }
+    deadline = time.monotonic() + timeout_seconds
+    last_status: str | None = None
+    last_body: dict = {}
+    while time.monotonic() < deadline:
+        status, body = request("POST", f"/zones/{zone_id}/commands", command_payload)
+        if status != 201:
+            print(
+                f"[seed] avviso: comando {command_type} non accodato/rileggibile su "
+                f"{zone_id} (status {status}) {body}"
+            )
+            return None
+        last_status = body.get("status")
+        last_body = body
+        if last_status != "pending":
+            break
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    if last_status == "pending" or last_status is None:
+        print(
+            f"[seed] AVVISO: timeout ({timeout_seconds:.0f}s) in attesa dell'esito di "
+            f"{command_type} (command_id={command_id}) su {zone_id}: risulta ancora "
+            f"'pending' — l'Edge potrebbe non averlo ancora processato."
+        )
+        return None
+
+    detail = last_body.get("result_message")
+    print(
+        f"[seed] comando {command_type} su {zone_id} concluso: {last_status}"
+        + (f" ({detail})" if detail else "")
+    )
+    return last_status
 
 
 def get_zone(zone_id: str) -> dict | None:
@@ -445,20 +513,39 @@ def step7_lockdown_demo(run_suffix: str) -> None:
         return
     print(f"[seed] {zone_id} è entrata in EmergencyLockdown (3 cicli recuperabili consecutivi).")
 
-    reset_sent_at = datetime.now(timezone.utc)
-    print(f"[seed] invio ResetFault + ResetEmergency su {zone_id}...")
-    enqueue_command(
+    # ResetFault deve essere REALMENTE applicato (status 'succeeded', non solo
+    # accodato) prima di inviare ResetEmergency: il reset manuale viene
+    # valutato dalla FSM al ciclo successivo e rifiutato in silenzio se il
+    # detector osserva ancora il guasto (vedi README). Per questo aspettiamo
+    # l'esito di ResetFault invece di accodare i due comandi a raffica.
+    print(f"[seed] invio ResetFault su {zone_id} e attendo il suo esito prima di ResetEmergency...")
+    reset_fault_status = enqueue_and_wait_command(
         zone_id,
         f"reset-fault-{fault_id}",
         "ResetFault",
         {"fault_id": fault_id},
     )
-    enqueue_command(
+    if reset_fault_status != "succeeded":
+        print(
+            f"[seed] avviso: ResetFault su {zone_id} non è andato a buon fine "
+            f"(esito: {reset_fault_status!r}) — salto ResetEmergency perché la FSM "
+            f"osserverebbe ancora il guasto e rifiuterebbe il reset manuale."
+        )
+        return
+
+    reset_sent_at = datetime.now(timezone.utc)
+    reset_emergency_status = enqueue_and_wait_command(
         zone_id,
         f"reset-emergency-{zone_id}-{run_suffix}",
         "ResetEmergency",
         {},
     )
+    if reset_emergency_status != "succeeded":
+        print(
+            f"[seed] avviso: ResetEmergency su {zone_id} non è andato a buon fine "
+            f"(esito: {reset_emergency_status!r}); non posso verificare il recupero."
+        )
+        return
 
     degraded_after_reset = poll_events_until(
         zone_id,
@@ -471,9 +558,8 @@ def step7_lockdown_demo(run_suffix: str) -> None:
     if degraded_after_reset is None:
         print(
             f"[seed] avviso: {zone_id} non risulta rientrata in Degraded dopo il reset "
-            f"manuale entro il timeout; il reset potrebbe non essere stato accettato "
-            f"(il README segnala che non viene accettato finché il detector osserva "
-            f"ancora un'uscita fisica guasta)."
+            f"manuale entro il timeout, anche se ResetEmergency è stato accettato dal "
+            f"comando — la FSM applica la transizione al ciclo di controllo successivo."
         )
         return
     print(
@@ -491,17 +577,78 @@ def step7_lockdown_demo(run_suffix: str) -> None:
         since=reset_sent_at,
     )
     if nominal_event is not None:
-        print(
-            f"[seed] {zone_id} è tornata Nominal automaticamente dopo qualche ciclo sano: "
-            f"sequenza completa Nominal -> Degraded -> EmergencyLockdown -> (reset) -> "
-            f"Degraded -> Nominal osservata tramite eventi reali dell'Edge."
-        )
+        print(f"[seed] {zone_id} è tornata Nominal automaticamente dopo qualche ciclo sano.")
     else:
         print(
             f"[seed] avviso: {zone_id} non è ancora tornata Nominal entro il timeout; "
             f"il recupero automatico potrebbe richiedere ancora qualche ciclo (prova a "
             f"controllare GET /zones/{zone_id} tra poco)."
         )
+
+    # --- Verifica finale: la sequenza ESATTA e ORDINATA degli StateChanged,
+    # non solo la presenza isolata di ciascuno stato osservata sopra passo
+    # per passo (utile per il progresso a video, ma non basta da sola: uno
+    # stato mancante o fuori ordine potrebbe comunque passare inosservato
+    # se si guarda solo "esiste un evento Degraded da qualche parte"). ---
+    verify_state_sequence(
+        zone_id,
+        since=since,
+        expected=[
+            ("Nominal", "Degraded"),
+            ("Degraded", "EmergencyLockdown"),
+            ("EmergencyLockdown", "Degraded"),
+            ("Degraded", "Nominal"),
+        ],
+    )
+
+
+def verify_state_sequence(
+    zone_id: str,
+    *,
+    since: datetime,
+    expected: list[tuple[str, str]],
+) -> bool:
+    """Legge TUTTI gli eventi StateChanged della zona da `since` in poi,
+    li ordina cronologicamente e confronta la sequenza di transizioni
+    (previous_state, current_state) con `expected`, elemento per elemento
+    e nell'ordine esatto — non si limita a controllare che ogni stato sia
+    presente da qualche parte nella cronologia. Stampa un esito chiaro,
+    con la sequenza osservata per intero se non corrisponde."""
+    status, body = request("GET", f"/zones/{zone_id}/events?limit=500")
+    if status != 200 or not isinstance(body, list):
+        print(f"[seed] avviso: impossibile rileggere gli eventi di {zone_id} per la verifica finale (status {status})")
+        return False
+    state_changes = sorted(
+        (
+            event for event in body
+            if event.get("event_type") == "StateChanged"
+            and "received_at" in event
+            and _parse_iso(event["received_at"]) >= since
+        ),
+        key=lambda event: event["received_at"],
+    )
+    observed = [
+        (event["payload"].get("previous_state"), event["payload"].get("current_state"))
+        for event in state_changes
+    ]
+    expected_label = " -> ".join([expected[0][0]] + [pair[1] for pair in expected])
+    if observed == expected:
+        print(
+            f"[seed] VERIFICA OK: sequenza StateChanged di {zone_id} esattamente "
+            f"come atteso: {expected_label}"
+        )
+        return True
+    observed_label = (
+        " -> ".join([observed[0][0]] + [pair[1] for pair in observed])
+        if observed else "(nessuno StateChanged osservato)"
+    )
+    print(
+        f"[seed] VERIFICA FALLITA: sequenza StateChanged di {zone_id} diversa da "
+        f"quella attesa.\n"
+        f"  attesa:    {expected_label}\n"
+        f"  osservata: {observed_label}"
+    )
+    return False
 
 
 def main() -> None:
