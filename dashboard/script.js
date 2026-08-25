@@ -99,6 +99,7 @@ const STATE = {
 
   modalZoneId: null,
   modalZone: null,
+  modalKind: null, // "zone" | "recipe" | null — which pop-up #modal-content currently shows
   modalTab: "summary",
   modalTelemetry: null,
   modalActuators: null,
@@ -111,6 +112,12 @@ const STATE = {
   strategyStatus: {},
   recipeHintVisible: false,
   phasePending: false,
+
+  // Single shared "where did I come from" marker, captured once at the
+  // moment a pop-up (or a sub-view inside one) is opened. Back buttons
+  // consult this instead of hard-coding a destination, so the same
+  // mechanism serves every pop-up's "Indietro" button.
+  returnTo: null,
 
   adhocIntervals: [],
 };
@@ -584,33 +591,53 @@ function updateRecipeGridOnly() {
   if (count) count.textContent = `${list.length} ${list.length === 1 ? "ricetta" : "ricette"}`;
 }
 
-function openRecipeDetail(recipeId) {
-  switchView("recipe");
+/**
+ * Recipe pop-up — read-only, same overlay/close/visual pattern as the zone
+ * modal's "Controllo avanzato" (reuses #modal-overlay/#modal-content and the
+ * .zone-header/.zone-close/.advanced-hint-row classes). `returnTo` is the
+ * single "where did I come from" marker for this pop-up's Indietro button
+ * (see goBack()); defaults to just closing when not given.
+ */
+function openRecipeModal(recipeId, returnTo) {
+  // Stop any zone-modal polling so it doesn't refresh into this pop-up.
+  clearPoll("modal");
+  clearPoll("modal-chart");
+  STATE.adhocIntervals.forEach(clearInterval);
+  STATE.adhocIntervals = [];
+  STATE.modalZoneId = null;
+  STATE.modalZone = null;
+
+  STATE.modalKind = "recipe";
   STATE.recipeDetailPhaseIdx = 0;
-  const recipe = STATE.recipesById[recipeId];
-  if (recipe) {
-    STATE.currentRecipe = recipe;
-    renderRecipeDetail();
+  STATE.returnTo = returnTo || { action: "closeModal" };
+  document.getElementById("modal-overlay").classList.remove("hidden");
+
+  const cached = STATE.recipesById[recipeId];
+  if (cached) {
+    STATE.currentRecipe = cached;
+    renderModal();
     return;
   }
-  document.getElementById("view-recipe").innerHTML = '<div class="empty-note">Caricamento ricetta…</div>';
+  STATE.currentRecipe = null;
+  renderModal();
   apiGet(`/recipes/${encodeURIComponent(recipeId)}`).then((r) => {
     STATE.currentRecipe = r;
     STATE.recipesById[r.id] = r;
-    if (STATE.view === "recipe") renderRecipeDetail();
+    if (STATE.modalKind === "recipe") renderModal();
   }).catch((e) => {
-    document.getElementById("view-recipe").innerHTML = `<div class="empty-note">Impossibile caricare la ricetta: ${escapeHtml(e.message)}</div>`;
+    if (STATE.modalKind === "recipe") {
+      document.getElementById("modal-content").innerHTML = `<div class="empty-note">Impossibile caricare la ricetta: ${escapeHtml(e.message)}</div>`;
+    }
   });
 }
 
-function renderRecipeDetail() {
+function renderRecipeModal() {
   const r = STATE.currentRecipe;
-  const el = document.getElementById("view-recipe");
+  const wrap = document.getElementById("modal-content");
   if (!r) {
-    el.innerHTML = '<div class="empty-note">Ricetta non trovata.</div>';
+    wrap.innerHTML = '<div class="empty-note">Caricamento ricetta…</div>';
     return;
   }
-  setPageTitle("Variabili ricetta", "Setpoint e banda per le 6 variabili controllate, per fase · sola lettura");
 
   const idx = Math.min(STATE.recipeDetailPhaseIdx || 0, r.phases.length - 1);
   const phase = r.phases[idx];
@@ -643,32 +670,45 @@ function renderRecipeDetail() {
 
   const photoEnd = (phase.photoperiod.start_hour + phase.photoperiod.duration_hours) % 24;
 
-  el.innerHTML = `
-    <div class="recipe-detail-head">
-      <button type="button" class="btn" data-action="back-to-recipes">← Indietro</button>
-      <span class="recipe-badge">${escapeHtml(r.id)}</span>
-      <div class="spacer"></div>
-      <span class="hint">v${r.version} · sola lettura</span>
-    </div>
-    <div class="recipe-detail-card">
-      <div class="info-grid">
-        <div class="info-item"><span class="k">Specie</span><span class="v">${escapeHtml(r.plant_type)}</span></div>
-        <div class="info-item"><span class="k">Reparto</span><span class="v">${escapeHtml(r.department_name || "Non catalogata")}</span></div>
-        <div class="info-item"><span class="k">Substrato</span><span class="v">${escapeHtml(SUBSTRATE_LABELS[r.substrate] || r.substrate)}</span></div>
-        <div class="info-item"><span class="k">Fasi</span><span class="v">${r.phases.length}</span></div>
-      </div>
-      ${careHtml}
-      <div>
-        <div class="field-label" style="margin-bottom:8px">Fase</div>
-        <div class="phase-tabs">
-          ${r.phases.map((p, i) => `<button type="button" class="phase-tab ${i === idx ? "active" : ""}" data-action="select-phase-tab" data-idx="${i}">${escapeHtml(p.name)}</button>`).join("")}
+  wrap.innerHTML = `
+    <div class="zone-header" style="--zone-tint:#eef2e4">
+      <div style="min-width:0">
+        <div class="zone-header-code">
+          <span class="code">${escapeHtml(r.id)}</span>
+          <span class="recipe-badge">v${r.version} · sola lettura</span>
+        </div>
+        <h2>${escapeHtml(r.plant_type)}</h2>
+        <div class="zone-header-meta">
+          <span>${escapeHtml(r.department_name || "Reparto non catalogato")}</span>
+          <span class="sep"></span>
+          <span>substrato ${escapeHtml(SUBSTRATE_LABELS[r.substrate] || r.substrate)}</span>
+          <span class="sep"></span>
+          <span>${r.phases.length} fasi</span>
         </div>
       </div>
-      <div class="data-table">
-        <div class="data-table-head cols-recipe"><span>VARIABILE</span><span>SETPOINT</span><span>MIN</span><span>MAX</span><span>STRATEGIA</span></div>
-        ${rows}
+      <button type="button" class="zone-close" data-action="close-modal">✕</button>
+    </div>
+    <div style="padding:20px 28px 28px">
+      <div class="advanced-hint-row">
+        <button type="button" class="btn" data-action="recipe-back">← Indietro</button>
+        <div style="font-size:15.5px;font-weight:600">Variabili ricetta</div>
+        <div class="spacer"></div>
+        <span class="hint">Setpoint / Min / Max / Strategia sono di sola lettura</span>
       </div>
-      <div class="empty-note">Durata fase: ${fmtNum(phase.duration_hours, 1)} h · fotoperiodo dalle ${fmtNum(phase.photoperiod.start_hour, 1)} per ${fmtNum(phase.photoperiod.duration_hours, 1)} h (fino alle ${fmtNum(photoEnd, 1)}) · setpoint, banda e strategia sono definiti a livello di ricetta e non sono modificabili da questa dashboard.</div>
+      <div class="recipe-detail-card">
+        ${careHtml}
+        <div>
+          <div class="field-label" style="margin-bottom:8px">Fase</div>
+          <div class="phase-tabs">
+            ${r.phases.map((p, i) => `<button type="button" class="phase-tab ${i === idx ? "active" : ""}" data-action="select-phase-tab" data-idx="${i}">${escapeHtml(p.name)}</button>`).join("")}
+          </div>
+        </div>
+        <div class="data-table">
+          <div class="data-table-head cols-recipe"><span>VARIABILE</span><span>SETPOINT</span><span>MIN</span><span>MAX</span><span>STRATEGIA</span></div>
+          ${rows}
+        </div>
+        <div class="empty-note">Durata fase: ${fmtNum(phase.duration_hours, 1)} h · fotoperiodo dalle ${fmtNum(phase.photoperiod.start_hour, 1)} per ${fmtNum(phase.photoperiod.duration_hours, 1)} h (fino alle ${fmtNum(photoEnd, 1)}) · setpoint, banda e strategia sono definiti a livello di ricetta e non sono modificabili da questa dashboard.</div>
+      </div>
     </div>
   `;
 }
@@ -737,7 +777,14 @@ function renderControl() {
 
 async function openZoneModal(zoneId, entry) {
   STATE.modalZoneId = zoneId;
+  STATE.modalKind = "zone";
   STATE.modalTab = entry === "advanced" ? "advanced" : "summary";
+  // Opened straight into "Controllo avanzato" (e.g. from the Controllo
+  // sidebar list): there is no summary tab to fall back to, so "Indietro"
+  // should return to whatever page opened this modal, i.e. close it.
+  // Opened on the summary tab: no return target yet — one gets recorded
+  // if/when the user later drills into the advanced tab from here.
+  STATE.returnTo = entry === "advanced" ? { action: "closeModal" } : null;
   STATE.modalTelemetry = null;
   STATE.modalActuators = null;
   STATE.modalRecipe = null;
@@ -772,7 +819,7 @@ async function openZoneModal(zoneId, entry) {
   }
 }
 
-function closeZoneModal() {
+function closeModal() {
   document.getElementById("modal-overlay").classList.add("hidden");
   clearPoll("modal");
   clearPoll("modal-chart");
@@ -780,6 +827,34 @@ function closeZoneModal() {
   STATE.adhocIntervals = [];
   STATE.modalZoneId = null;
   STATE.modalZone = null;
+  STATE.modalKind = null;
+  STATE.currentRecipe = null;
+}
+
+/**
+ * Generic "Indietro" handler for pop-ups: consults the single STATE.returnTo
+ * marker recorded when the current pop-up (or sub-view within it) was
+ * opened, instead of any button hard-coding its own destination.
+ */
+function goBack() {
+  const target = STATE.returnTo;
+  STATE.returnTo = null;
+  if (!target || target.action === "closeModal") {
+    closeModal();
+    return;
+  }
+  if (target.action === "modalTab") {
+    STATE.modalTab = target.tab;
+    clearPoll("modal-chart");
+    renderModal();
+    return;
+  }
+  if (target.action === "reopenZoneAdvanced") {
+    // Recipe pop-up was opened from inside "Controllo avanzato" — go back
+    // to that same zone's advanced tab.
+    openZoneModal(target.zoneId, "advanced");
+    return;
+  }
 }
 
 async function loadModalRecipe(recipeId) {
@@ -826,6 +901,7 @@ function renderModalIfSafe() {
 }
 
 function renderModal() {
+  if (STATE.modalKind === "recipe") { renderRecipeModal(); return; }
   const zone = STATE.modalZone;
   const wrap = document.getElementById("modal-content");
   if (!zone) {
@@ -968,7 +1044,7 @@ function renderZoneAdvanced(zone) {
   return `
     <div style="padding:20px 28px 28px">
       <div class="advanced-hint-row">
-        <button type="button" class="btn" data-action="back-to-summary">← Indietro</button>
+        <button type="button" class="btn" data-action="advanced-back">← Indietro</button>
         <div style="font-size:15.5px;font-weight:600">Controllo avanzato</div>
         <div class="spacer"></div>
         <span class="hint">Setpoint / Min / Max sono di sola lettura · solo la Strategia è modificabile</span>
@@ -1264,10 +1340,9 @@ function drawTelemetryChart(canvas, points, setpoint, unit) {
 function switchView(view) {
   STATE.view = view;
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
-    const active = btn.dataset.view === view || (view === "recipe" && btn.dataset.view === "recipes");
-    btn.classList.toggle("active", active);
+    btn.classList.toggle("active", btn.dataset.view === view);
   });
-  ["home", "recipes", "recipe", "control"].forEach((v) => {
+  ["home", "recipes", "control"].forEach((v) => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
   });
 
@@ -1294,10 +1369,10 @@ function initEventDelegation() {
   });
 
   document.addEventListener("click", (e) => {
-    if (e.target.id === "modal-overlay") { closeZoneModal(); return; }
+    if (e.target.id === "modal-overlay") { closeModal(); return; }
 
     const closeBtn = e.target.closest('[data-action="close-modal"]');
-    if (closeBtn) { closeZoneModal(); return; }
+    if (closeBtn) { closeModal(); return; }
 
     const openZone = e.target.closest('[data-action="open-zone"], [data-action="open-zone-advanced"]');
     if (openZone) {
@@ -1307,29 +1382,32 @@ function initEventDelegation() {
     }
 
     const openRecipe = e.target.closest('[data-action="open-recipe"]');
-    if (openRecipe) { openRecipeDetail(openRecipe.dataset.recipeId); return; }
+    if (openRecipe) {
+      // Opened from the Ricette grid: the grid stays visible behind the
+      // pop-up, so Indietro just closes it — no view switch involved.
+      openRecipeModal(openRecipe.dataset.recipeId, { action: "closeModal" });
+      return;
+    }
 
-    const backRecipes = e.target.closest('[data-action="back-to-recipes"]');
-    if (backRecipes) { switchView("recipes"); return; }
+    const recipeBack = e.target.closest('[data-action="recipe-back"]');
+    if (recipeBack) { goBack(); return; }
 
     const phaseTab = e.target.closest('[data-action="select-phase-tab"]');
-    if (phaseTab) { STATE.recipeDetailPhaseIdx = Number(phaseTab.dataset.idx); renderRecipeDetail(); return; }
+    if (phaseTab) { STATE.recipeDetailPhaseIdx = Number(phaseTab.dataset.idx); renderModal(); return; }
 
     const openAdv = e.target.closest('[data-action="open-advanced-tab"]');
     if (openAdv) {
+      // Drilling into "Controllo avanzato" from the summary tab of this
+      // same modal: record that as the return target for its back button.
+      STATE.returnTo = { action: "modalTab", tab: "summary" };
       STATE.modalTab = "advanced";
       renderModal();
       setPoll("modal-chart", refreshChartData, CHART_POLL_MS);
       return;
     }
 
-    const backSummary = e.target.closest('[data-action="back-to-summary"]');
-    if (backSummary) {
-      STATE.modalTab = "summary";
-      clearPoll("modal-chart");
-      renderModal();
-      return;
-    }
+    const advancedBack = e.target.closest('[data-action="advanced-back"]');
+    if (advancedBack) { goBack(); return; }
 
     const advanceBtn = e.target.closest('[data-action="advance-phase"]');
     if (advanceBtn && !advanceBtn.disabled) { advancePhase(); return; }
@@ -1342,9 +1420,11 @@ function initEventDelegation() {
 
     const openRecipeFromZone = e.target.closest('[data-action="open-recipe-from-zone"]');
     if (openRecipeFromZone) {
-      const rid = STATE.modalZone ? STATE.modalZone.active_recipe_id : null;
-      closeZoneModal();
-      if (rid) openRecipeDetail(rid);
+      const zone = STATE.modalZone;
+      const rid = zone ? zone.active_recipe_id : null;
+      // Opened from inside "Controllo avanzato": Indietro on the recipe
+      // pop-up should return to this same zone's advanced tab.
+      if (rid && zone) openRecipeModal(rid, { action: "reopenZoneAdvanced", zoneId: zone.id });
       return;
     }
   });

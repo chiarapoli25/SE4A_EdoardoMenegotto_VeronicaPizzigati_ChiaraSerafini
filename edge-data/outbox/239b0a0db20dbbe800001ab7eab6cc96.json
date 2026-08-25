@@ -1,0 +1,6 @@
+{
+  "attempts": 0,
+  "body": "{\"boot_id\":\"0e76af89da89b6fe000015db39776e7c\",\"command\":{\"fertilizer_valves_open\":{\"nitrogen\":false,\"ph-down\":false,\"ph-up\":false,\"phosphorus\":false,\"potassium\":false},\"lighting_percent\":100.0,\"requested_irrigation_volume_liters\":0.25},\"output\":{\"fertilizer_flow_milliliters_per_hour\":{\"nitrogen\":0.0,\"ph-down\":0.0,\"ph-up\":0.0,\"phosphorus\":0.0,\"potassium\":0.0},\"fertilizer_valves_open\":{\"nitrogen\":false,\"ph-down\":false,\"ph-up\":false,\"phosphorus\":false,\"potassium\":false},\"fertilizer_volume_milliliters_last_step\":{\"nitrogen\":0.0,\"ph-down\":0.0,\"ph-up\":0.0,\"phosphorus\":0.0,\"potassium\":0.0},\"irrigation_volume_liters_last_step\":0.25,\"lighting_power_watts\":200.0,\"remaining_irrigation_volume_liters\":0.0,\"water_pump_flow_liters_per_hour\":0.0,\"water_pump_on\":false,\"water_pump_on_time_seconds_last_step\":450.0},\"recorded_at\":\"2026-08-24T16:50:54Z\",\"sequence_number\":325,\"timestamp_seconds\":293400.0}",
+  "message_id": "239b0a0db20dbbe800001ab7eab6cc96",
+  "path": "/api/v1/zones/r3-s1/actuators"
+}

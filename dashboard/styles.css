@@ -385,25 +385,12 @@ a:hover { color: var(--accent-dark); }
   display: flex; align-items: center; justify-content: center; font-size: 13px;
 }
 
-/* ---------- recipe detail ---------- */
-
-.recipe-detail-head {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
-}
-.recipe-detail-head .spacer { flex: 1; }
-.recipe-detail-head .hint { font: 400 10.5px var(--mono); color: var(--ink-faint); }
+/* ---------- recipe detail (pop-up; shares .zone-header / .zone-close / .advanced-hint-row with "Controllo avanzato") ---------- */
 
 .recipe-detail-card {
   background: var(--card); border: 1px solid var(--line); border-radius: 20px;
   padding: 20px; display: flex; flex-direction: column; gap: 18px;
 }
-
-.info-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px;
-}
-.info-item { display: flex; flex-direction: column; gap: 4px; }
-.info-item .k { font-size: 11.5px; color: var(--ink-faint); }
-.info-item .v { font-size: 13.5px; font-weight: 600; }
 
 .care-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;
