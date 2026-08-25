@@ -94,8 +94,13 @@ const STATE = {
 
   alerts: [],
   quarantine: {},
+  plantCounts: {}, // zone_id -> live plant count (current_zone_id, not origin)
   homeExtrasLoaded: false,
   homeExtrasLastRun: 0,
+
+  // { dept, sector, name, species, status, error } | null — the single
+  // "aggiungi settore" inline form open on Home, if any.
+  addSectorForm: null,
 
   modalZoneId: null,
   modalZone: null,
@@ -347,8 +352,11 @@ async function tickZones() {
       const z = zones.find((zz) => zz.id === STATE.modalZoneId);
       if (z) STATE.modalZone = z;
     }
-    if (STATE.view === "home") renderHome();
-    else if (STATE.view === "control") {
+    if (STATE.view === "home") {
+      // Don't yank focus/reset an in-progress "Aggiungi settore" form on a
+      // background poll tick — same precedent as the Control view below.
+      if (!isFocusedInside("view-home")) renderHome();
+    } else if (STATE.view === "control") {
       if (!isFocusedInside("view-control")) renderControl();
     }
   } catch (e) {
@@ -399,11 +407,30 @@ function renderHome() {
 function renderDeptCard(n, zones) {
   const meta = DEPT_META[n];
   const name = (zones[0] && zones[0].department_name) || DEPT_FALLBACK_NAMES[n];
+
+  if (n === 5) {
+    // Quarantine has no per-sector cultivation like the production
+    // departments — r5-s1/r5-s2 still exist server-side as the technical
+    // destination for PATCH /plants/{id}/quarantine, but showing them as
+    // "Settore" slots here doesn't make sense. Show plant-level info instead.
+    return `
+      <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+        <div class="dept-card-head">
+          <span class="dept-code">REPARTO ${n}</span>
+        </div>
+        <div class="dept-title">${escapeHtml(name)}</div>
+        <div class="quarantine-box" id="quarantine-box"></div>
+      </div>
+    `;
+  }
+
   const slots = [1, 2].map((sn) => {
     const z = zones.find((zz) => zz.sector_number === sn);
-    return z ? renderSectorRow(z) : `<div class="sector-slot-empty">Settore ${sn} non ancora registrato</div>`;
+    if (z) return renderSectorRow(z);
+    const f = STATE.addSectorForm;
+    if (f && f.dept === n && f.sector === sn) return renderAddSectorForm(f);
+    return `<button type="button" class="sector-slot-add" data-action="open-add-sector" data-dept="${n}" data-sector="${sn}">+ Aggiungi settore</button>`;
   }).join("");
-  const quarantineHtml = n === 5 ? `<div class="quarantine-box" id="quarantine-box"></div>` : "";
   return `
     <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
       <div class="dept-card-head">
@@ -411,10 +438,68 @@ function renderDeptCard(n, zones) {
         <span class="dept-count">${zones.length} settor${zones.length === 1 ? "e" : "i"}</span>
       </div>
       <div class="dept-title">${escapeHtml(name)}</div>
-      ${quarantineHtml}
       <div class="sector-list">${slots}</div>
     </div>
   `;
+}
+
+function renderAddSectorForm(f) {
+  const sending = f.status === "sending";
+  return `
+    <div class="add-sector-form">
+      <div class="field-label">Nuovo settore ${f.sector}</div>
+      <input type="text" class="add-sector-input" data-action="add-sector-field" data-field="name"
+        placeholder="Nome del settore" value="${escapeAttr(f.name)}" ${sending ? "disabled" : ""}>
+      <input type="text" class="add-sector-input" data-action="add-sector-field" data-field="species"
+        placeholder="Specie coltivata" value="${escapeAttr(f.species)}" ${sending ? "disabled" : ""}>
+      ${f.error ? `<div class="add-sector-error">${escapeHtml(f.error)}</div>` : ""}
+      <div class="add-sector-actions">
+        <button type="button" class="btn" data-action="cancel-add-sector" ${sending ? "disabled" : ""}>Annulla</button>
+        <button type="button" class="btn btn-primary" data-action="submit-add-sector" ${sending ? "disabled" : ""}>${sending ? "Creazione…" : "Crea settore"}</button>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * id is auto-generated as "r{dept}-s{sector}" (matches the convention of
+ * every existing zone id and the backend's id pattern) — never asked from
+ * the user. department_number/sector_number come from which empty slot was
+ * clicked, not from the form either.
+ */
+async function submitAddSector() {
+  const form = STATE.addSectorForm;
+  if (!form || form.status === "sending") return;
+  const name = (form.name || "").trim();
+  const species = (form.species || "").trim();
+  if (!name || !species) {
+    STATE.addSectorForm = { ...form, name, species, error: "Nome e specie coltivata sono obbligatori." };
+    renderHome();
+    return;
+  }
+
+  const zoneId = `r${form.dept}-s${form.sector}`;
+  STATE.addSectorForm = { ...form, name, species, status: "sending", error: null };
+  renderHome();
+
+  try {
+    const created = await apiPost("/zones", {
+      id: zoneId,
+      name,
+      department_number: form.dept,
+      sector_number: form.sector,
+      plant_species: species,
+    });
+    STATE.zones.push(created);
+    STATE.addSectorForm = null;
+    renderHome();
+    showToast(`Settore ${zoneId} creato.`);
+  } catch (err) {
+    if (STATE.addSectorForm) {
+      STATE.addSectorForm = { ...STATE.addSectorForm, status: null, error: err.message };
+      renderHome();
+    }
+  }
 }
 
 function renderSectorRow(z) {
@@ -432,6 +517,7 @@ function renderSectorRow(z) {
         <div class="sector-row-tags">
           <span class="tag-phase">${escapeHtml(z.current_phase || "nessuna fase attiva")}</span>
           <span class="pill op-${z.operational_state}">${z.operational_state}</span>
+          <span class="tag-phase" id="plant-count-${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
         </div>
       </div>
       <span class="sector-row-arrow">→</span>
@@ -439,20 +525,56 @@ function renderSectorRow(z) {
   `;
 }
 
+/** Live plant count for one zone (current_zone_id, not origin), from the
+ * throttled home-extras fetch — "…" while loading, "—" on fetch error. */
+function plantCountLabel(zoneId) {
+  if (!STATE.homeExtrasLoaded) return "…";
+  const n = STATE.plantCounts[zoneId];
+  if (n === null || n === undefined) return "—";
+  return `${n} piant${n === 1 ? "a" : "e"}`;
+}
+
+async function loadPlantCounts(zones) {
+  const results = await Promise.all(
+    zones.map(async (z) => {
+      try {
+        const plants = await apiGet("/plants", { zone_id: z.id, limit: 1000 });
+        return [z.id, plants.length];
+      } catch (e) {
+        return [z.id, null];
+      }
+    })
+  );
+  return Object.fromEntries(results);
+}
+
+function renderPlantCounts() {
+  STATE.zones.forEach((z) => {
+    const el = document.getElementById(`plant-count-${z.id}`);
+    if (el) el.textContent = plantCountLabel(z.id);
+  });
+}
+
 async function maybeFetchHomeExtras() {
   const now = Date.now();
   if (now - STATE.homeExtrasLastRun < HOME_EXTRAS_MIN_INTERVAL_MS) return;
   STATE.homeExtrasLastRun = now;
   try {
-    const [alerts, quarantine] = await Promise.all([loadAlerts(STATE.zones), loadQuarantineStats()]);
+    const [alerts, quarantine, plantCounts] = await Promise.all([
+      loadAlerts(STATE.zones),
+      loadQuarantineStats(),
+      loadPlantCounts(STATE.zones),
+    ]);
     STATE.alerts = alerts;
     STATE.quarantine = quarantine;
+    STATE.plantCounts = plantCounts;
   } catch (e) {
     console.error("failed to refresh home extras", e);
   }
   STATE.homeExtrasLoaded = true;
   renderAlertsPanel();
   renderQuarantineBox();
+  renderPlantCounts();
 }
 
 async function loadAlerts(zones) {
@@ -1389,6 +1511,26 @@ function initEventDelegation() {
       return;
     }
 
+    const openAddSector = e.target.closest('[data-action="open-add-sector"]');
+    if (openAddSector) {
+      STATE.addSectorForm = {
+        dept: Number(openAddSector.dataset.dept),
+        sector: Number(openAddSector.dataset.sector),
+        name: "",
+        species: "",
+        status: null,
+        error: null,
+      };
+      renderHome();
+      return;
+    }
+
+    const cancelAddSector = e.target.closest('[data-action="cancel-add-sector"]');
+    if (cancelAddSector) { STATE.addSectorForm = null; renderHome(); return; }
+
+    const submitAddSectorBtn = e.target.closest('[data-action="submit-add-sector"]');
+    if (submitAddSectorBtn && !submitAddSectorBtn.disabled) { submitAddSector(); return; }
+
     const recipeBack = e.target.closest('[data-action="recipe-back"]');
     if (recipeBack) { goBack(); return; }
 
@@ -1443,6 +1585,13 @@ function initEventDelegation() {
     if (e.target.id === "recipe-search") {
       STATE.recipeQuery = e.target.value;
       updateRecipeGridOnly();
+    }
+
+    const addSectorField = e.target.closest('[data-action="add-sector-field"]');
+    if (addSectorField && STATE.addSectorForm) {
+      // Write straight into STATE only — no re-render, so typing doesn't
+      // fight the innerHTML refresh for cursor position/focus.
+      STATE.addSectorForm[addSectorField.dataset.field] = addSectorField.value;
     }
   });
 }

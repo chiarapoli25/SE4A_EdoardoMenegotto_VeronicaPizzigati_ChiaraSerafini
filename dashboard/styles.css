@@ -290,6 +290,37 @@ a:hover { color: var(--accent-dark); }
   color: var(--ink-faint);
 }
 
+.sector-slot-add {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px dashed var(--dept-border, #cfe6d9);
+  border-radius: 13px;
+  font: 500 11.5px var(--sans);
+  color: var(--accent);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.sector-slot-add:hover { background: rgba(255, 255, 255, .5); }
+
+.add-sector-form {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--dept-border, #cfe6d9);
+  border-radius: 13px;
+  background: #fff;
+}
+.add-sector-input {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 9px;
+  padding: 8px 10px; font: 400 12.5px var(--sans); color: var(--ink);
+  background: #f7fbf9;
+}
+.add-sector-input:focus { outline: none; border-color: var(--accent); }
+.add-sector-error { font-size: 11px; color: var(--danger); }
+.add-sector-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.add-sector-actions .btn { padding: 7px 11px; font-size: 12px; }
+
 .dept-photo {
   height: 46px;
   border-radius: 14px;

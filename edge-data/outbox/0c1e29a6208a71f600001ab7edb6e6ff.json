@@ -1,6 +1,0 @@
-{
-  "attempts": 0,
-  "body": "{\"boot_id\":\"0e76af89da89b6fe000015db39776e7c\",\"edge_id\":\"edge-serra-1\",\"event_id\":\"0c1e29a6208a71f600001ab7edb6e6ff\",\"event_type\":\"CommandExecuted\",\"payload\":{\"command\":{\"fertilizer_valves_open\":{\"nitrogen\":false,\"ph-down\":false,\"ph-up\":false,\"phosphorus\":false,\"potassium\":false},\"lighting_percent\":0.0,\"requested_irrigation_volume_liters\":0.0},\"delivered_fertilizer_milliliters\":{\"nitrogen\":0.0,\"ph-down\":0.0,\"ph-up\":0.0,\"phosphorus\":0.0,\"potassium\":0.0},\"delivered_water_liters\":0.0,\"output\":{\"fertilizer_flow_milliliters_per_hour\":{\"nitrogen\":0.0,\"ph-down\":0.0,\"ph-up\":0.0,\"phosphorus\":0.0,\"potassium\":0.0},\"fertilizer_valves_open\":{\"nitrogen\":false,\"ph-down\":false,\"ph-up\":false,\"phosphorus\":false,\"potassium\":false},\"fertilizer_volume_milliliters_last_step\":{\"nitrogen\":0.0,\"ph-down\":0.0,\"ph-up\":0.0,\"phosphorus\":0.0,\"potassium\":0.0},\"irrigation_volume_liters_last_step\":0.0,\"lighting_power_watts\":0.0,\"remaining_irrigation_volume_liters\":0.0,\"water_pump_flow_liters_per_hour\":0.0,\"water_pump_on\":false,\"water_pump_on_time_seconds_last_step\":0.0}},\"recorded_at\":\"2026-08-24T16:50:54Z\",\"timestamp_seconds\":292500.0}",
-  "message_id": "0c1e29a6208a71f600001ab7edb6e6ff",
-  "path": "/api/v1/zones/r4-s1/events"
-}
