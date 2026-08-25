@@ -4,7 +4,7 @@
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from ...core.config import default_edge_id
 from ...core.database import get_db
@@ -13,9 +13,11 @@ from ..recipes.repository import get_recipe
 from .models import Zone, ZoneCreate, ZoneUpdate
 from .repository import (
     ZoneConflict,
+    ZoneDeletionConflict,
     ZoneUpdateConflict,
     ZoneUpdateInvalid,
     create_zone,
+    delete_zone,
     get_zone,
     list_zones,
     list_zones_for_edge,
@@ -159,3 +161,27 @@ def modify_zone(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except ZoneUpdateConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.delete("/{zone_id}", status_code=204)
+def remove_zone(
+    zone_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """@brief Cancella un settore inattivo e il relativo storico derivato.
+
+    @param zone_id Identificativo del settore da rimuovere.
+    @param connection Connessione SQLite associata alla richiesta.
+    @return Nessun contenuto in caso di cancellazione avvenuta.
+    @throws HTTPException 404 Se il settore non esiste.
+    @throws HTTPException 409 Se il settore ha una coltivazione attiva o
+        contiene ancora piante da spostare altrove.
+    """
+    zone = get_zone(connection, zone_id)
+    if zone is None:
+        raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
+    try:
+        delete_zone(connection, zone)
+    except ZoneDeletionConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return Response(status_code=204)

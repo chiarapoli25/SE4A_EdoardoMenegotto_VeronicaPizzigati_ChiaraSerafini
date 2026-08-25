@@ -198,6 +198,56 @@ a:hover { color: var(--accent-dark); }
 }
 .btn-warn:hover { background: #a06a37; }
 
+.btn-danger {
+  border: none;
+  background: var(--danger);
+  color: #fff;
+}
+.btn-danger:hover { background: #a3493b; }
+
+.btn-danger-ghost {
+  border: 1px solid var(--danger);
+  background: #fff;
+  color: var(--danger);
+}
+.btn-danger-ghost:hover { background: var(--danger-soft); }
+
+.zone-danger-zone {
+  margin-top: 8px;
+  padding-top: 18px;
+  border-top: 1px dashed var(--line);
+}
+.zone-danger-zone .zone-section-title { color: var(--ink-faint); }
+.zone-danger-note {
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin: 6px 0 12px;
+  max-width: 62ch;
+}
+.zone-danger-confirm {
+  background: var(--danger-soft);
+  border: 1px solid rgba(193, 90, 74, .3);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}
+.zone-danger-confirm p {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  margin: 0 0 10px;
+}
+.zone-danger-confirm ul {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--ink-mute);
+}
+.zone-danger-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin: 10px 0 0;
+}
+.zone-danger-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
 .field-label { font-size: 12.5px; color: var(--ink-mute); }
 
 /* ---------- home ---------- */
@@ -248,7 +298,17 @@ a:hover { color: var(--accent-dark); }
   opacity: .75;
 }
 
-.dept-title { font-size: 16.5px; font-weight: 600; line-height: 1.3; letter-spacing: -.2px; }
+.dept-title {
+  font-size: 16.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -.2px;
+  /* Reserve space for two lines even when the name fits on one, so every
+     dept-card's title block is the same height and the sector rows below
+     start at the same vertical offset across columns, regardless of how
+     long the department name is. */
+  min-height: 2.6em;
+}
 
 .sector-list { margin: auto 0; display: flex; flex-direction: column; gap: 9px; }
 

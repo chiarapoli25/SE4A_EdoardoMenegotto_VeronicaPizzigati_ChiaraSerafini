@@ -477,3 +477,92 @@ def test_patch_missing_zone_returns_404(client: TestClient) -> None:
     )
 
     assert response.status_code == 404
+
+
+def test_delete_zone_removes_it_and_returns_404_after(client: TestClient) -> None:
+    assert client.post("/zones", json=zone_payload("del-1")).status_code == 201
+
+    deleted = client.delete("/zones/del-1")
+
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert client.get("/zones/del-1").status_code == 404
+
+
+def test_delete_zone_via_versioned_route_also_works(client: TestClient) -> None:
+    assert client.post("/zones", json=zone_payload("del-versioned")).status_code == 201
+
+    deleted = client.delete("/api/v1/zones/del-versioned")
+
+    assert deleted.status_code == 204
+    assert client.get("/zones/del-versioned").status_code == 404
+
+
+def test_delete_missing_zone_returns_404_not_500(client: TestClient) -> None:
+    response = client.delete("/zones/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_delete_zone_rejects_active_cultivation(
+    client: TestClient,
+    example_recipe_data: dict,
+) -> None:
+    client.post(
+        "/zones",
+        json=zone_payload("del-cult", plant_species=example_recipe_data["plant_type"]),
+    )
+    assert client.post("/recipes", json=example_recipe_data).status_code == 201
+
+    activated = client.post(
+        "/cultivations",
+        json={"zone_id": "del-cult", "recipe_id": example_recipe_data["id"]},
+    )
+    assert activated.status_code == 201
+    assert client.get("/zones/del-cult").json()["active_cultivation_id"] is not None
+
+    response = client.delete("/zones/del-cult")
+
+    assert response.status_code == 409
+    still_there = client.get("/zones/del-cult")
+    assert still_there.status_code == 200
+    assert still_there.json()["active_cultivation_id"] is not None
+
+
+def test_delete_zone_with_plants_succeeds_and_leaves_plant_records_dangling(
+    client: TestClient,
+) -> None:
+    # This codebase has no endpoint that reassigns a plant's home_zone_id or
+    # deletes a plant, so blocking deletion "until plants are moved
+    # elsewhere" would make any zone that ever hosted a plant permanently
+    # undeletable. The zone deletion is allowed to proceed; the Plant row is
+    # left completely untouched, its home_zone_id now pointing at a zone
+    # that no longer exists.
+    client.post("/zones", json=zone_payload("del-plants"))
+    assert client.post(
+        "/plants",
+        json={
+            "id": "plant-del-1",
+            "species": "Pomodoro",
+            "home_zone_id": "del-plants",
+        },
+    ).status_code == 201
+
+    response = client.delete("/zones/del-plants")
+
+    assert response.status_code == 204
+    assert client.get("/zones/del-plants").status_code == 404
+
+    plant = client.get("/plants/plant-del-1")
+    assert plant.status_code == 200
+    assert plant.json()["home_zone_id"] == "del-plants"
+    assert plant.json()["current_zone_id"] == "del-plants"
+
+    # The already-defensive un-quarantine path is exactly what already
+    # handles a plant whose home zone no longer exists.
+    release = client.patch(
+        "/plants/plant-del-1/quarantine",
+        json={"is_quarantined": False},
+    )
+    assert release.status_code == 409
+    assert "no longer exists" in release.json()["detail"]

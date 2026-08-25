@@ -257,6 +257,13 @@ const STATE = {
   recipeHintVisible: false,
   phasePending: false,
 
+  // "Rimuovi settore" (zone summary tab, bottom of the pop-up): null = plain
+  // button; true = inline confirmation panel open; the explicit second step
+  // before DELETE actually fires, same two-phase principle as addSectorForm.
+  deleteZoneConfirm: false,
+  deleteZoneStatus: null, // "sending" | null
+  deleteZoneError: null,
+
   // Single shared "where did I come from" marker, captured once at the
   // moment a pop-up (or a sub-view inside one) is opened. Back buttons
   // consult this instead of hard-coding a destination, so the same
@@ -312,6 +319,7 @@ async function apiRequest(method, path, { params, body } = {}) {
 const apiGet = (path, params) => apiRequest("GET", path, { params });
 const apiPost = (path, body) => apiRequest("POST", path, { body });
 const apiPatch = (path, body) => apiRequest("PATCH", path, { body });
+const apiDelete = (path) => apiRequest("DELETE", path, {});
 
 /* ------------------------------------------------------------------ */
 /* Small utilities                                                    */
@@ -1556,6 +1564,9 @@ async function openZoneModal(zoneId, entry) {
   STATE.phasePending = false;
   STATE.modalChartVariable = "soil_moisture";
   STATE.modalChartData = [];
+  STATE.deleteZoneConfirm = false;
+  STATE.deleteZoneStatus = null;
+  STATE.deleteZoneError = null;
 
   STATE.modalZone = STATE.zones.find((z) => z.id === zoneId) || null;
   document.getElementById("modal-overlay").classList.remove("hidden");
@@ -1591,6 +1602,9 @@ function closeModal() {
   STATE.modalKind = null;
   STATE.currentRecipe = null;
   STATE.recipeForm = null;
+  STATE.deleteZoneConfirm = false;
+  STATE.deleteZoneStatus = null;
+  STATE.deleteZoneError = null;
 }
 
 /**
@@ -1761,8 +1775,60 @@ function renderZoneSummary(zone) {
           <button type="button" class="btn btn-primary" data-action="open-advanced-tab">Modifica parametri →</button>
         </div>
       </section>
+      <section class="zone-section span2 zone-danger-zone">
+        ${renderDeleteZoneSection(zone)}
+      </section>
     </div>
   `;
+}
+
+function renderDeleteZoneSection(zone) {
+  const sending = STATE.deleteZoneStatus === "sending";
+  if (!STATE.deleteZoneConfirm) {
+    return `
+      <div class="zone-section-title">Rimuovi settore</div>
+      <div class="zone-danger-note">Elimina definitivamente il settore ${escapeHtml(zoneLabel(zone))} e il suo storico (telemetria, eventi, comandi, coltivazioni archiviate). Un settore con una coltivazione attiva non può essere rimosso.</div>
+      <button type="button" class="btn btn-danger-ghost" data-action="open-delete-zone-confirm">Rimuovi settore</button>
+    `;
+  }
+  return `
+    <div class="zone-section-title">Rimuovi settore</div>
+    <div class="zone-danger-confirm">
+      <p>Stai per eliminare definitivamente il settore <b>${escapeHtml(zoneLabel(zone))}</b> (${escapeHtml(zone.name)}). L'operazione non è reversibile e rimuove anche:</p>
+      <ul>
+        <li>lo storico di telemetria e degli attuatori</li>
+        <li>gli eventi e i comandi registrati per questo settore</li>
+        <li>le coltivazioni archiviate legate a questo settore</li>
+      </ul>
+      <p style="margin-bottom:0">Le eventuali piante ancora associate a questo settore non vengono cancellate.</p>
+      ${STATE.deleteZoneError ? `<div class="zone-danger-error">${escapeHtml(STATE.deleteZoneError)}</div>` : ""}
+      <div class="zone-danger-actions" style="margin-top:12px">
+        <button type="button" class="btn" data-action="cancel-delete-zone" ${sending ? "disabled" : ""}>Annulla</button>
+        <button type="button" class="btn btn-danger" data-action="confirm-delete-zone" ${sending ? "disabled" : ""}>${sending ? "Rimozione…" : "Conferma rimozione"}</button>
+      </div>
+    </div>
+  `;
+}
+
+async function deleteZoneNow() {
+  const zone = STATE.modalZone;
+  if (!zone || STATE.deleteZoneStatus === "sending") return;
+  STATE.deleteZoneStatus = "sending";
+  STATE.deleteZoneError = null;
+  renderModal();
+
+  try {
+    await apiDelete(`/zones/${encodeURIComponent(zone.id)}`);
+    STATE.zones = STATE.zones.filter((z) => z.id !== zone.id);
+    closeModal();
+    if (STATE.view === "home") renderHome();
+    else if (STATE.view === "control") renderControl();
+    showToast(`Settore ${zoneLabel(zone)} rimosso.`);
+  } catch (err) {
+    STATE.deleteZoneStatus = null;
+    STATE.deleteZoneError = err.message;
+    if (STATE.modalZoneId === zone.id) renderModal();
+  }
 }
 
 function renderZoneAdvanced(zone) {
@@ -2204,6 +2270,25 @@ function initEventDelegation() {
 
     const submitAddSectorBtn = e.target.closest('[data-action="submit-add-sector"]');
     if (submitAddSectorBtn && !submitAddSectorBtn.disabled) { submitAddSector(); return; }
+
+    const openDeleteZoneConfirm = e.target.closest('[data-action="open-delete-zone-confirm"]');
+    if (openDeleteZoneConfirm) {
+      STATE.deleteZoneConfirm = true;
+      STATE.deleteZoneError = null;
+      renderModal();
+      return;
+    }
+
+    const cancelDeleteZone = e.target.closest('[data-action="cancel-delete-zone"]');
+    if (cancelDeleteZone) {
+      STATE.deleteZoneConfirm = false;
+      STATE.deleteZoneError = null;
+      renderModal();
+      return;
+    }
+
+    const confirmDeleteZoneBtn = e.target.closest('[data-action="confirm-delete-zone"]');
+    if (confirmDeleteZoneBtn && !confirmDeleteZoneBtn.disabled) { deleteZoneNow(); return; }
 
     const recipeBack = e.target.closest('[data-action="recipe-back"]');
     if (recipeBack) { goBack(); return; }

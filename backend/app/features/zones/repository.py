@@ -31,6 +31,10 @@ class ZoneUpdateInvalid(Exception):
     """@brief Segnala una modifica che viola i vincoli della zona."""
 
 
+class ZoneDeletionConflict(Exception):
+    """@brief Segnala che la zona non puo' essere cancellata nello stato corrente."""
+
+
 def create_zone(connection: sqlite3.Connection, zone: ZoneCreate) -> Zone:
     """@brief Registra un settore libero della serra.
 
@@ -308,3 +312,54 @@ def update_zone(
     updated = get_zone(connection, candidate.id)
     assert updated is not None
     return updated
+
+
+def delete_zone(connection: sqlite3.Connection, stored_zone: Zone) -> None:
+    """@brief Cancella un settore e ripulisce lo storico derivato collegato.
+
+    @details Non tocca ne' `plants` ne' `plant_movements`: una pianta e' un
+    esemplare vivo la cui esistenza non dipende dal settore, e questa
+    versione del backend non offre alcun modo di riassegnare `home_zone_id`
+    o di cancellare una pianta, quindi bloccare la cancellazione finche' le
+    piante non vengono "spostate altrove" le renderebbe di fatto permanenti
+    su qualsiasi settore le abbia mai ospitate. Se restano piante con
+    `home_zone_id`/`current_zone_id` uguale a questo settore, quei record
+    restano intatti e puntano a un settore non piu' esistente: e' lo stesso
+    scenario gia' gestito esplicitamente dall'endpoint di fine quarantena
+    (`home zone {id} no longer exists`, 409), quindi non e' una condizione
+    nuova per il resto del backend.
+
+    @param connection Connessione SQLite sulla quale operare.
+    @param stored_zone Zona gia' recuperata dal chiamante (deve esistere).
+    @throws ZoneDeletionConflict Se la zona ha una coltivazione attiva o in
+        esecuzione.
+    """
+    if (
+        stored_zone.active_cultivation_id is not None
+        or stored_zone.lifecycle_state.value not in {"Idle", "Error"}
+    ):
+        raise ZoneDeletionConflict(
+            "the zone has an active cultivation; stop it before deleting the zone"
+        )
+
+    try:
+        connection.execute(
+            "DELETE FROM telemetry_samples WHERE zone_id = ?", (stored_zone.id,)
+        )
+        connection.execute(
+            "DELETE FROM actuator_snapshots WHERE zone_id = ?", (stored_zone.id,)
+        )
+        connection.execute(
+            "DELETE FROM edge_events WHERE zone_id = ?", (stored_zone.id,)
+        )
+        connection.execute(
+            "DELETE FROM runtime_commands WHERE zone_id = ?", (stored_zone.id,)
+        )
+        connection.execute(
+            "DELETE FROM cultivations WHERE zone_id = ?", (stored_zone.id,)
+        )
+        connection.execute("DELETE FROM zones WHERE id = ?", (stored_zone.id,))
+    except Exception:
+        connection.rollback()
+        raise
+    connection.commit()
