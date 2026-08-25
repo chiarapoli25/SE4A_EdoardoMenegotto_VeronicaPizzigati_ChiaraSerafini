@@ -460,12 +460,15 @@ void ZoneController::activate_cultivation(
         ZoneLifecycleState::STARTING,
         "cultivation activation requested");
     try {
+        // EdgeRuntime's RecipeControlSystem already confirms every
+        // controller from the recipe's selected_strategy as part of
+        // adopting it (see RecipeControlSystem::confirm_all_from_recipe) —
+        // no separate confirm step is needed here any more.
         auto candidate =
             std::make_unique<EdgeRuntime>(std::move(recipe));
         if (event_bus_) {
             candidate->attach_event_bus(event_bus_, zone_id_);
         }
-        candidate->confirm_all_configurations();
 
         runtime_ = std::move(candidate);
         command_processor_ =

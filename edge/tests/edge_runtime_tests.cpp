@@ -139,27 +139,23 @@ const smarthydro::EdgeEvent* transition_event(
     return nullptr;
 }
 
-TEST(EdgeRuntimeTest, BlocksRecipeUntilConfigurationsAreConfirmed) {
+TEST(EdgeRuntimeTest, RunsRecipeImmediatelyWithoutManualConfirmation) {
     smarthydro::EdgeRuntime runtime(
         load_demo_recipe(),
         {},
         {},
         deterministic_sensors());
 
+    // Adopting the recipe already confirmed every controller from its
+    // selected_strategy — no ConfirmConfiguration command needed before the
+    // first control cycle runs.
     const auto result = runtime.step(60.0);
 
     for (const auto& decision : result.decisions) {
-        EXPECT_EQ(
+        EXPECT_NE(
             decision.status,
             smarthydro::ControlDecisionStatus::BLOCKED);
-        EXPECT_NE(
-            decision.message.find("not confirmed"),
-            std::string::npos);
     }
-    EXPECT_DOUBLE_EQ(result.delivered_water_liters, 0.0);
-    EXPECT_DOUBLE_EQ(
-        result.environment_state.simulation_time_seconds,
-        60.0);
 }
 
 TEST(EdgeRuntimeTest, ExecutesConfirmedRecipeOnPhysicalSimulators) {

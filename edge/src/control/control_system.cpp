@@ -234,7 +234,7 @@ const char* to_string(ConfirmationState state) noexcept {
 RecipeControlSystem::RecipeControlSystem(Recipe recipe)
     : recipe_(std::move(recipe)) {
     validate_recipe(recipe_);
-    invalidate_all_confirmations();
+    confirm_all_from_recipe();
 }
 
 const Recipe& RecipeControlSystem::recipe() const noexcept {
@@ -322,7 +322,7 @@ void RecipeControlSystem::replace_recipe(Recipe recipe) {
             "replacement recipe version must be greater than current version");
     }
     recipe_ = std::move(recipe);
-    invalidate_all_confirmations();
+    confirm_all_from_recipe();
 }
 
 bool RecipeControlSystem::all_configurations_confirmed() const noexcept {
@@ -346,6 +346,27 @@ void RecipeControlSystem::invalidate_all_confirmations() noexcept {
         controller.reset();
     }
     controller_phase_index_ = kControlledVariableCount;
+}
+
+void RecipeControlSystem::confirm_all_from_recipe() {
+    // Same cache reset invalidate_all_confirmations() performs, so
+    // rebuild_controllers() compiles fresh controller instances from the
+    // (re)confirmed configuration on the next execute().
+    for (auto& controller : controllers_) {
+        controller.reset();
+    }
+    controller_phase_index_ = kControlledVariableCount;
+
+    for (std::size_t index = 0; index < kControlledVariableCount; ++index) {
+        const auto variable = static_cast<ControlledVariable>(index);
+        const auto result = confirm_configuration(variable);
+        if (!result.success) {
+            throw std::runtime_error(
+                "cannot confirm " + std::string(to_string(variable)) +
+                " when adopting recipe " + recipe_.id + ": " +
+                result.error);
+        }
+    }
 }
 
 void RecipeControlSystem::rebuild_controllers(std::size_t phase) {

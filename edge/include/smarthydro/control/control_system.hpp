@@ -308,6 +308,22 @@ public:
 
 private:
     void invalidate_all_confirmations() noexcept;
+    /**
+     * @brief Conferma tutte le configurazioni copiando la Strategy scelta
+     * dalla ricetta, senza passare da PENDING_CONFIRMATION.
+     *
+     * Usata al momento dell'adozione di una ricetta (costruzione, o
+     * replace_recipe()): la Strategy di ciascuna variabile e gia stata
+     * decisa quando la ricetta e stata salvata, quindi la conferma si
+     * sposta a monte invece di richiedere una ConfirmConfiguration separata
+     * per ogni zona che la adotta. select_strategy() (l'override manuale
+     * per una singola zona) non la usa: continua a invalidare tramite
+     * invalidate_all_confirmations() e a richiedere una conferma esplicita.
+     *
+     * @throws std::runtime_error Se una configurazione della ricetta non e
+     *     confermabile (Strategy/parametri incompatibili).
+     */
+    void confirm_all_from_recipe();
     void rebuild_controllers(std::size_t phase_index);
     std::size_t phase_index(double elapsed_recipe_hours) const;
 

@@ -76,6 +76,105 @@ const SUBSTRATE_LABELS = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Recipe form (create/edit) constants                                */
+/*                                                                    */
+/* Mirrors the fixed variable <-> input_source/actuator/default_strategy */
+/* associations enforced server-side in                               */
+/* backend/app/features/recipes/models.py                             */
+/* (_REQUIRED_INPUT_SOURCE / _REQUIRED_ACTUATOR /                     */
+/* _required_default_strategy) and validated again, more strictly, by */
+/* smarthydro::RecipeControlSystem::confirm_configuration() on the    */
+/* Edge — a recipe whose N/P/K selected_strategy isn't Predictive     */
+/* fails that confirmation and, since recipe adoption now confirms    */
+/* synchronously (see control_system.cpp's confirm_all_from_recipe),  */
+/* would reject the whole ActivateCultivation/LoadRecipe command.     */
+/* Locking the form's Strategy choice for N/P/K prevents ever          */
+/* constructing a payload that could trigger that at adoption time.   */
+/* ------------------------------------------------------------------ */
+
+const NUTRIENT_VARIABLES = ["nitrogen", "phosphorus", "potassium"];
+const REQUIRED_INPUT_SOURCE = {
+  soil_moisture: "soil_moisture_sensor",
+  light: "light_sensor",
+  ph: "ph_sensor",
+  nitrogen: "nitrogen_model",
+  phosphorus: "phosphorus_model",
+  potassium: "potassium_model",
+};
+const REQUIRED_ACTUATOR = {
+  soil_moisture: "water_pump",
+  light: "lighting",
+  ph: "ph_corrector_valves",
+  nitrogen: "nitrogen_valve",
+  phosphorus: "phosphorus_valve",
+  potassium: "potassium_valve",
+};
+const REQUIRED_DEFAULT_STRATEGY = {
+  soil_moisture: "Threshold",
+  light: "Threshold",
+  ph: "PID",
+  nitrogen: "Predictive",
+  phosphorus: "Predictive",
+  potassium: "Predictive",
+};
+const VARIABLE_UNIT = {
+  soil_moisture: "% soil moisture",
+  light: "umol/(m2 s)",
+  ph: "pH",
+  nitrogen: "mg/L",
+  phosphorus: "mg/L",
+  potassium: "mg/L",
+};
+// The two OutputSafetyLimits fields the recipe form does not expose
+// (the user's spec lists exactly 5 editable safety limits); these get a
+// sensible fixed default instead, matching config/example_recipe.json.
+const HIDDEN_OUTPUT_LIMIT_DEFAULTS = {
+  water_pump_flow_liters_per_hour: 2.0,
+  ph_settling_time_seconds: 1800.0,
+};
+const OUTPUT_LIMIT_FIELDS = [
+  { key: "maximum_water_volume_liters", label: "Volume max", unit: "L" },
+  { key: "maximum_pump_duration_seconds", label: "Durata max pompa", unit: "s" },
+  { key: "maximum_dose_per_command_milliliters", label: "Dose max/comando", unit: "mL" },
+  { key: "maximum_daily_dose_milliliters", label: "Dose max giornaliera", unit: "mL" },
+  { key: "minimum_seconds_between_doses", label: "Intervallo min fra dosi", unit: "s" },
+];
+const CARE_FIELDS = [
+  { key: "light", label: "Luce" },
+  { key: "watering", label: "Irrigazione" },
+  { key: "temperature", label: "Temperatura" },
+  { key: "fertilization", label: "Fertilizzazione" },
+];
+
+function defaultOutputLimits(variableKey) {
+  if (variableKey === "ph") {
+    return { maximum_water_volume_liters: 1, maximum_pump_duration_seconds: 1800, maximum_dose_per_command_milliliters: 0.5, maximum_daily_dose_milliliters: 5, minimum_seconds_between_doses: 900 };
+  }
+  if (NUTRIENT_VARIABLES.includes(variableKey)) {
+    return { maximum_water_volume_liters: 1, maximum_pump_duration_seconds: 1800, maximum_dose_per_command_milliliters: 4, maximum_daily_dose_milliliters: 12, minimum_seconds_between_doses: 3600 };
+  }
+  return { maximum_water_volume_liters: 1, maximum_pump_duration_seconds: 1800, maximum_dose_per_command_milliliters: 5, maximum_daily_dose_milliliters: 20, minimum_seconds_between_doses: 900 };
+}
+
+const DEFAULT_PHASE_TARGETS = {
+  soil_moisture: { setpoint: 60, allowed_range: { minimum: 50, maximum: 70 }, safety_range: { minimum: 25, maximum: 90 }, suggested_phase_dose_milliliters: 0 },
+  light: { setpoint: 450, allowed_range: { minimum: 400, maximum: 500 }, safety_range: { minimum: 0, maximum: 1200 }, suggested_phase_dose_milliliters: 0 },
+  ph: { setpoint: 6.2, allowed_range: { minimum: 6.0, maximum: 6.4 }, safety_range: { minimum: 4.5, maximum: 8.0 }, suggested_phase_dose_milliliters: 6 },
+  nitrogen: { setpoint: 150, allowed_range: { minimum: 130, maximum: 170 }, safety_range: { minimum: 50, maximum: 300 }, suggested_phase_dose_milliliters: 30 },
+  phosphorus: { setpoint: 50, allowed_range: { minimum: 40, maximum: 60 }, safety_range: { minimum: 10, maximum: 120 }, suggested_phase_dose_milliliters: 12 },
+  potassium: { setpoint: 200, allowed_range: { minimum: 170, maximum: 230 }, safety_range: { minimum: 50, maximum: 400 }, suggested_phase_dose_milliliters: 35 },
+};
+
+function defaultPhase(name) {
+  return {
+    name,
+    duration_hours: 336,
+    photoperiod: { start_hour: 6, duration_hours: 18 },
+    targets: Object.fromEntries(VARIABLES.map((v) => [v.key, { ...DEFAULT_PHASE_TARGETS[v.key], allowed_range: { ...DEFAULT_PHASE_TARGETS[v.key].allowed_range }, safety_range: { ...DEFAULT_PHASE_TARGETS[v.key].safety_range } }])),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Application state                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -89,6 +188,11 @@ const STATE = {
   recipeQuery: "",
   currentRecipe: null,
   recipeDetailPhaseIdx: 0,
+
+  // Draft object for the create/edit recipe form (see openRecipeForm()),
+  // or null when the form is not open. Routed through the same pop-up
+  // overlay as the zone/recipe modals via STATE.modalKind = "recipe-form".
+  recipeForm: null,
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
@@ -202,6 +306,18 @@ function fmtDateTime(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+/** Dotted-path get/set into a plain nested object/array draft — used by the
+ * recipe form's generic input binding (data-path="phases.0.targets.ph.setpoint"). */
+function getPath(obj, path) {
+  return path.split(".").reduce((o, k) => (o === null || o === undefined ? undefined : o[k]), obj);
+}
+function setPath(obj, path, value) {
+  const keys = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) cur = cur[keys[i]];
+  cur[keys[keys.length - 1]] = value;
 }
 
 function uniqueSorted(values) {
@@ -676,8 +792,14 @@ function filteredRecipes() {
 }
 
 function recipeCardsHtml(list) {
-  if (!list.length) return '<div class="empty-note">Nessuna ricetta trovata.</div>';
-  return list.map((r) => `
+  const addCard = `
+    <button type="button" class="recipe-card-add" data-action="open-recipe-form-create">
+      <span class="recipe-card-add-plus">+</span>
+      <span>Nuova ricetta</span>
+    </button>
+  `;
+  if (!list.length) return addCard + '<div class="empty-note">Nessuna ricetta trovata.</div>';
+  return addCard + list.map((r) => `
     <div class="recipe-card" data-action="open-recipe" data-recipe-id="${escapeAttr(r.id)}">
       <div class="recipe-card-head">
         <span class="recipe-code">${escapeHtml(r.id)}</span>
@@ -731,6 +853,7 @@ function openRecipeModal(recipeId, returnTo) {
 
   STATE.modalKind = "recipe";
   STATE.recipeDetailPhaseIdx = 0;
+  STATE.recipeForm = null;
   STATE.returnTo = returnTo || { action: "closeModal" };
   document.getElementById("modal-overlay").classList.remove("hidden");
 
@@ -797,7 +920,7 @@ function renderRecipeModal() {
       <div style="min-width:0">
         <div class="zone-header-code">
           <span class="code">${escapeHtml(r.id)}</span>
-          <span class="recipe-badge">v${r.version} · sola lettura</span>
+          <span class="recipe-badge">v${r.version}</span>
         </div>
         <h2>${escapeHtml(r.plant_type)}</h2>
         <div class="zone-header-meta">
@@ -815,7 +938,8 @@ function renderRecipeModal() {
         <button type="button" class="btn" data-action="recipe-back">← Indietro</button>
         <div style="font-size:15.5px;font-weight:600">Variabili ricetta</div>
         <div class="spacer"></div>
-        <span class="hint">Setpoint / Min / Max / Strategia sono di sola lettura</span>
+        <span class="hint">Setpoint / Min / Max / Strategia sono di sola lettura in questa vista</span>
+        <button type="button" class="btn btn-primary" data-action="open-recipe-form-edit">Modifica ricetta →</button>
       </div>
       <div class="recipe-detail-card">
         ${careHtml}
@@ -830,6 +954,467 @@ function renderRecipeModal() {
           ${rows}
         </div>
         <div class="empty-note">Durata fase: ${fmtNum(phase.duration_hours, 1)} h · fotoperiodo dalle ${fmtNum(phase.photoperiod.start_hour, 1)} per ${fmtNum(phase.photoperiod.duration_hours, 1)} h (fino alle ${fmtNum(photoEnd, 1)}) · setpoint, banda e strategia sono definiti a livello di ricetta e non sono modificabili da questa dashboard.</div>
+      </div>
+    </div>
+  `;
+}
+
+/* ------------------------------------------------------------------ */
+/* Recipe create/edit form                                            */
+/*                                                                    */
+/* One shared form builds the full POST /recipes payload for both a   */
+/* brand-new recipe and a new version of an existing one — same       */
+/* layout, pre-filled with the existing recipe's values when editing. */
+/* The backend always creates a new version (never overwrites in      */
+/* place): version is computed here as existing.version + 1 (or 1 for */
+/* a new recipe) and is never asked from the user. Client-side         */
+/* validation mirrors backend/app/features/recipes/models.py's        */
+/* PhaseVariableTarget._check_range_chain exactly, so a submission     */
+/* that passes here never comes back as a 422.                        */
+/* ------------------------------------------------------------------ */
+
+function buildBlankDraft() {
+  return {
+    mode: "create",
+    baseVersion: 0,
+    id: "",
+    plant_type: "",
+    substrate: "aerated-universal",
+    department_number: "",
+    careEnabled: false,
+    care_profile: { light: "", watering: "", temperature: "", fertilization: "" },
+    phases: [defaultPhase("Fase 1")],
+    activePhaseIdx: 0,
+    controllers: Object.fromEntries(VARIABLES.map((v) => [v.key, {
+      selected_strategy: REQUIRED_DEFAULT_STRATEGY[v.key],
+      output_limits: defaultOutputLimits(v.key),
+    }])),
+    status: null,
+    errors: [],
+  };
+}
+
+function buildDraftFromRecipe(recipe) {
+  return {
+    mode: "edit",
+    baseVersion: recipe.version,
+    id: recipe.id,
+    plant_type: recipe.plant_type,
+    substrate: recipe.substrate,
+    department_number: recipe.department_number === null || recipe.department_number === undefined ? "" : String(recipe.department_number),
+    careEnabled: !!recipe.care_profile,
+    care_profile: recipe.care_profile ? { ...recipe.care_profile } : { light: "", watering: "", temperature: "", fertilization: "" },
+    phases: recipe.phases.map((p) => ({
+      name: p.name,
+      duration_hours: p.duration_hours,
+      photoperiod: { start_hour: p.photoperiod.start_hour, duration_hours: p.photoperiod.duration_hours },
+      targets: Object.fromEntries(p.targets.map((t) => [t.variable, {
+        setpoint: t.setpoint,
+        allowed_range: { minimum: t.allowed_range.minimum, maximum: t.allowed_range.maximum },
+        safety_range: { minimum: t.safety_range.minimum, maximum: t.safety_range.maximum },
+        suggested_phase_dose_milliliters: t.suggested_phase_dose_milliliters,
+      }])),
+    })),
+    activePhaseIdx: 0,
+    controllers: Object.fromEntries(recipe.controllers.map((c) => [c.variable, {
+      selected_strategy: c.selected_strategy,
+      output_limits: { ...c.output_limits },
+    }])),
+    status: null,
+    errors: [],
+  };
+}
+
+/**
+ * Opens the create/edit form in the shared pop-up overlay. `recipe` is
+ * required (and used) only for mode "edit". Reuses #modal-overlay so it
+ * can replace an already-open recipe pop-up's content in place.
+ */
+function openRecipeForm(mode, recipe) {
+  clearPoll("modal");
+  clearPoll("modal-chart");
+  STATE.adhocIntervals.forEach(clearInterval);
+  STATE.adhocIntervals = [];
+  STATE.modalZoneId = null;
+  STATE.modalZone = null;
+  STATE.modalKind = "recipe-form";
+  STATE.recipeForm = mode === "edit" && recipe ? buildDraftFromRecipe(recipe) : buildBlankDraft();
+  // Preserve wherever the recipe pop-up's own "Indietro" would have gone
+  // (e.g. back into a zone's "Controllo avanzato"), so Annulla/save-success
+  // can restore the same chain instead of always falling back to a plain
+  // close.
+  STATE.recipeForm.formReturnTo = STATE.returnTo || { action: "closeModal" };
+  document.getElementById("modal-overlay").classList.remove("hidden");
+  renderModal();
+}
+
+function closeRecipeForm() {
+  STATE.recipeForm = null;
+  STATE.modalKind = null;
+  document.getElementById("modal-overlay").classList.add("hidden");
+}
+
+function addRecipeFormPhase() {
+  const draft = STATE.recipeForm;
+  if (!draft) return;
+  draft.phases.push(defaultPhase(`Fase ${draft.phases.length + 1}`));
+  draft.activePhaseIdx = draft.phases.length - 1;
+  renderModal();
+}
+
+function removeRecipeFormPhase(idx) {
+  const draft = STATE.recipeForm;
+  if (!draft || draft.phases.length <= 1) return;
+  draft.phases.splice(idx, 1);
+  draft.activePhaseIdx = Math.min(draft.activePhaseIdx, draft.phases.length - 1);
+  renderModal();
+}
+
+/**
+ * Client-side mirror of backend/app/features/recipes/models.py's
+ * PhaseVariableTarget._check_range_chain (and the N/P/K -> Predictive
+ * lock enforced at the Edge by RecipeControlSystem::confirm_configuration,
+ * see the NUTRIENT_VARIABLES comment above): every rule checked here is
+ * checked again server-side, so this exists purely to turn a would-be 422
+ * (or, for the N/P/K case, a would-be rejected recipe adoption at the
+ * Edge) into a clear Italian message before the request is ever sent.
+ */
+function validateRecipeForm(draft) {
+  const errors = [];
+  if (!draft.id.trim()) errors.push("L'id della ricetta è obbligatorio.");
+  else if (draft.mode === "create" && !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(draft.id.trim())) {
+    errors.push("L'id può contenere solo lettere, numeri, trattini e underscore, e non può iniziare con uno di questi ultimi due.");
+  }
+  if (!draft.plant_type.trim()) errors.push("La specie/tipo di pianta è obbligatoria.");
+
+  if (draft.careEnabled) {
+    CARE_FIELDS.forEach((f) => {
+      if (!draft.care_profile[f.key].trim()) errors.push(`Profilo agronomico: il campo "${f.label}" è obbligatorio se il profilo è abilitato.`);
+    });
+  }
+
+  if (!draft.phases.length) errors.push("Deve essere presente almeno una fase.");
+  draft.phases.forEach((phase, pIdx) => {
+    const phaseLabel = `Fase ${pIdx + 1} (${phase.name.trim() || "senza nome"})`;
+    if (!phase.name.trim()) errors.push(`${phaseLabel}: il nome è obbligatorio.`);
+    const duration = Number(phase.duration_hours);
+    if (!(duration > 0)) errors.push(`${phaseLabel}: la durata deve essere un numero maggiore di zero.`);
+    const startHour = Number(phase.photoperiod.start_hour);
+    if (!(startHour >= 0 && startHour < 24)) errors.push(`${phaseLabel}: l'ora di inizio del fotoperiodo deve essere compresa tra 0 e 24 (esclusa).`);
+    const photoDuration = Number(phase.photoperiod.duration_hours);
+    if (!(photoDuration > 0 && photoDuration <= 24)) errors.push(`${phaseLabel}: la durata del fotoperiodo deve essere maggiore di zero e non superiore a 24 ore.`);
+
+    VARIABLES.forEach((v) => {
+      const t = phase.targets[v.key];
+      const setpoint = Number(t.setpoint);
+      const allowedMin = Number(t.allowed_range.minimum);
+      const allowedMax = Number(t.allowed_range.maximum);
+      const safetyMin = Number(t.safety_range.minimum);
+      const safetyMax = Number(t.safety_range.maximum);
+      const dose = Number(t.suggested_phase_dose_milliliters || 0);
+      const label = `${phaseLabel} · ${v.label}`;
+      if (![setpoint, allowedMin, allowedMax, safetyMin, safetyMax].every(isFinite)) {
+        errors.push(`${label}: setpoint, banda consentita e banda di sicurezza sono tutti obbligatori.`);
+        return;
+      }
+      if (!isFinite(dose) || dose < 0) errors.push(`${label}: la dose consigliata per la fase non può essere negativa.`);
+      if (!(safetyMin <= allowedMin)) errors.push(`${label}: il minimo della banda di sicurezza deve essere ≤ del minimo della banda consentita.`);
+      if (!(allowedMin < allowedMax)) errors.push(`${label}: il minimo della banda consentita deve essere minore del massimo.`);
+      if (!(allowedMin <= setpoint && setpoint <= allowedMax)) errors.push(`${label}: il setpoint deve essere compreso nella banda consentita.`);
+      if (!(allowedMax <= safetyMax)) errors.push(`${label}: il massimo della banda consentita deve essere ≤ del massimo della banda di sicurezza.`);
+      if (!(safetyMin < safetyMax)) errors.push(`${label}: il minimo della banda di sicurezza deve essere minore del massimo.`);
+    });
+  });
+
+  VARIABLES.forEach((v) => {
+    const c = draft.controllers[v.key];
+    if (NUTRIENT_VARIABLES.includes(v.key) && c.selected_strategy !== "Predictive") {
+      errors.push(`${v.label}: la strategia deve essere Predictive per le variabili nutritive (azoto, fosforo, potassio).`);
+    }
+    OUTPUT_LIMIT_FIELDS.forEach((f) => {
+      const val = Number(c.output_limits[f.key]);
+      if (!isFinite(val) || val < 0) errors.push(`${v.label}: il limite di sicurezza "${f.label}" deve essere un numero non negativo.`);
+    });
+  });
+
+  return errors;
+}
+
+/** Builds the exact POST /recipes payload from a validated draft. Version
+ * is always computed here (existing.version + 1, or 1 for a new recipe) —
+ * never taken from user input, since the backend rejects a non-increasing
+ * version outright (see repository.py's RecipeVersionConflict / HTTP 409). */
+function buildRecipePayload(draft) {
+  const version = draft.mode === "edit" ? draft.baseVersion + 1 : 1;
+
+  const phases = draft.phases.map((phase) => ({
+    name: phase.name.trim(),
+    duration_hours: Number(phase.duration_hours),
+    photoperiod: {
+      start_hour: Number(phase.photoperiod.start_hour),
+      duration_hours: Number(phase.photoperiod.duration_hours),
+    },
+    targets: VARIABLES.map((v) => {
+      const t = phase.targets[v.key];
+      return {
+        variable: v.key,
+        setpoint: Number(t.setpoint),
+        allowed_range: { minimum: Number(t.allowed_range.minimum), maximum: Number(t.allowed_range.maximum) },
+        safety_range: { minimum: Number(t.safety_range.minimum), maximum: Number(t.safety_range.maximum) },
+        suggested_phase_dose_milliliters: Number(t.suggested_phase_dose_milliliters || 0),
+      };
+    }),
+  }));
+
+  const controllers = VARIABLES.map((v) => {
+    const c = draft.controllers[v.key];
+    // "selected_strategy vuoto -> default_strategy" fallback from the task
+    // spec: structurally the form always has a value here (every draft is
+    // initialized with one, and the select for the 3 non-NPK variables
+    // always has a selection), but this keeps the one place a blank UI
+    // value could theoretically reach this function defensive rather than
+    // silently sending an invalid payload.
+    const selected = c.selected_strategy || REQUIRED_DEFAULT_STRATEGY[v.key];
+    const firstTarget = phases[0].targets.find((t) => t.variable === v.key);
+    return {
+      variable: v.key,
+      input_source: REQUIRED_INPUT_SOURCE[v.key],
+      actuator: REQUIRED_ACTUATOR[v.key],
+      default_strategy: REQUIRED_DEFAULT_STRATEGY[v.key],
+      selected_strategy: selected,
+      parameters: buildStrategyParameters(selected, firstTarget),
+      unit: VARIABLE_UNIT[v.key],
+      output_limits: {
+        maximum_water_volume_liters: Number(c.output_limits.maximum_water_volume_liters),
+        maximum_pump_duration_seconds: Number(c.output_limits.maximum_pump_duration_seconds),
+        water_pump_flow_liters_per_hour: HIDDEN_OUTPUT_LIMIT_DEFAULTS.water_pump_flow_liters_per_hour,
+        maximum_dose_per_command_milliliters: Number(c.output_limits.maximum_dose_per_command_milliliters),
+        maximum_daily_dose_milliliters: Number(c.output_limits.maximum_daily_dose_milliliters),
+        minimum_seconds_between_doses: Number(c.output_limits.minimum_seconds_between_doses),
+        ph_settling_time_seconds: HIDDEN_OUTPUT_LIMIT_DEFAULTS.ph_settling_time_seconds,
+      },
+    };
+  });
+
+  return {
+    id: draft.id.trim(),
+    plant_type: draft.plant_type.trim(),
+    substrate: draft.substrate,
+    version,
+    department_number: draft.department_number === "" ? null : Number(draft.department_number),
+    care_profile: draft.careEnabled ? {
+      light: draft.care_profile.light.trim(),
+      watering: draft.care_profile.watering.trim(),
+      temperature: draft.care_profile.temperature.trim(),
+      fertilization: draft.care_profile.fertilization.trim(),
+    } : null,
+    phases,
+    controllers,
+  };
+}
+
+async function submitRecipeForm() {
+  const draft = STATE.recipeForm;
+  if (!draft || draft.status === "sending") return;
+
+  const errors = validateRecipeForm(draft);
+  if (errors.length) {
+    draft.errors = errors;
+    renderModal();
+    return;
+  }
+
+  draft.errors = [];
+  draft.status = "sending";
+  renderModal();
+
+  try {
+    const payload = buildRecipePayload(draft);
+    const saved = await apiPost("/recipes", payload);
+    STATE.recipesById[saved.id] = saved;
+    const idx = STATE.recipes.findIndex((r) => r.id === saved.id);
+    if (idx >= 0) STATE.recipes[idx] = saved; else STATE.recipes.push(saved);
+    if (STATE.view === "recipes") updateRecipeGridOnly();
+    showToast(`Ricetta "${saved.id}" salvata come v${saved.version}.`);
+    openRecipeModal(saved.id, draft.formReturnTo);
+  } catch (err) {
+    draft.status = null;
+    draft.errors = [err.message || "Salvataggio non riuscito."];
+    renderModal();
+  }
+}
+
+function renderRecipeFormModal() {
+  const draft = STATE.recipeForm;
+  const wrap = document.getElementById("modal-content");
+  if (!draft) { wrap.innerHTML = ""; return; }
+
+  const sending = draft.status === "sending";
+  const idx = Math.min(draft.activePhaseIdx, draft.phases.length - 1);
+  const phase = draft.phases[idx];
+
+  const saveLabel = sending
+    ? "Salvataggio…"
+    : draft.mode === "edit"
+      ? `Salva come nuova versione (v${draft.baseVersion + 1})`
+      : "Crea ricetta (v1)";
+
+  const phaseTabsHtml = draft.phases.map((p, i) => `
+    <span class="phase-tab-form ${i === idx ? "active" : ""}">
+      <button type="button" class="phase-tab-form-select" data-action="recipe-form-select-phase-tab" data-idx="${i}">${escapeHtml(p.name.trim() || `Fase ${i + 1}`)}</button>
+      ${draft.phases.length > 1 ? `<button type="button" class="phase-tab-form-remove" data-action="recipe-form-remove-phase" data-idx="${i}" title="Rimuovi fase">×</button>` : ""}
+    </span>
+  `).join("");
+
+  const targetRows = VARIABLES.map((v) => {
+    const t = phase.targets[v.key];
+    const base = `phases.${idx}.targets.${v.key}`;
+    return `
+      <div class="data-table-row cols-recipe-form">
+        <div><div class="var-name">${v.label}</div><div class="var-unit">${v.unit}</div></div>
+        <div><input type="number" step="any" class="form-num" data-action="recipe-form-input" data-path="${base}.setpoint" value="${escapeAttr(t.setpoint)}"></div>
+        <div><input type="number" step="any" class="form-num" data-action="recipe-form-input" data-path="${base}.allowed_range.minimum" value="${escapeAttr(t.allowed_range.minimum)}"></div>
+        <div><input type="number" step="any" class="form-num" data-action="recipe-form-input" data-path="${base}.allowed_range.maximum" value="${escapeAttr(t.allowed_range.maximum)}"></div>
+        <div><input type="number" step="any" class="form-num" data-action="recipe-form-input" data-path="${base}.safety_range.minimum" value="${escapeAttr(t.safety_range.minimum)}"></div>
+        <div><input type="number" step="any" class="form-num" data-action="recipe-form-input" data-path="${base}.safety_range.maximum" value="${escapeAttr(t.safety_range.maximum)}"></div>
+        <div><input type="number" step="any" class="form-num" data-action="recipe-form-input" data-path="${base}.suggested_phase_dose_milliliters" value="${escapeAttr(t.suggested_phase_dose_milliliters)}"></div>
+      </div>
+    `;
+  }).join("");
+
+  const controllerRows = VARIABLES.map((v) => {
+    const c = draft.controllers[v.key];
+    const locked = NUTRIENT_VARIABLES.includes(v.key);
+    const strategyCell = locked
+      ? `<span class="tag-phase" title="Bloccata su Predictive per le variabili nutritive">Predictive (obbligatoria)</span>`
+      : `<select class="form-select" data-action="recipe-form-select" data-path="controllers.${v.key}.selected_strategy">
+          ${STRATEGIES.map((s) => `<option value="${s}" ${c.selected_strategy === s ? "selected" : ""}>${s}</option>`).join("")}
+        </select>`;
+    const limitCells = OUTPUT_LIMIT_FIELDS.map((f) => `
+      <div>
+        <input type="number" step="any" min="0" class="form-num" data-action="recipe-form-input" data-path="controllers.${v.key}.output_limits.${f.key}" value="${escapeAttr(c.output_limits[f.key])}" title="${f.label} (${f.unit})">
+      </div>
+    `).join("");
+    return `
+      <div class="data-table-row cols-controller-form">
+        <div class="var-name">${v.label}</div>
+        <div>${strategyCell}</div>
+        ${limitCells}
+      </div>
+    `;
+  }).join("");
+
+  const careBlock = `
+    <label class="recipe-form-checkbox">
+      <input type="checkbox" data-action="recipe-form-select" data-path="careEnabled" ${draft.careEnabled ? "checked" : ""}>
+      <span>Includi profilo agronomico (facoltativo)</span>
+    </label>
+    ${draft.careEnabled ? `
+      <div class="recipe-form-grid">
+        ${CARE_FIELDS.map((f) => `
+          <div class="form-field">
+            <label class="field-label">${f.label}</label>
+            <input type="text" class="form-text" data-action="recipe-form-input" data-path="care_profile.${f.key}" value="${escapeAttr(draft.care_profile[f.key])}" placeholder="${f.label}">
+          </div>
+        `).join("")}
+      </div>
+    ` : ""}
+  `;
+
+  const errorsBlock = draft.errors.length ? `
+    <div class="recipe-form-errors">
+      <div class="recipe-form-errors-title">Correggi questi punti prima di salvare (${draft.errors.length}):</div>
+      <ul>${draft.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>
+    </div>
+  ` : "";
+
+  wrap.innerHTML = `
+    <div class="zone-header" style="--zone-tint:#eef2e4">
+      <div style="min-width:0">
+        <div class="zone-header-code">
+          <span class="code">${draft.mode === "edit" ? "MODIFICA RICETTA" : "NUOVA RICETTA"}</span>
+          ${draft.mode === "edit" ? `<span class="recipe-badge">v${draft.baseVersion} → v${draft.baseVersion + 1}</span>` : `<span class="recipe-badge">v1</span>`}
+        </div>
+        <h2>${escapeHtml(draft.plant_type.trim() || draft.id.trim() || "Nuova ricetta")}</h2>
+        <div class="zone-header-meta">
+          <span>${draft.mode === "edit" ? "il salvataggio crea sempre una nuova versione: la ricetta non viene sovrascritta in-place" : "compila i campi e crea la prima versione"}</span>
+        </div>
+      </div>
+      <button type="button" class="zone-close" data-action="close-recipe-form">✕</button>
+    </div>
+    <div style="padding:20px 28px 28px">
+
+      <div class="recipe-form-section">
+        <div class="zone-section-title">Dati generali</div>
+        <div class="recipe-form-grid">
+          <div class="form-field">
+            <label class="field-label">Id ricetta${draft.mode === "edit" ? " (non modificabile)" : ""}</label>
+            <input type="text" class="form-text" data-action="recipe-form-input" data-path="id" value="${escapeAttr(draft.id)}" placeholder="es. tomato_demo_v1" ${draft.mode === "edit" ? "disabled" : ""}>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Specie / tipo di pianta</label>
+            <input type="text" class="form-text" data-action="recipe-form-input" data-path="plant_type" value="${escapeAttr(draft.plant_type)}" placeholder="es. Tomato">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Substrato</label>
+            <select class="form-select" data-action="recipe-form-select" data-path="substrate">
+              ${Object.entries(SUBSTRATE_LABELS).map(([val, label]) => `<option value="${val}" ${draft.substrate === val ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Reparto</label>
+            <select class="form-select" data-action="recipe-form-select" data-path="department_number">
+              <option value="" ${draft.department_number === "" ? "selected" : ""}>Nessuno (non catalogato)</option>
+              ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${draft.department_number === String(n) ? "selected" : ""}>Reparto ${n}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        ${careBlock}
+      </div>
+
+      <div class="recipe-form-section">
+        <div class="zone-section-title">Fasi di coltivazione</div>
+        <div class="phase-tabs-form">
+          ${phaseTabsHtml}
+          <button type="button" class="btn" data-action="recipe-form-add-phase">+ Nuova fase</button>
+        </div>
+        <div class="recipe-form-grid" style="margin-top:14px">
+          <div class="form-field">
+            <label class="field-label">Nome fase</label>
+            <input type="text" class="form-text" data-action="recipe-form-input" data-path="phases.${idx}.name" value="${escapeAttr(phase.name)}" placeholder="es. VegetativeGrowth">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Durata fase (ore)</label>
+            <input type="number" step="any" min="0" class="form-num" data-action="recipe-form-input" data-path="phases.${idx}.duration_hours" value="${escapeAttr(phase.duration_hours)}">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Fotoperiodo — ora inizio</label>
+            <input type="number" step="any" min="0" max="24" class="form-num" data-action="recipe-form-input" data-path="phases.${idx}.photoperiod.start_hour" value="${escapeAttr(phase.photoperiod.start_hour)}">
+          </div>
+          <div class="form-field">
+            <label class="field-label">Fotoperiodo — durata (ore)</label>
+            <input type="number" step="any" min="0" max="24" class="form-num" data-action="recipe-form-input" data-path="phases.${idx}.photoperiod.duration_hours" value="${escapeAttr(phase.photoperiod.duration_hours)}">
+          </div>
+        </div>
+        <div class="data-table" style="margin-top:14px;overflow-x:auto">
+          <div class="data-table-head cols-recipe-form"><span>VARIABILE</span><span>SETPOINT</span><span>MIN CONSENT.</span><span>MAX CONSENT.</span><span>MIN SICUR.</span><span>MAX SICUR.</span><span>DOSE (mL)</span></div>
+          ${targetRows}
+        </div>
+      </div>
+
+      <div class="recipe-form-section">
+        <div class="zone-section-title">Controllori — Strategy e limiti di sicurezza</div>
+        <div class="data-table" style="overflow-x:auto">
+          <div class="data-table-head cols-controller-form"><span>VARIABILE</span><span>STRATEGIA</span>${OUTPUT_LIMIT_FIELDS.map((f) => `<span>${f.label.toUpperCase()} (${f.unit})</span>`).join("")}</div>
+          ${controllerRows}
+        </div>
+      </div>
+
+      ${errorsBlock}
+
+      <div class="recipe-form-footer">
+        <button type="button" class="btn" data-action="recipe-form-cancel" ${sending ? "disabled" : ""}>Annulla</button>
+        <button type="button" class="btn btn-primary" data-action="recipe-form-submit" ${sending ? "disabled" : ""}>${saveLabel}</button>
       </div>
     </div>
   `;
@@ -951,6 +1536,7 @@ function closeModal() {
   STATE.modalZone = null;
   STATE.modalKind = null;
   STATE.currentRecipe = null;
+  STATE.recipeForm = null;
 }
 
 /**
@@ -1024,6 +1610,7 @@ function renderModalIfSafe() {
 
 function renderModal() {
   if (STATE.modalKind === "recipe") { renderRecipeModal(); return; }
+  if (STATE.modalKind === "recipe-form") { renderRecipeFormModal(); return; }
   const zone = STATE.modalZone;
   const wrap = document.getElementById("modal-content");
   if (!zone) {
@@ -1511,6 +2098,39 @@ function initEventDelegation() {
       return;
     }
 
+    const openRecipeFormCreate = e.target.closest('[data-action="open-recipe-form-create"]');
+    if (openRecipeFormCreate) { openRecipeForm("create"); return; }
+
+    const openRecipeFormEdit = e.target.closest('[data-action="open-recipe-form-edit"]');
+    if (openRecipeFormEdit && STATE.currentRecipe) { openRecipeForm("edit", STATE.currentRecipe); return; }
+
+    const closeRecipeFormBtn = e.target.closest('[data-action="close-recipe-form"]');
+    if (closeRecipeFormBtn) { closeRecipeForm(); return; }
+
+    const cancelRecipeForm = e.target.closest('[data-action="recipe-form-cancel"]');
+    if (cancelRecipeForm) {
+      const draft = STATE.recipeForm;
+      if (draft && draft.mode === "edit") openRecipeModal(draft.id, draft.formReturnTo);
+      else closeRecipeForm();
+      return;
+    }
+
+    const addPhaseBtn = e.target.closest('[data-action="recipe-form-add-phase"]');
+    if (addPhaseBtn) { addRecipeFormPhase(); return; }
+
+    const removePhaseBtn = e.target.closest('[data-action="recipe-form-remove-phase"]');
+    if (removePhaseBtn) { removeRecipeFormPhase(Number(removePhaseBtn.dataset.idx)); return; }
+
+    const selectPhaseTabForm = e.target.closest('[data-action="recipe-form-select-phase-tab"]');
+    if (selectPhaseTabForm) {
+      if (STATE.recipeForm) STATE.recipeForm.activePhaseIdx = Number(selectPhaseTabForm.dataset.idx);
+      renderModal();
+      return;
+    }
+
+    const submitRecipeFormBtn = e.target.closest('[data-action="recipe-form-submit"]');
+    if (submitRecipeFormBtn && !submitRecipeFormBtn.disabled) { submitRecipeForm(); return; }
+
     const openAddSector = e.target.closest('[data-action="open-add-sector"]');
     if (openAddSector) {
       STATE.addSectorForm = {
@@ -1579,6 +2199,17 @@ function initEventDelegation() {
     if (filterSelect) { STATE.controlFilters[filterSelect.dataset.filter] = filterSelect.value; renderControl(); return; }
 
     if (e.target.id === "chart-variable-select") { onChartVariableChange(e.target.value); return; }
+
+    // Recipe form selects/checkboxes: bound by dotted data-path into
+    // STATE.recipeForm (see getPath/setPath). Re-rendered on change since
+    // selects/checkboxes don't fight cursor focus the way text inputs do.
+    const recipeFormSelect = e.target.closest('[data-action="recipe-form-select"]');
+    if (recipeFormSelect && STATE.recipeForm) {
+      const value = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+      setPath(STATE.recipeForm, recipeFormSelect.dataset.path, value);
+      renderModal();
+      return;
+    }
   });
 
   document.addEventListener("input", (e) => {
@@ -1592,6 +2223,15 @@ function initEventDelegation() {
       // Write straight into STATE only — no re-render, so typing doesn't
       // fight the innerHTML refresh for cursor position/focus.
       STATE.addSectorForm[addSectorField.dataset.field] = addSectorField.value;
+    }
+
+    // Recipe form text/number inputs: same "write straight into STATE,
+    // don't re-render" pattern, keyed by a dotted data-path so one handler
+    // covers every field in the form (top-level, phase targets, controller
+    // limits) instead of one bespoke handler per field.
+    const recipeFormInput = e.target.closest('[data-action="recipe-form-input"]');
+    if (recipeFormInput && STATE.recipeForm) {
+      setPath(STATE.recipeForm, recipeFormInput.dataset.path, recipeFormInput.value);
     }
   });
 }

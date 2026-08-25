@@ -180,17 +180,18 @@ TEST(RecipeControlSystemTest, DefaultPhPidProducesSignedSmallDoses) {
     EXPECT_GE(ph_down.command, -0.5);
 }
 
-TEST(RecipeControlSystemTest, BlocksExecutionUntilAgronomistConfirmation) {
+TEST(RecipeControlSystemTest, ConfirmsAutomaticallyOnRecipeAdoption) {
+    // Adopting a recipe (construction here, replace_recipe() below) already
+    // confirms every controller from its selected_strategy — no separate
+    // ConfirmConfiguration command is required before the first execute().
     smarthydro::RecipeControlSystem system(load_demo_recipe());
+    EXPECT_TRUE(system.all_configurations_confirmed());
+    EXPECT_EQ(
+        system.recipe().controllers[0].confirmation_state,
+        smarthydro::ConfirmationState::CONFIRMED);
+
     smarthydro::ControlRequest request;
     request.controller_input.measured_value = 40.0;
-
-    const auto blocked = system.execute(
-        smarthydro::ControlledVariable::SOIL_MOISTURE, request);
-    EXPECT_EQ(blocked.status, smarthydro::ControlDecisionStatus::BLOCKED);
-    EXPECT_NE(blocked.message.find("not confirmed"), std::string::npos);
-
-    confirm_all(system);
     const auto active = system.execute(
         smarthydro::ControlledVariable::SOIL_MOISTURE, request);
     EXPECT_NE(active.status, smarthydro::ControlDecisionStatus::BLOCKED);
@@ -412,19 +413,30 @@ TEST(RecipeControlSystemTest, RejectsNonIncreasingRecipeReplacementVersion) {
         std::invalid_argument);
 }
 
-TEST(RecipeControlSystemTest, RecipeReplacementAndRejectionInvalidateApproval) {
+TEST(RecipeControlSystemTest, RecipeReplacementConfirmsFromSelectedStrategyAndAllowsRejection) {
+    // Fresh adoption via the constructor already confirms every controller;
+    // no confirm_all() setup helper needed.
     smarthydro::RecipeControlSystem system(load_demo_recipe());
-    confirm_all(system);
+    ASSERT_TRUE(system.all_configurations_confirmed());
+
     auto replacement = load_demo_recipe();
     ++replacement.version;
     replacement.phases.front().targets[0].setpoint = 61.0;
 
     system.replace_recipe(std::move(replacement));
 
-    EXPECT_FALSE(system.all_configurations_confirmed());
+    // Adopting the replacement recipe (active_recipe_id changing on an
+    // already-running zone) confirms straight away too — the Strategy was
+    // already decided when the recipe was saved, so it isn't re-litigated
+    // per zone that adopts it.
+    EXPECT_TRUE(system.all_configurations_confirmed());
     EXPECT_EQ(
         system.recipe().controllers[0].confirmation_state,
-        smarthydro::ConfirmationState::PENDING_CONFIRMATION);
+        smarthydro::ConfirmationState::CONFIRMED);
+
+    // The manual override path (RejectConfiguration) still works on top of
+    // an auto-confirmed configuration — this is the "override a single
+    // zone" mechanism the auto-confirm change does not remove.
     system.reject_configuration(
         smarthydro::ControlledVariable::SOIL_MOISTURE);
     EXPECT_EQ(

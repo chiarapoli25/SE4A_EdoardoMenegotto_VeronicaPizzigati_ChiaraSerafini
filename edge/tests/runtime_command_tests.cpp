@@ -163,7 +163,10 @@ TEST(RuntimeCommandProcessorTest, LoadsNewRecipeAndRestartsItsTimeline) {
         "replacement-recipe");
     EXPECT_DOUBLE_EQ(runtime.elapsed_recipe_hours(), 0.0);
     EXPECT_EQ(runtime.active_phase_name(), "ReplacementStart");
-    EXPECT_FALSE(
+    // Loading a new recipe (active_recipe_id changing) confirms every
+    // controller from its selected_strategy immediately — no separate
+    // ConfirmConfiguration command is needed after LoadRecipe succeeds.
+    EXPECT_TRUE(
         runtime.control_system().all_configurations_confirmed());
 }
 
