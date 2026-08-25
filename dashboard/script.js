@@ -174,6 +174,41 @@ function defaultPhase(name) {
   };
 }
 
+/**
+ * Real phase-name sequence used by each of the 4 production departments'
+ * recipes today, per config/recipe_catalog/profiles.json's phase_sequences
+ * (department -> sequence mapping is catalog.py's
+ * _DEPARTMENT_PHASE_SEQUENCE: 1->foliage, 2->flowering, 3->succulent,
+ * 4->fruiting). Confirmed against the live catalog via GET /recipes across
+ * all 4 departments — no recipe in the catalog deviates from its
+ * department's sequence. RecipePhase.name has no enum on the backend; this
+ * is a frontend-only restriction to keep new/edited recipes consistent
+ * with the existing catalog's phase vocabulary, so it is enforced only by
+ * what the phase-name <select> below offers — no server-side validation
+ * was added for it.
+ */
+const PHASE_SEQUENCE_BY_DEPARTMENT = {
+  "1": ["Avvio e attecchimento", "Crescita vegetativa", "Mantenimento fogliare", "Riposo vegetativo"],
+  "2": ["Avvio e attecchimento", "Crescita vegetativa", "Fioritura", "Riposo post-fioritura"],
+  "3": ["Avvio e attecchimento", "Crescita vegetativa", "Maturazione", "Riposo asciutto"],
+  "4": ["Avvio e attecchimento", "Crescita vegetativa", "Fioritura e allegagione", "Produzione e maturazione"],
+};
+
+function phaseNameOptionsFor(departmentNumber) {
+  return PHASE_SEQUENCE_BY_DEPARTMENT[departmentNumber] || PHASE_SEQUENCE_BY_DEPARTMENT["1"];
+}
+
+/** Re-syncs every phase's name to the new department's sequence, matched
+ * by position (phase 1 -> that department's phase 1 name, etc.) — keeps
+ * the phase-name <select> always showing a valid, real catalog value
+ * after the department changes, with no silent/invalid selection. */
+function remapPhaseNamesForDepartment(draft, departmentNumber) {
+  const names = phaseNameOptionsFor(departmentNumber);
+  draft.phases.forEach((phase, i) => {
+    phase.name = names[Math.min(i, names.length - 1)];
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Application state                                                  */
 /* ------------------------------------------------------------------ */
@@ -803,7 +838,7 @@ function recipeCardsHtml(list) {
     <div class="recipe-card" data-action="open-recipe" data-recipe-id="${escapeAttr(r.id)}">
       <div class="recipe-card-head">
         <span class="recipe-code">${escapeHtml(r.id)}</span>
-        <span class="recipe-badge">v${r.version}</span>
+        <span class="recipe-badge">Versione ${r.version}</span>
       </div>
       <div class="recipe-name">${escapeHtml(r.plant_type)}</div>
       <div class="recipe-sub">${escapeHtml(r.department_name || "Reparto non catalogato")} · substrato ${escapeHtml(SUBSTRATE_LABELS[r.substrate] || r.substrate)}</div>
@@ -920,7 +955,7 @@ function renderRecipeModal() {
       <div style="min-width:0">
         <div class="zone-header-code">
           <span class="code">${escapeHtml(r.id)}</span>
-          <span class="recipe-badge">v${r.version}</span>
+          <span class="recipe-badge">Versione ${r.version}</span>
         </div>
         <h2>${escapeHtml(r.plant_type)}</h2>
         <div class="zone-header-meta">
@@ -980,10 +1015,12 @@ function buildBlankDraft() {
     id: "",
     plant_type: "",
     substrate: "aerated-universal",
-    department_number: "",
+    // Always a real department 1-4 (no blank option in the form — see
+    // renderRecipeFormModal's department <select>).
+    department_number: "1",
     careEnabled: false,
     care_profile: { light: "", watering: "", temperature: "", fertilization: "" },
-    phases: [defaultPhase("Fase 1")],
+    phases: [defaultPhase(phaseNameOptionsFor("1")[0])],
     activePhaseIdx: 0,
     controllers: Object.fromEntries(VARIABLES.map((v) => [v.key, {
       selected_strategy: REQUIRED_DEFAULT_STRATEGY[v.key],
@@ -1001,7 +1038,11 @@ function buildDraftFromRecipe(recipe) {
     id: recipe.id,
     plant_type: recipe.plant_type,
     substrate: recipe.substrate,
-    department_number: recipe.department_number === null || recipe.department_number === undefined ? "" : String(recipe.department_number),
+    // The backend schema allows a null department_number (an uncatalogued
+    // recipe), but the form's department <select> no longer offers a blank
+    // option (see requirement above) — a legacy recipe with no department
+    // just opens pre-set to department 1 rather than showing nothing.
+    department_number: recipe.department_number === null || recipe.department_number === undefined ? "1" : String(recipe.department_number),
     careEnabled: !!recipe.care_profile,
     care_profile: recipe.care_profile ? { ...recipe.care_profile } : { light: "", watering: "", temperature: "", fertilization: "" },
     phases: recipe.phases.map((p) => ({
@@ -1057,7 +1098,9 @@ function closeRecipeForm() {
 function addRecipeFormPhase() {
   const draft = STATE.recipeForm;
   if (!draft) return;
-  draft.phases.push(defaultPhase(`Fase ${draft.phases.length + 1}`));
+  const names = phaseNameOptionsFor(draft.department_number);
+  const name = names[Math.min(draft.phases.length, names.length - 1)];
+  draft.phases.push(defaultPhase(name));
   draft.activePhaseIdx = draft.phases.length - 1;
   renderModal();
 }
@@ -1086,6 +1129,12 @@ function validateRecipeForm(draft) {
     errors.push("L'id può contenere solo lettere, numeri, trattini e underscore, e non può iniziare con uno di questi ultimi due.");
   }
   if (!draft.plant_type.trim()) errors.push("La specie/tipo di pianta è obbligatoria.");
+  // Defensive, not the primary mechanism: the department <select> never
+  // offers a blank option (see renderRecipeFormModal), so this only fires
+  // if some other code path left department_number unset.
+  if (!["1", "2", "3", "4"].includes(draft.department_number)) {
+    errors.push("Il reparto è obbligatorio: seleziona uno dei 4 reparti produttivi.");
+  }
 
   if (draft.careEnabled) {
     CARE_FIELDS.forEach((f) => {
@@ -1201,7 +1250,10 @@ function buildRecipePayload(draft) {
     plant_type: draft.plant_type.trim(),
     substrate: draft.substrate,
     version,
-    department_number: draft.department_number === "" ? null : Number(draft.department_number),
+    // Always one of 1-4: validateRecipeForm() guarantees this before
+    // buildRecipePayload() is ever called (see the department <select>'s
+    // "no blank option" comment above).
+    department_number: Number(draft.department_number),
     care_profile: draft.careEnabled ? {
       light: draft.care_profile.light.trim(),
       watering: draft.care_profile.watering.trim(),
@@ -1235,7 +1287,7 @@ async function submitRecipeForm() {
     const idx = STATE.recipes.findIndex((r) => r.id === saved.id);
     if (idx >= 0) STATE.recipes[idx] = saved; else STATE.recipes.push(saved);
     if (STATE.view === "recipes") updateRecipeGridOnly();
-    showToast(`Ricetta "${saved.id}" salvata come v${saved.version}.`);
+    showToast(`Ricetta "${saved.id}" salvata come Versione ${saved.version}.`);
     openRecipeModal(saved.id, draft.formReturnTo);
   } catch (err) {
     draft.status = null;
@@ -1256,8 +1308,8 @@ function renderRecipeFormModal() {
   const saveLabel = sending
     ? "Salvataggio…"
     : draft.mode === "edit"
-      ? `Salva come nuova versione (v${draft.baseVersion + 1})`
-      : "Crea ricetta (v1)";
+      ? `Salva come Versione ${draft.baseVersion + 1}`
+      : "Crea ricetta (Versione 1)";
 
   const phaseTabsHtml = draft.phases.map((p, i) => `
     <span class="phase-tab-form ${i === idx ? "active" : ""}">
@@ -1333,7 +1385,7 @@ function renderRecipeFormModal() {
       <div style="min-width:0">
         <div class="zone-header-code">
           <span class="code">${draft.mode === "edit" ? "MODIFICA RICETTA" : "NUOVA RICETTA"}</span>
-          ${draft.mode === "edit" ? `<span class="recipe-badge">v${draft.baseVersion} → v${draft.baseVersion + 1}</span>` : `<span class="recipe-badge">v1</span>`}
+          ${draft.mode === "edit" ? `<span class="recipe-badge">Versione ${draft.baseVersion} → Versione ${draft.baseVersion + 1}</span>` : `<span class="recipe-badge">Versione 1</span>`}
         </div>
         <h2>${escapeHtml(draft.plant_type.trim() || draft.id.trim() || "Nuova ricetta")}</h2>
         <div class="zone-header-meta">
@@ -1364,8 +1416,7 @@ function renderRecipeFormModal() {
           <div class="form-field">
             <label class="field-label">Reparto</label>
             <select class="form-select" data-action="recipe-form-select" data-path="department_number">
-              <option value="" ${draft.department_number === "" ? "selected" : ""}>Nessuno (non catalogato)</option>
-              ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${draft.department_number === String(n) ? "selected" : ""}>Reparto ${n}</option>`).join("")}
+              ${[1, 2, 3, 4].map((n) => `<option value="${n}" ${draft.department_number === String(n) ? "selected" : ""}>${DEPT_FALLBACK_NAMES[n]}</option>`).join("")}
             </select>
           </div>
         </div>
@@ -1381,7 +1432,10 @@ function renderRecipeFormModal() {
         <div class="recipe-form-grid" style="margin-top:14px">
           <div class="form-field">
             <label class="field-label">Nome fase</label>
-            <input type="text" class="form-text" data-action="recipe-form-input" data-path="phases.${idx}.name" value="${escapeAttr(phase.name)}" placeholder="es. VegetativeGrowth">
+            <select class="form-select" data-action="recipe-form-select" data-path="phases.${idx}.name">
+              ${(phaseNameOptionsFor(draft.department_number).includes(phase.name) ? phaseNameOptionsFor(draft.department_number) : [phase.name, ...phaseNameOptionsFor(draft.department_number)])
+                .map((n) => `<option value="${escapeAttr(n)}" ${phase.name === n ? "selected" : ""}>${escapeHtml(n)}</option>`).join("")}
+            </select>
           </div>
           <div class="form-field">
             <label class="field-label">Durata fase (ore)</label>
@@ -2207,6 +2261,14 @@ function initEventDelegation() {
     if (recipeFormSelect && STATE.recipeForm) {
       const value = e.target.type === "checkbox" ? e.target.checked : e.target.value;
       setPath(STATE.recipeForm, recipeFormSelect.dataset.path, value);
+      // Changing department re-syncs every phase's name to the new
+      // department's real catalog sequence (by position) — the phase-name
+      // <select> only ever offers that department's actual phase names, so
+      // this keeps every phase pointing at a valid one instead of an
+      // orphaned selection from the previous department.
+      if (recipeFormSelect.dataset.path === "department_number") {
+        remapPhaseNamesForDepartment(STATE.recipeForm, value);
+      }
       renderModal();
       return;
     }
