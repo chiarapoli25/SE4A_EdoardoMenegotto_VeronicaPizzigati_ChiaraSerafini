@@ -28,6 +28,11 @@ const MODAL_POLL_MS = 4000;
 const HOME_EXTRAS_MIN_INTERVAL_MS = 5000; // throttle for alerts/quarantine refetch
 const RECIPES_POLL_MS = 20000;
 const STATUS_POLL_MS = 20000;
+// The Allarmi page pulls the recent event log for every registered zone on
+// each tick (see loadZoneEventsBundle) — deliberately slower than the 6s
+// zones poll, since it is a diagnostics page opened occasionally, not the
+// always-on Home view.
+const ALERTS_POLL_MS = 20000;
 const CHART_POLL_MS = 15000;
 const COMMAND_POLL_MS = 1500;
 const COMMAND_TIMEOUT_MS = 20000;
@@ -302,6 +307,17 @@ const STATE = {
   returnTo: null,
 
   adhocIntervals: [],
+
+  // Dedicated "Allarmi" page (STATE.view = "alerts"): situazioni attive +
+  // registro eventi + movimenti in quarantena. `zoneBundle` holds the raw
+  // GET /zones/{id}/events response (ascending, oldest first — same shape
+  // the backend already returns) for every zone, refetched on each poll
+  // tick; every section below is a pure function derived from it plus
+  // STATE.zones / STATE.quarantine, so nothing else needs to be cached.
+  alertsPage: {
+    loaded: false,
+    zoneBundle: [], // [{ zoneId, events }]
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -587,6 +603,7 @@ async function tickZones() {
     } else if (STATE.view === "control") {
       if (!isFocusedInside("view-control")) renderControl();
     }
+    updateNavAlertsBadge();
   } catch (e) {
     console.error("failed to refresh zones", e);
   }
@@ -639,16 +656,31 @@ function renderDeptCard(n, zones) {
   if (n === 5) {
     // Quarantine has no per-sector cultivation like the production
     // departments — r5-s1 is its only physical sector, the fixed technical
-    // destination for PATCH /plants/{id}/quarantine, but showing it as a
-    // "Settore" slot here doesn't make sense. The whole card is clickable
-    // instead, opening the per-plant quarantine detail pop-up.
+    // destination for PATCH /plants/{id}/quarantine. Shown as a real
+    // "settore" box all the same (same white card, border, padding, hover
+    // and arrow as every other department's sector row via .sector-row),
+    // so the two-level structure — tinted dept card containing white
+    // sector box(es) — stays visually consistent across every department;
+    // only the content inside this one differs (quarantine stats instead
+    // of species/phase/operational state), and it's this inner box that's
+    // clickable, exactly like a production sector row.
     return `
-      <div class="dept-card dept-card-clickable" data-action="open-quarantine" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
         <div class="dept-card-head">
           <span class="dept-code">REPARTO ${n}</span>
         </div>
         <div class="dept-title">${escapeHtml(name)}</div>
-        <div class="quarantine-box" id="quarantine-box"></div>
+        <div class="sector-list sector-list-top">
+          <div class="sector-row" data-action="open-quarantine">
+            <div class="sector-row-body">
+              <div class="sector-row-top">
+                <span class="sector-num">SETTORE 1</span>
+              </div>
+              <div class="quarantine-box" id="quarantine-box"></div>
+            </div>
+            <span class="sector-row-arrow">→</span>
+          </div>
+        </div>
       </div>
     `;
   }
@@ -804,6 +836,7 @@ async function maybeFetchHomeExtras() {
   renderAlertsPanel();
   renderQuarantineBox();
   renderPlantCounts();
+  updateNavAlertsBadge();
 }
 
 async function loadAlerts(zones) {
@@ -914,6 +947,430 @@ function renderQuarantineBox() {
     <div class="quarantine-row"><span>Piante in quarantena</span><b>${q.count === null || q.count === undefined ? "—" : q.count}</b></div>
     <div class="quarantine-row"><span>Ultimo ingresso</span><b>${q.lastEntry ? fmtDate(q.lastEntry) : "—"}</b></div>
   `;
+}
+
+/* ------------------------------------------------------------------ */
+/* Allarmi view — dedicated page (STATE.view = "alerts")              */
+/*                                                                    */
+/* Three sections, all built from real backend data, nothing mocked: */
+/*  - Situazioni attive: zones currently offline or not Nominal, plus */
+/*    quarantined plants whose origin sector was deleted (grouped by  */
+/*    origin) — same underlying data as the Home sidebar widgets      */
+/*    above, just not capped to a top-6 preview.                      */
+/*  - Registro eventi: real EdgeEvent rows (GET /zones/{id}/events)   */
+/*    across every zone, filtered to the types that actually signal a */
+/*    problem (FaultDetected, CommandFailed, StateChanged into        */
+/*    Degraded/EmergencyLockdown) — recoveries back to Nominal and    */
+/*    routine bookkeeping events (recipe/strategy/simulation changes) */
+/*    are deliberately left out.                                      */
+/*  - Piante in osservazione: the full quarantined-plant roster right */
+/*    now, purely informational (no severity), from the same /plants  */
+/*    call as the Home quarantine box — a snapshot, not a history of  */
+/*    entries/exits (there is no backend endpoint for that).          */
+/* ------------------------------------------------------------------ */
+
+/** Decodes a zone id back into "R{dept}·S{sector}" even after the zone
+ * itself has been deleted — every zone id in this app follows the fixed
+ * "r{dept}-s{sector}" convention (see addSectorForm/QUARANTINE_ZONE_ID), so
+ * this is reading a real naming convention, not guessing. */
+function zoneCodeFromId(zoneId) {
+  const m = /^r(\d+)-s(\d+)$/i.exec(zoneId || "");
+  return m ? `R${m[1]}·S${m[2]}` : (zoneId || "—");
+}
+
+/** Zones worth surfacing on the Allarmi page: not Nominal, or not
+ * currently reachable from the Edge (independent conditions — an offline
+ * zone keeps whatever operational_state it last reported). */
+function computeFlaggedZones(zones) {
+  return zones.filter((z) => z.status !== "online" || z.operational_state !== "Nominal");
+}
+
+/** Same orphan plants as the Home alarm (computeOrphanQuarantinePlants),
+ * grouped by their now-nonexistent origin zone so plants that lost the
+ * same sector share one card, matching how the situation actually reads:
+ * "this sector is gone" is one fact, not one fact per plant. */
+function computeOrphanQuarantineGroups() {
+  const byOrigin = {};
+  computeOrphanQuarantinePlants().forEach((p) => {
+    (byOrigin[p.home_zone_id] = byOrigin[p.home_zone_id] || []).push(p);
+  });
+  return Object.keys(byOrigin).sort().map((originId) => ({ originId, plants: byOrigin[originId] }));
+}
+
+/** Cards in "Situazioni attive" = flagged zones + orphan groups — cheap
+ * enough to recompute on demand (used by the nav sidebar badge too, which
+ * needs a count without paying for a full page render). */
+function computeActiveSituationsCount() {
+  return computeFlaggedZones(STATE.zones).length + computeOrphanQuarantineGroups().length;
+}
+
+function updateNavAlertsBadge() {
+  const el = document.getElementById("nav-alerts-badge");
+  if (!el) return;
+  const n = computeActiveSituationsCount();
+  el.textContent = n > 0 ? String(n) : "";
+  el.classList.toggle("hidden", n === 0);
+}
+
+/** Pairs each flagged zone with its most recent event (if any) — the same
+ * "last event explains the current state" idea as Home's loadAlerts, just
+ * reading from the already-fetched zoneBundle instead of a second request
+ * per zone. */
+function computeActiveZoneAlerts() {
+  const eventsByZone = Object.fromEntries(
+    STATE.alertsPage.zoneBundle.map((b) => [b.zoneId, b.events])
+  );
+  return computeFlaggedZones(STATE.zones).map((zone) => {
+    const events = eventsByZone[zone.id] || [];
+    return { zone, lastEvent: events.length ? events[events.length - 1] : null };
+  });
+}
+
+/** The real Edge event types that indicate a problem — see
+ * edge/src/backend/http_backend_client.cpp (uploads_from_event) for the
+ * full event_type catalogue. StateChanged is only alarm-worthy when it
+ * lands on a bad state: a transition back to Nominal is a recovery, not a
+ * situation to report here. */
+function isAlarmEvent(ev) {
+  if (ev.event_type === "FaultDetected" || ev.event_type === "CommandFailed") return true;
+  if (ev.event_type === "StateChanged") {
+    const cur = ev.payload && ev.payload.current_state;
+    return cur === "Degraded" || cur === "EmergencyLockdown";
+  }
+  return false;
+}
+
+function eventBadgeMeta(ev) {
+  if (ev.event_type === "FaultDetected") {
+    return { badge: "GUASTO", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
+  }
+  if (ev.event_type === "CommandFailed") {
+    return { badge: "COMANDO KO", color: "#a58a5e", bg: "rgba(201,128,63,.08)" };
+  }
+  if (ev.payload && ev.payload.current_state === "EmergencyLockdown") {
+    return { badge: "EMERGENCYLOCKDOWN", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)" };
+  }
+  return { badge: "DEGRADED", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
+}
+
+/** Title/detail text built entirely from the event's own real payload
+ * fields (component/rule/diagnostic for faults, actuator/diagnostic for
+ * failed commands, previous_state/current_state/reason for state
+ * transitions) — nothing here is invented per event, only the wording
+ * around the real values is fixed. */
+function eventTitleDetail(ev) {
+  const p = ev.payload || {};
+  if (ev.event_type === "FaultDetected") {
+    const comp = p.component ? String(p.component).replace(/_/g, " ") : "componente sconosciuto";
+    return {
+      title: `Guasto rilevato: ${comp}`,
+      detail: p.diagnostic || "Nessun dettaglio disponibile per questo guasto.",
+    };
+  }
+  if (ev.event_type === "CommandFailed") {
+    const act = p.actuator ? String(p.actuator).replace(/_/g, " ") : "attuatore sconosciuto";
+    return {
+      title: `Comando non eseguito: ${act}`,
+      detail: p.diagnostic || "Nessun dettaglio disponibile per questo comando.",
+    };
+  }
+  const cur = p.current_state || "?";
+  return {
+    title: `Settore passato in ${cur}`,
+    detail: p.reason || "Nessun motivo registrato per questa transizione.",
+  };
+}
+
+/** Merges every zone's event list, keeps only the alarm-worthy ones, most
+ * recent first. Zones deleted since the fetch are skipped (their id has no
+ * match left in STATE.zones) — a rare edge case, and there is no
+ * department/species left to show for them anyway. */
+function computeEventLogEntries(limitTotal) {
+  const entries = [];
+  STATE.alertsPage.zoneBundle.forEach(({ zoneId, events }) => {
+    const zone = STATE.zones.find((z) => z.id === zoneId);
+    if (!zone) return;
+    events.forEach((ev) => {
+      if (isAlarmEvent(ev)) entries.push({ zone, event: ev });
+    });
+  });
+  entries.sort((a, b) => new Date(b.event.recorded_at) - new Date(a.event.recorded_at));
+  return limitTotal ? entries.slice(0, limitTotal) : entries;
+}
+
+function activeZoneCardMeta(zone) {
+  if (zone.operational_state === "EmergencyLockdown") {
+    return {
+      badge: "EMERGENCYLOCKDOWN", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)",
+      tone: "danger",
+      title: "Settore bloccato in emergenza",
+      staticDetail: "Il ciclo di controllo è sospeso: nessun comando viene applicato finché lo stato non torna Nominal.",
+    };
+  }
+  if (zone.status !== "online") {
+    return {
+      badge: "SETTORE OFFLINE", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)",
+      tone: "danger",
+      title: "Connessione con l'Edge persa",
+      staticDetail: "Nessun dato in arrivo: i valori mostrati altrove per questo settore sono l'ultima lettura nota, non lo stato reale.",
+    };
+  }
+  return {
+    badge: "DEGRADED", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)",
+    tone: "warn",
+    title: "Settore in stato Degraded",
+    staticDetail: "Funzionamento ridotto: se la condizione persiste per più cicli di controllo scatta l'escalation a EmergencyLockdown.",
+  };
+}
+
+function renderActiveZoneCard({ zone, lastEvent }) {
+  const meta = activeZoneCardMeta(zone);
+  const deptName = zone.department_name || DEPT_FALLBACK_NAMES[zone.department_number] || "";
+  // The static per-state explanation above is always true; swap in the
+  // real reason from this zone's last event when that event is actually
+  // what produced the CURRENT badge — only for EmergencyLockdown/Degraded,
+  // never for "SETTORE OFFLINE": once a zone stops reporting, its last
+  // event could be anything (even an old recovery to Nominal, as here),
+  // and showing it as if it explains "why offline" would be misleading —
+  // the honest answer for offline is exactly the static text above.
+  let detail = meta.staticDetail;
+  if ((meta.badge === "EMERGENCYLOCKDOWN" || meta.badge === "DEGRADED")
+      && lastEvent && lastEvent.event_type === "StateChanged" && lastEvent.payload
+      && lastEvent.payload.current_state === zone.operational_state) {
+    detail = lastEvent.payload.reason || detail;
+  }
+  const connHint = zone.status === "online" ? "edge online · telemetria in arrivo" : "controllo locale in autonomia";
+  return `
+    <article class="alert-card clickable tone-${meta.tone}" data-action="open-zone" data-zone-id="${escapeAttr(zone.id)}">
+      <div class="alert-card-head">
+        <span class="pill" style="color:${meta.color};background:${meta.bg}"><span class="pill-dot"></span>${meta.badge}</span>
+        <span class="zone-code">${zoneLabel(zone)}</span>
+        <span class="sector-row-arrow">→</span>
+      </div>
+      <div>
+        <div class="alert-card-title">${escapeHtml(meta.title)}</div>
+        <div class="alert-card-detail">${escapeHtml(detail)}</div>
+      </div>
+      <div class="alert-card-tags">
+        <span class="tag-phase">REPARTO ${zone.department_number} · ${escapeHtml(deptName)}</span>
+        ${zone.plant_species ? `<span class="tag-phase">${escapeHtml(zone.plant_species)}</span>` : ""}
+        <span class="tag-phase">${escapeHtml(plantCountLabel(zone.id))}</span>
+      </div>
+      <div class="alert-card-foot">
+        <span class="alert-card-foot-hint">${escapeHtml(connHint)}</span>
+        <button type="button" class="btn" data-action="open-zone" data-zone-id="${escapeAttr(zone.id)}">Apri settore</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderOrphanPlantRow(p) {
+  const ui = STATE.plantUi[p.id] || {};
+  const dSending = ui.deleteStatus === "sending";
+  return `
+    <div class="alert-plant-unit">
+      <div class="alert-plant-row">
+        <span class="plant-row-id mono">${escapeHtml(p.id)}</span>
+        <span>${escapeHtml(p.species)}</span>
+        <span class="alert-plant-age mono">in quarantena da ${fmtElapsed(p.quarantined_at)}</span>
+      </div>
+      ${renderPlantRemoveBlock(p, ui, dSending)}
+    </div>
+  `;
+}
+
+/**
+ * One card per deleted origin sector, listing every plant that lost it.
+ * "Fai uscire" is deliberately not offered here: PATCH .../quarantine
+ * already returns 409 for exactly this case (home zone gone), so the only
+ * real way out — already implemented, same component as the quarantine
+ * pop-up — is "Rimuovi definitivamente" per plant.
+ */
+function renderOrphanGroupCard(group) {
+  const origin = zoneCodeFromId(group.originId);
+  const n = group.plants.length;
+  const species = uniqueSorted(group.plants.map((p) => p.species));
+  return `
+    <article class="alert-card tone-quarantine">
+      <div class="alert-card-head">
+        <span class="pill" style="color:#a06a37;background:rgba(201,128,63,.14)"><span class="pill-dot"></span>QUARANTENA ORFANA</span>
+      </div>
+      <div>
+        <div class="alert-card-title">${n} piant${n === 1 ? "a" : "e"} senza settore di origine</div>
+        <div class="alert-card-detail">Il settore di origine <b class="mono">${escapeHtml(origin)}</b> è stato cancellato: ${n === 1 ? "questa pianta non può" : "queste piante non possono"} più rientrare da nessuna parte. L'unica uscita è la rimozione definitiva.</div>
+      </div>
+      <div class="alert-card-tags">
+        <span class="tag-phase">REPARTO 5 · Quarantena</span>
+        ${species.map((s) => `<span class="tag-phase">${escapeHtml(s)}</span>`).join("")}
+      </div>
+      <div class="alert-plant-list">
+        ${group.plants.map((p) => renderOrphanPlantRow(p)).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderActiveSituationsSection() {
+  const zoneAlerts = computeActiveZoneAlerts();
+  const orphanGroups = computeOrphanQuarantineGroups();
+  const total = zoneAlerts.length + orphanGroups.length;
+  const body = total === 0
+    ? '<div class="empty-note">Nessuna situazione attiva: tutti i settori registrati sono Nominal e nessuna pianta in quarantena ha perso il proprio settore di origine.</div>'
+    : `<div class="alerts-grid">${zoneAlerts.map(renderActiveZoneCard).join("")}${orphanGroups.map(renderOrphanGroupCard).join("")}</div>`;
+  return `
+    <section class="alerts-section">
+      <div class="alerts-section-head">
+        <h2>Situazioni attive</h2>
+        ${total > 0 ? `<span class="alerts-section-badge">${total} DA RISOLVERE</span>` : ""}
+      </div>
+      <p class="alerts-section-hint">Problemi in corso adesso, letti dallo stato corrente dei settori e delle piante. Non hanno un orario perché non sono ancora finiti.</p>
+      ${body}
+    </section>
+  `;
+}
+
+function renderEventLogRow({ zone, event }) {
+  const meta = eventBadgeMeta(event);
+  const { title, detail } = eventTitleDetail(event);
+  const d = new Date(event.recorded_at);
+  const valid = !isNaN(d.getTime());
+  const time = valid ? d.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }) : "—";
+  const date = valid ? d.toLocaleDateString("it-IT", { day: "2-digit", month: "short" }) : "—";
+  const deptName = zone.department_name || DEPT_FALLBACK_NAMES[zone.department_number] || "";
+  return `
+    <div class="event-row" data-action="open-zone" data-zone-id="${escapeAttr(zone.id)}">
+      <div class="event-time"><div class="t mono">${time}</div><div class="d mono">${date}</div></div>
+      <span class="pill event-badge" style="color:${meta.color};background:${meta.bg}"><span class="pill-dot"></span>${meta.badge}</span>
+      <div class="event-body">
+        <div class="event-title">${escapeHtml(title)}</div>
+        <div class="event-detail">${escapeHtml(detail)}</div>
+      </div>
+      <div class="event-meta">
+        <div class="zone mono">${zoneLabel(zone)}</div>
+        <div class="dept mono">REPARTO ${zone.department_number} · ${escapeHtml(deptName)}</div>
+        ${zone.plant_species ? `<div class="species">${escapeHtml(zone.plant_species)}</div>` : ""}
+      </div>
+      <span class="sector-row-arrow">→</span>
+    </div>
+  `;
+}
+
+function renderEventLogSection() {
+  const entries = computeEventLogEntries(40);
+  const body = entries.length
+    ? `<div class="event-log">${entries.map(renderEventLogRow).join("")}</div>`
+    : '<div class="empty-note">Nessun evento registrato.</div>';
+  return `
+    <section class="alerts-section">
+      <div class="alerts-section-head">
+        <h2>Registro eventi</h2>
+        <span class="alerts-section-badge muted">DAL PIÙ RECENTE</span>
+      </div>
+      <p class="alerts-section-hint">Cose realmente accadute, con l'orario in cui sono state registrate. Le transizioni verso stati buoni non compaiono qui.</p>
+      ${body}
+    </section>
+  `;
+}
+
+function renderQuarantineLogRow(p) {
+  const originZone = STATE.zones.find((z) => z.id === p.home_zone_id);
+  const originLabel = originZone ? zoneLabel(originZone) : zoneCodeFromId(p.home_zone_id);
+  return `
+    <div class="quarantine-log-row">
+      <div class="quarantine-log-code mono">${escapeHtml(p.id)}</div>
+      <div class="quarantine-log-main">
+        <div class="quarantine-log-species">${escapeHtml(p.species)}</div>
+        <div class="quarantine-log-reason">${escapeHtml(p.quarantine_reason || "—")}</div>
+      </div>
+      <div class="quarantine-log-origin mono">da ${escapeHtml(originLabel)}</div>
+      <div class="quarantine-log-age">
+        <div class="v mono">${fmtElapsed(p.quarantined_at)}</div>
+        <div class="l">in osservazione</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderQuarantineLogSection() {
+  const plants = ((STATE.quarantine && STATE.quarantine.plants) || [])
+    .slice()
+    .sort((a, b) => new Date(a.quarantined_at || 0) - new Date(b.quarantined_at || 0));
+  const body = plants.length
+    ? `<div class="quarantine-log">${plants.map(renderQuarantineLogRow).join("")}</div>`
+    : '<div class="empty-note">Nessuna pianta attualmente in quarantena.</div>';
+  return `
+    <section class="alerts-section">
+      <div class="alerts-section-head">
+        <h2 style="color:var(--ink-soft)">Piante in osservazione</h2>
+        <span class="alerts-section-badge muted quarantine">INFORMATIVO</span>
+      </div>
+      <p class="alerts-section-hint">Chi è attualmente in quarantena e perché, con il tempo trascorso da quando è entrato. Non è uno storico di ingressi e uscite — non esiste un endpoint che lo fornisca — solo la situazione presente. È un fatto amministrativo, non un problema: nessuna severità associata.</p>
+      ${body}
+    </section>
+  `;
+}
+
+function renderAlertsView() {
+  const container = document.getElementById("view-alerts");
+  if (!STATE.alertsPage.loaded) {
+    setPageTitle("Allarmi", "Caricamento…");
+    container.innerHTML = '<div class="empty-note">Caricamento…</div>';
+    return;
+  }
+
+  const activeCount = computeActiveSituationsCount();
+  const eventCount = computeEventLogEntries().length;
+  const quarantineCount = ((STATE.quarantine && STATE.quarantine.plants) || []).length;
+  setPageTitle(
+    "Allarmi",
+    `${activeCount} situazion${activeCount === 1 ? "e attiva" : "i attive"} · ` +
+    `${eventCount} event${eventCount === 1 ? "o" : "i"} in registro · ` +
+    `${quarantineCount} piant${quarantineCount === 1 ? "a" : "e"} in quarantena`
+  );
+
+  container.innerHTML =
+    renderActiveSituationsSection() +
+    renderEventLogSection() +
+    renderQuarantineLogSection();
+
+  updateNavAlertsBadge();
+}
+
+async function loadZoneEventsBundle(zones, limit) {
+  return Promise.all(zones.map(async (z) => {
+    try {
+      const events = await apiGet(`/zones/${encodeURIComponent(z.id)}/events`, { limit });
+      return { zoneId: z.id, events };
+    } catch (e) {
+      return { zoneId: z.id, events: [] };
+    }
+  }));
+}
+
+async function tickAlertsView() {
+  if (STATE.view !== "alerts") return;
+  try {
+    const zones = await apiGet("/zones");
+    STATE.zones = zones;
+    const [quarantine, bundle, plantCounts] = await Promise.all([
+      loadQuarantineStats(),
+      loadZoneEventsBundle(zones, 50),
+      loadPlantCounts(zones),
+    ]);
+    if (STATE.view !== "alerts") return; // navigated away while requests were in flight
+    STATE.quarantine = quarantine;
+    STATE.alertsPage.zoneBundle = bundle;
+    STATE.alertsPage.loaded = true;
+    STATE.plantCounts = plantCounts;
+    STATE.homeExtrasLoaded = true;
+    renderAlertsView();
+  } catch (e) {
+    console.error("failed to refresh alerts view", e);
+    if (STATE.view !== "alerts") return;
+    STATE.alertsPage.loaded = true;
+    renderAlertsView();
+  }
+  updateNavAlertsBadge();
 }
 
 /* ------------------------------------------------------------------ */
@@ -2232,32 +2689,54 @@ async function releasePlantFromQuarantine(plantId) {
   }
 }
 
+/**
+ * "Rimuovi definitivamente" is now reachable from three places — the zone
+ * detail pop-up, the quarantine detail pop-up, and (for a quarantined
+ * plant whose origin sector is gone) the Allarmi page's orphan cards. The
+ * first two live inside #modal-content, the third doesn't open any modal
+ * at all, so a single renderModal() call isn't enough to always repaint
+ * wherever the plant is actually shown — this refreshes every host that
+ * might currently have it on screen.
+ */
+function refreshPlantHosts() {
+  renderModal();
+  if (STATE.view === "alerts") renderAlertsView();
+  updateNavAlertsBadge();
+}
+
 function openPlantRemoveConfirm(plantId) {
   STATE.plantUi[plantId] = { ...(STATE.plantUi[plantId] || {}), deleteConfirm: true, deleteError: null };
-  renderModal();
+  refreshPlantHosts();
 }
 
 function cancelPlantRemove(plantId) {
   STATE.plantUi[plantId] = { ...(STATE.plantUi[plantId] || {}), deleteConfirm: false, deleteError: null };
-  renderModal();
+  refreshPlantHosts();
 }
 
 async function confirmPlantRemove(plantId) {
   const ui = STATE.plantUi[plantId] || {};
   if (ui.deleteStatus === "sending") return;
   STATE.plantUi[plantId] = { ...ui, deleteStatus: "sending", deleteError: null };
-  renderModal();
+  refreshPlantHosts();
 
   try {
     await apiDelete(`/plants/${encodeURIComponent(plantId)}`);
     if (STATE.modalPlants) STATE.modalPlants = STATE.modalPlants.filter((p) => p.id !== plantId);
     if (STATE.quarantinePlants) STATE.quarantinePlants = STATE.quarantinePlants.filter((p) => p.id !== plantId);
+    // Also drop it from the Home/Allarmi quarantine cache (the source for
+    // the orphan-plant alarm and the "Piante in osservazione" list) so a
+    // removal made right here doesn't keep showing a now-deleted plant
+    // until the next background poll happens to refetch it.
+    if (STATE.quarantine && STATE.quarantine.plants) {
+      STATE.quarantine.plants = STATE.quarantine.plants.filter((p) => p.id !== plantId);
+    }
     delete STATE.plantUi[plantId];
-    renderModal();
+    refreshPlantHosts();
     showToast(`Pianta ${plantId} rimossa definitivamente.`);
   } catch (err) {
     STATE.plantUi[plantId] = { ...STATE.plantUi[plantId], deleteStatus: null, deleteError: err.message };
-    renderModal();
+    refreshPlantHosts();
   }
 }
 
@@ -2673,12 +3152,13 @@ function switchView(view) {
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === view);
   });
-  ["home", "recipes", "control"].forEach((v) => {
+  ["home", "recipes", "control", "alerts"].forEach((v) => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
   });
 
   clearPoll("zones");
   clearPoll("recipes-poll");
+  clearPoll("alerts-view");
 
   if (view === "home") {
     setPoll("zones", tickZones, ZONES_POLL_MS);
@@ -2686,6 +3166,8 @@ function switchView(view) {
     setPoll("zones", tickZones, ZONES_POLL_MS);
   } else if (view === "recipes") {
     setPoll("recipes-poll", tickRecipes, RECIPES_POLL_MS);
+  } else if (view === "alerts") {
+    setPoll("alerts-view", tickAlertsView, ALERTS_POLL_MS);
   }
 }
 
