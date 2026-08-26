@@ -81,6 +81,10 @@ const DEPT_FALLBACK_NAMES = {
   4: "Piante da Frutto e Ortaggi",
   5: "Quarantena",
 };
+// Display order wherever departments are listed or filtered: Quarantena
+// (5) sits right after department 3, not after every production
+// department — this is the one order to use, not [1,2,3,4,5].
+const DEPT_ORDER = [1, 2, 3, 5, 4];
 
 const ADMIN_LABELS = { active: "In produzione", inactive: "Non attivo", maintenance: "Manutenzione" };
 const LIFECYCLE_LABELS = { Idle: "Inattivo", Running: "In esecuzione", Paused: "In pausa", Error: "Errore" };
@@ -232,8 +236,16 @@ const STATE = {
   view: "home",
 
   zones: [],
+  // False until the first successful GET /zones. switchView() uses this to
+  // decide whether a view can be repainted immediately from cache or needs
+  // a "Caricamento…" placeholder — without it, every nav switch (even a
+  // revisit) leaves the content area blank until its poll's first fetch
+  // resolves, which on a slow connection reads as a broken two-column
+  // layout (sidebar full height, nothing beside it for a long stretch).
+  zonesLoaded: false,
 
   recipes: [],
+  recipesLoaded: false,
   recipesById: {},
   recipeQuery: "",
   currentRecipe: null,
@@ -252,8 +264,11 @@ const STATE = {
   homeExtrasLoaded: false,
   homeExtrasLastRun: 0,
 
-  // { dept, sector, name, species, status, error } | null — the single
-  // "aggiungi settore" inline form open on Home, if any.
+  // { dept, sector, recipeId, confirmStep, status, error } | null — the
+  // single "aggiungi settore" inline form open on Home, if any. Species is
+  // never free text: recipeId points at one of that department's catalog
+  // recipes (recipesForDepartment), and confirmStep gates an explicit
+  // "are you sure" step before the POST actually fires.
   addSectorForm: null,
 
   modalZoneId: null,
@@ -278,6 +293,14 @@ const STATE = {
   deleteZoneConfirm: false,
   deleteZoneStatus: null, // "sending" | null
   deleteZoneError: null,
+
+  // "Ferma coltivazione" (zone summary tab, "Fase della ricetta" section):
+  // the resolution path for the "settore con coltivazione attiva" delete
+  // block — same inline-confirm shape as deleteZoneConfirm above, plus a
+  // "waiting" status while polling for the Edge Controller to apply it.
+  stopCultivationConfirm: false,
+  stopCultivationStatus: null, // "sending" | "waiting" | null
+  stopCultivationError: null,
 
   // Plants of the zone currently open in the modal (production-sector
   // detail): GET /plants?zone_id=<zone>, refreshed on every "modal" poll
@@ -367,6 +390,22 @@ const apiGet = (path, params) => apiRequest("GET", path, { params });
 const apiPost = (path, body) => apiRequest("POST", path, { body });
 const apiPatch = (path, body) => apiRequest("PATCH", path, { body });
 const apiDelete = (path) => apiRequest("DELETE", path, {});
+
+/**
+ * The backend's HTTP error `detail` strings are internal/English by design
+ * (see e.g. the docstrings in zones/repository.py) — never meant to reach
+ * an end user verbatim. Known ones get a proper Italian translation in the
+ * app's existing message style; anything not in the map falls back to the
+ * raw text rather than hiding it.
+ */
+const API_ERROR_TRANSLATIONS = {
+  "the zone has an active cultivation; stop it before deleting the zone":
+    "Questo settore ha una coltivazione attiva: fermala prima di poterlo rimuovere.",
+};
+function translateApiError(message) {
+  if (!message) return message;
+  return API_ERROR_TRANSLATIONS[message] || message;
+}
 
 /* ------------------------------------------------------------------ */
 /* Small utilities                                                    */
@@ -592,6 +631,7 @@ async function tickZones() {
   try {
     const zones = await apiGet("/zones");
     STATE.zones = zones;
+    STATE.zonesLoaded = true;
     if (STATE.modalZoneId) {
       const z = zones.find((zz) => zz.id === STATE.modalZoneId);
       if (z) STATE.modalZone = z;
@@ -619,7 +659,7 @@ function renderHome() {
 
   setPageTitle("Reparti della serra", `${total} settori registrati (massimo 9: 4 reparti produttivi × 2 settori + quarantena × 1) · ${online} online`);
 
-  const deptCards = [1, 2, 3, 4, 5].map((n) => renderDeptCard(n, byDept[n] || [])).join("");
+  const deptCards = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
 
   document.getElementById("view-home").innerHTML = `
     <div class="home-layout">
@@ -690,7 +730,14 @@ function renderDeptCard(n, zones) {
     if (z) return renderSectorRow(z);
     const f = STATE.addSectorForm;
     if (f && f.dept === n && f.sector === sn) return renderAddSectorForm(f);
-    return `<button type="button" class="sector-slot-add" data-action="open-add-sector" data-dept="${n}" data-sector="${sn}">+ Aggiungi settore</button>`;
+    // Nothing to grow, nothing to select: a department with zero catalogued
+    // recipes can't populate the species dropdown, so the action is
+    // disabled outright rather than opening a form with an empty select.
+    // Before recipes have loaded at all we don't yet know either way, so
+    // the button stays enabled (it self-corrects once STATE.recipesLoaded
+    // flips true — see maybeFetchHomeExtras/renderDeptGridOnly).
+    const noRecipes = STATE.recipesLoaded && recipesForDepartment(n).length === 0;
+    return `<button type="button" class="sector-slot-add" data-action="open-add-sector" data-dept="${n}" data-sector="${sn}" ${noRecipes ? `disabled title="Nessuna ricetta disponibile per questo reparto: aggiungine una dalla pagina Ricette prima di creare un nuovo settore."` : ""}>+ Aggiungi settore</button>`;
   }).join("");
   return `
     <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
@@ -704,19 +751,49 @@ function renderDeptCard(n, zones) {
   `;
 }
 
+/** All catalogued recipes for department `n` (1-4) — the source for the
+ * "Aggiungi settore" species dropdown and for deciding whether that action
+ * should even be offered (zero recipes → nothing to grow, nothing to
+ * select). Reads from the shared STATE.recipes cache, fed either by the
+ * Recipes page (tickRecipes) or, if Home is visited first, by
+ * maybeFetchHomeExtras — never fetched per-department on its own. */
+function recipesForDepartment(n) {
+  return STATE.recipes.filter((r) => r.department_number === n);
+}
+
 function renderAddSectorForm(f) {
   const sending = f.status === "sending";
+  const options = recipesForDepartment(f.dept);
+  const selectedRecipe = options.find((r) => r.id === f.recipeId) || null;
+
+  if (f.confirmStep) {
+    return `
+      <div class="add-sector-form">
+        <div class="field-label">Nuovo settore ${f.sector}</div>
+        <p style="font-size:12.5px;color:var(--ink-mute);line-height:1.5;margin:0">
+          Stai per creare questo settore con specie <b>${escapeHtml(selectedRecipe ? selectedRecipe.plant_type : "—")}</b>.
+          La specie coltivata di un settore non è pensata per essere cambiata spesso: verificala prima di confermare.
+        </p>
+        ${f.error ? `<div class="add-sector-error">${escapeHtml(f.error)}</div>` : ""}
+        <div class="add-sector-actions">
+          <button type="button" class="btn" data-action="cancel-add-sector-confirm" ${sending ? "disabled" : ""}>Indietro</button>
+          <button type="button" class="btn btn-primary" data-action="submit-add-sector" ${sending ? "disabled" : ""}>${sending ? "Creazione…" : "Conferma creazione"}</button>
+        </div>
+      </div>
+    `;
+  }
+
   return `
     <div class="add-sector-form">
       <div class="field-label">Nuovo settore ${f.sector}</div>
-      <input type="text" class="add-sector-input" data-action="add-sector-field" data-field="name"
-        placeholder="Nome del settore" value="${escapeAttr(f.name)}" ${sending ? "disabled" : ""}>
-      <input type="text" class="add-sector-input" data-action="add-sector-field" data-field="species"
-        placeholder="Specie coltivata" value="${escapeAttr(f.species)}" ${sending ? "disabled" : ""}>
+      <select class="add-sector-input" data-action="add-sector-recipe-select" ${sending ? "disabled" : ""}>
+        <option value="" ${f.recipeId ? "" : "selected"} disabled>Specie coltivata…</option>
+        ${options.map((r) => `<option value="${escapeAttr(r.id)}" ${f.recipeId === r.id ? "selected" : ""}>${escapeHtml(r.plant_type)}</option>`).join("")}
+      </select>
       ${f.error ? `<div class="add-sector-error">${escapeHtml(f.error)}</div>` : ""}
       <div class="add-sector-actions">
         <button type="button" class="btn" data-action="cancel-add-sector" ${sending ? "disabled" : ""}>Annulla</button>
-        <button type="button" class="btn btn-primary" data-action="submit-add-sector" ${sending ? "disabled" : ""}>${sending ? "Creazione…" : "Crea settore"}</button>
+        <button type="button" class="btn btn-primary" data-action="proceed-add-sector" ${sending || !f.recipeId ? "disabled" : ""}>Avanti</button>
       </div>
     </div>
   `;
@@ -724,37 +801,41 @@ function renderAddSectorForm(f) {
 
 /**
  * id is auto-generated as "r{dept}-s{sector}" (matches the convention of
- * every existing zone id and the backend's id pattern) — never asked from
- * the user. department_number/sector_number come from which empty slot was
- * clicked, not from the form either.
+ * every existing zone id and the backend's id pattern) and so is name
+ * ("Reparto N — Settore M", the same wording as the zone-detail header) —
+ * neither is ever asked from the user, since a settore's name is barely
+ * surfaced anywhere in the UI. Species is not free text either: it comes
+ * from the recipe picked in the dropdown, and that same recipe's id is
+ * sent as active_recipe_id in the same request, so the two can never
+ * silently disagree the way a free-text species string could.
  */
 async function submitAddSector() {
   const form = STATE.addSectorForm;
-  if (!form || form.status === "sending") return;
-  const name = (form.name || "").trim();
-  const species = (form.species || "").trim();
-  if (!name || !species) {
-    STATE.addSectorForm = { ...form, name, species, error: "Nome e specie coltivata sono obbligatori." };
+  if (!form || form.status === "sending" || !form.confirmStep) return;
+  const recipe = recipesForDepartment(form.dept).find((r) => r.id === form.recipeId);
+  if (!recipe) {
+    STATE.addSectorForm = { ...form, error: "La ricetta selezionata non è più disponibile: torna indietro e riprova." };
     renderHome();
     return;
   }
 
   const zoneId = `r${form.dept}-s${form.sector}`;
-  STATE.addSectorForm = { ...form, name, species, status: "sending", error: null };
+  STATE.addSectorForm = { ...form, status: "sending", error: null };
   renderHome();
 
   try {
     const created = await apiPost("/zones", {
       id: zoneId,
-      name,
+      name: `Reparto ${form.dept} — Settore ${form.sector}`,
       department_number: form.dept,
       sector_number: form.sector,
-      plant_species: species,
+      plant_species: recipe.plant_type,
+      active_recipe_id: recipe.id,
     });
     STATE.zones.push(created);
     STATE.addSectorForm = null;
     renderHome();
-    showToast(`Settore ${zoneId} creato.`);
+    showToast(`Settore ${zoneLabel(created)} creato con specie "${recipe.plant_type}".`);
   } catch (err) {
     if (STATE.addSectorForm) {
       STATE.addSectorForm = { ...STATE.addSectorForm, status: null, error: err.message };
@@ -820,15 +901,23 @@ async function maybeFetchHomeExtras() {
   const now = Date.now();
   if (now - STATE.homeExtrasLastRun < HOME_EXTRAS_MIN_INTERVAL_MS) return;
   STATE.homeExtrasLastRun = now;
+  // The recipe catalog is needed on Home too — it decides whether each
+  // department's "+ Aggiungi settore" button should be enabled — but it
+  // rarely changes, so it's fetched once and cached (STATE.recipesLoaded),
+  // not on every throttled tick the way alerts/quarantine/plantCounts are.
+  // If the Recipes page already loaded it this session, this is a no-op.
+  const needsRecipes = !STATE.recipesLoaded;
   try {
-    const [alerts, quarantine, plantCounts] = await Promise.all([
-      loadAlerts(STATE.zones),
-      loadQuarantineStats(),
-      loadPlantCounts(STATE.zones),
-    ]);
+    const tasks = [loadAlerts(STATE.zones), loadQuarantineStats(), loadPlantCounts(STATE.zones)];
+    if (needsRecipes) tasks.push(apiGet("/recipes"));
+    const [alerts, quarantine, plantCounts, recipes] = await Promise.all(tasks);
     STATE.alerts = alerts;
     STATE.quarantine = quarantine;
     STATE.plantCounts = plantCounts;
+    if (needsRecipes) {
+      STATE.recipes = recipes;
+      STATE.recipesLoaded = true;
+    }
   } catch (e) {
     console.error("failed to refresh home extras", e);
   }
@@ -837,6 +926,22 @@ async function maybeFetchHomeExtras() {
   renderQuarantineBox();
   renderPlantCounts();
   updateNavAlertsBadge();
+  // The department grid's "+ Aggiungi settore" buttons read
+  // STATE.recipesLoaded/recipesForDepartment() — if the catalog just
+  // finished loading for the first time, repaint them immediately instead
+  // of waiting for the next zones poll to happen to redraw the grid.
+  if (needsRecipes && STATE.view === "home" && !isFocusedInside("view-home")) renderDeptGridOnly();
+}
+
+/** Repaints only the department cards (not the whole Home layout) — used
+ * when something that affects a card's rendering (e.g. the recipe catalog
+ * finishing its first load) changes without the zone list itself changing,
+ * so there's no need to rebuild the aside panels too. */
+function renderDeptGridOnly() {
+  const grid = document.querySelector("#view-home .dept-grid");
+  if (!grid) return;
+  const byDept = groupZonesByDepartment(STATE.zones);
+  grid.innerHTML = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
 }
 
 async function loadAlerts(zones) {
@@ -1158,7 +1263,6 @@ function renderActiveZoneCard({ zone, lastEvent }) {
       </div>
       <div class="alert-card-foot">
         <span class="alert-card-foot-hint">${escapeHtml(connHint)}</span>
-        <button type="button" class="btn" data-action="open-zone" data-zone-id="${escapeAttr(zone.id)}">Apri settore</button>
       </div>
     </article>
   `;
@@ -1381,6 +1485,7 @@ async function tickRecipes() {
   try {
     const recipes = await apiGet("/recipes");
     STATE.recipes = recipes;
+    STATE.recipesLoaded = true;
     STATE.recipesById = Object.fromEntries(recipes.map((r) => [r.id, r]));
     if (isFocusedInside("view-recipes")) updateRecipeGridOnly();
     else renderRecipes();
@@ -2050,7 +2155,16 @@ function renderRecipeFormModal() {
 
 function renderControl() {
   const zones = STATE.zones;
-  const deptNames = uniqueSorted(zones.map((z) => z.department_name).filter(Boolean));
+  // Department order everywhere is 1, 2, 3, 5, 4 (DEPT_ORDER) — not
+  // alphabetical by name (which uniqueSorted would give) and not simply
+  // ascending by number. Only departments that actually have a registered
+  // zone show up in the filter, same as before, just in the fixed order.
+  const deptRank = Object.fromEntries(DEPT_ORDER.map((n, i) => [n, i]));
+  const deptNumbersPresent = DEPT_ORDER.filter((n) => zones.some((z) => z.department_number === n));
+  const deptOptions = deptNumbersPresent.map((n) => {
+    const z = zones.find((zz) => zz.department_number === n);
+    return { number: n, name: (z && z.department_name) || DEPT_FALLBACK_NAMES[n] };
+  });
   const speciesNames = uniqueSorted(zones.map((z) => z.plant_species).filter(Boolean));
   const f = STATE.controlFilters;
 
@@ -2059,7 +2173,7 @@ function renderControl() {
     if (f.species !== "all" && z.plant_species !== f.species) return false;
     if (f.strategy !== "all" && !Object.values(z.current_strategies).includes(f.strategy)) return false;
     return true;
-  });
+  }).sort((a, b) => (deptRank[a.department_number] - deptRank[b.department_number]) || (a.sector_number - b.sector_number));
 
   setPageTitle("Controllo settori", `Accesso diretto al controllo avanzato di ogni settore · ${zones.length} settori registrati (massimo 9)`);
 
@@ -2083,7 +2197,7 @@ function renderControl() {
       <span class="mono" style="font:500 10.5px var(--mono);letter-spacing:.07em;color:var(--ink-faint)">FILTRI</span>
       <select data-action="control-filter" data-filter="dept">
         <option value="all" ${f.dept === "all" ? "selected" : ""}>Tutti i reparti</option>
-        ${deptNames.map((n) => `<option value="${escapeAttr(n)}" ${f.dept === n ? "selected" : ""}>${escapeHtml(n)}</option>`).join("")}
+        ${deptOptions.map((d) => `<option value="${escapeAttr(d.name)}" ${f.dept === d.name ? "selected" : ""}>${escapeHtml(d.name)}</option>`).join("")}
       </select>
       <select data-action="control-filter" data-filter="species">
         <option value="all" ${f.species === "all" ? "selected" : ""}>Tutte le specie</option>
@@ -2129,6 +2243,9 @@ async function openZoneModal(zoneId, entry) {
   STATE.deleteZoneConfirm = false;
   STATE.deleteZoneStatus = null;
   STATE.deleteZoneError = null;
+  STATE.stopCultivationConfirm = false;
+  STATE.stopCultivationStatus = null;
+  STATE.stopCultivationError = null;
   STATE.modalPlants = [];
   STATE.modalPlantsLoaded = false;
   STATE.addPlantStatus = null;
@@ -2172,6 +2289,9 @@ function closeModal() {
   STATE.deleteZoneConfirm = false;
   STATE.deleteZoneStatus = null;
   STATE.deleteZoneError = null;
+  STATE.stopCultivationConfirm = false;
+  STATE.stopCultivationStatus = null;
+  STATE.stopCultivationError = null;
   STATE.modalPlants = [];
   STATE.modalPlantsLoaded = false;
   STATE.addPlantStatus = null;
@@ -2389,6 +2509,7 @@ function renderZoneSummary(zone) {
           <div><div class="phase-name">${escapeHtml(zone.current_phase || "Nessuna coltivazione attiva")}</div><div class="phase-sub" style="color:${STATE.phasePending ? "var(--warn)" : "var(--ink-faint)"}">${escapeHtml(phaseSub)}</div></div>
           <button type="button" class="btn ${canAdvance ? "btn-primary" : ""}" data-action="advance-phase" ${canAdvance ? "" : "disabled"}>${STATE.phasePending ? "Attesa conferma…" : "Avanza alla fase successiva"}</button>
         </div>
+        ${zone.active_cultivation_id ? renderStopCultivationBlock() : ""}
       </section>
       <section class="zone-section span2">
         <div class="live-head"><span class="title">Controlli</span><span class="ro">6 variabili · target dalla ricetta attiva</span></div>
@@ -2538,7 +2659,7 @@ async function deleteZoneNow() {
     showToast(`Settore ${zoneLabel(zone)} rimosso.`);
   } catch (err) {
     STATE.deleteZoneStatus = null;
-    STATE.deleteZoneError = err.message;
+    STATE.deleteZoneError = translateApiError(err.message);
     if (STATE.modalZoneId === zone.id) renderModal();
   }
 }
@@ -3029,6 +3150,93 @@ function pollForStrategyApplied(zoneId, variableKey, target) {
   STATE.adhocIntervals.push(iv);
 }
 
+/* ---- stop cultivation --------------------------------------------------- */
+
+/**
+ * Only rendered when zone.active_cultivation_id is set — i.e. exactly the
+ * condition that also blocks "Rimuovi settore" (see translateApiError /
+ * renderDeleteZoneSection), so this is the real resolution path for that
+ * block, not just a generic lifecycle control. POST /cultivations/{id}/
+ * terminate (not a raw /zones/{id}/commands StopCultivation) since it also
+ * validates the cultivation is in a state that can actually be stopped and
+ * moves it to "stopping" right away; the zone only clears
+ * active_cultivation_id once the Edge Controller reports the command back,
+ * hence the same poll/timeout pattern as advance-phase and strategy change.
+ */
+function renderStopCultivationBlock() {
+  const sending = STATE.stopCultivationStatus === "sending" || STATE.stopCultivationStatus === "waiting";
+  if (!STATE.stopCultivationConfirm) {
+    return `
+      <div style="margin-top:12px">
+        <button type="button" class="btn btn-danger-ghost" data-action="open-stop-cultivation-confirm" ${sending ? "disabled" : ""}>Ferma coltivazione</button>
+      </div>
+    `;
+  }
+  const label = STATE.stopCultivationStatus === "sending" ? "Invio…"
+    : STATE.stopCultivationStatus === "waiting" ? "Attesa conferma…"
+    : "Conferma stop";
+  return `
+    <div class="zone-danger-confirm" style="margin-top:12px">
+      <p>Fermare la coltivazione in corso in questo settore? La ricetta attiva viene interrotta e archiviata nello storico e il settore torna inattivo, senza coltivazione assegnata. Potrai assegnarne una nuova in seguito.</p>
+      ${STATE.stopCultivationError ? `<div class="zone-danger-error">${escapeHtml(STATE.stopCultivationError)}</div>` : ""}
+      <div class="zone-danger-actions">
+        <button type="button" class="btn" data-action="cancel-stop-cultivation" ${sending ? "disabled" : ""}>Annulla</button>
+        <button type="button" class="btn btn-danger" data-action="confirm-stop-cultivation" ${sending ? "disabled" : ""}>${label}</button>
+      </div>
+    </div>
+  `;
+}
+
+async function confirmStopCultivation() {
+  const zone = STATE.modalZone;
+  if (!zone || !zone.active_cultivation_id) return;
+  if (STATE.stopCultivationStatus === "sending" || STATE.stopCultivationStatus === "waiting") return;
+  STATE.stopCultivationStatus = "sending";
+  STATE.stopCultivationError = null;
+  renderModal();
+  try {
+    await apiPost(`/cultivations/${encodeURIComponent(zone.active_cultivation_id)}/terminate`);
+    STATE.stopCultivationStatus = "waiting";
+    renderModal();
+    showToast("Comando di stop inviato: in attesa che l'Edge Controller lo applichi.");
+    pollForCultivationStopped(zone.id);
+  } catch (err) {
+    STATE.stopCultivationStatus = null;
+    STATE.stopCultivationError = translateApiError(err.message);
+    renderModal();
+  }
+}
+
+function pollForCultivationStopped(zoneId) {
+  let elapsed = 0;
+  const iv = setInterval(async () => {
+    elapsed += COMMAND_POLL_MS;
+    try {
+      const zone = await apiGet(`/zones/${encodeURIComponent(zoneId)}`);
+      updateZoneInState(zone);
+      if (!zone.active_cultivation_id) {
+        clearInterval(iv);
+        STATE.stopCultivationStatus = null;
+        STATE.stopCultivationConfirm = false;
+        STATE.modalRecipe = null;
+        STATE.modalRecipeId = null;
+        renderModalIfSafe();
+        showToast("Coltivazione fermata: il settore è ora inattivo.");
+        return;
+      }
+    } catch (e) { /* transient error, keep polling */ }
+    if (elapsed >= COMMAND_TIMEOUT_MS) {
+      clearInterval(iv);
+      if (STATE.stopCultivationStatus === "waiting") {
+        STATE.stopCultivationStatus = null;
+        renderModalIfSafe();
+        showToast("Nessuna conferma dall'Edge Controller entro il timeout (verifica che sia in esecuzione).", "warn");
+      }
+    }
+  }, COMMAND_POLL_MS);
+  STATE.adhocIntervals.push(iv);
+}
+
 /* ---- telemetry chart (hand-rolled canvas, no external deps) ----------- */
 
 async function refreshChartData() {
@@ -3147,6 +3355,29 @@ function drawTelemetryChart(canvas, points, setpoint, unit) {
 /* View switching                                                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Repaints the just-activated view synchronously, from whatever data is
+ * already cached — or a "Caricamento…" placeholder on a view's very first
+ * visit this session, when there is nothing to paint yet. Without this,
+ * every switchView() left the content area fully empty (0 height) until
+ * that view's poll made its first request and resolved: on a slow
+ * connection this reads as a broken two-column layout (sidebar full
+ * height, nothing beside it for a long stretch), and even on a fast one
+ * it's a needless blank flash on every single revisit.
+ */
+function paintViewImmediately(view) {
+  const el = document.getElementById("view-" + view);
+  if (view === "home") {
+    if (STATE.zonesLoaded) renderHome(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
+  } else if (view === "control") {
+    if (STATE.zonesLoaded) renderControl(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
+  } else if (view === "recipes") {
+    if (STATE.recipesLoaded) renderRecipes(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
+  } else if (view === "alerts") {
+    renderAlertsView(); // already shows its own "Caricamento…" until STATE.alertsPage.loaded
+  }
+}
+
 function switchView(view) {
   STATE.view = view;
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
@@ -3155,6 +3386,13 @@ function switchView(view) {
   ["home", "recipes", "control", "alerts"].forEach((v) => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
   });
+  // A view switch always starts from the top — otherwise a tall previous
+  // page (e.g. Ricette, scrolled down) can leave the viewport stranded
+  // mid-page on a shorter or still-loading new one, looking exactly like
+  // "content is missing further down" until the new content grows back up
+  // to that scroll position.
+  window.scrollTo(0, 0);
+  paintViewImmediately(view);
 
   clearPoll("zones");
   clearPoll("recipes-poll");
@@ -3236,12 +3474,12 @@ function initEventDelegation() {
     if (submitRecipeFormBtn && !submitRecipeFormBtn.disabled) { submitRecipeForm(); return; }
 
     const openAddSector = e.target.closest('[data-action="open-add-sector"]');
-    if (openAddSector) {
+    if (openAddSector && !openAddSector.disabled) {
       STATE.addSectorForm = {
         dept: Number(openAddSector.dataset.dept),
         sector: Number(openAddSector.dataset.sector),
-        name: "",
-        species: "",
+        recipeId: "",
+        confirmStep: false,
         status: null,
         error: null,
       };
@@ -3251,6 +3489,23 @@ function initEventDelegation() {
 
     const cancelAddSector = e.target.closest('[data-action="cancel-add-sector"]');
     if (cancelAddSector) { STATE.addSectorForm = null; renderHome(); return; }
+
+    const proceedAddSector = e.target.closest('[data-action="proceed-add-sector"]');
+    if (proceedAddSector && !proceedAddSector.disabled) {
+      const form = STATE.addSectorForm;
+      if (form && form.recipeId) {
+        STATE.addSectorForm = { ...form, confirmStep: true, error: null };
+        renderHome();
+      }
+      return;
+    }
+
+    const cancelAddSectorConfirm = e.target.closest('[data-action="cancel-add-sector-confirm"]');
+    if (cancelAddSectorConfirm) {
+      const form = STATE.addSectorForm;
+      if (form) { STATE.addSectorForm = { ...form, confirmStep: false, error: null }; renderHome(); }
+      return;
+    }
 
     const submitAddSectorBtn = e.target.closest('[data-action="submit-add-sector"]');
     if (submitAddSectorBtn && !submitAddSectorBtn.disabled) { submitAddSector(); return; }
@@ -3273,6 +3528,25 @@ function initEventDelegation() {
 
     const confirmDeleteZoneBtn = e.target.closest('[data-action="confirm-delete-zone"]');
     if (confirmDeleteZoneBtn && !confirmDeleteZoneBtn.disabled) { deleteZoneNow(); return; }
+
+    const openStopCultivation = e.target.closest('[data-action="open-stop-cultivation-confirm"]');
+    if (openStopCultivation && !openStopCultivation.disabled) {
+      STATE.stopCultivationConfirm = true;
+      STATE.stopCultivationError = null;
+      renderModal();
+      return;
+    }
+
+    const cancelStopCultivation = e.target.closest('[data-action="cancel-stop-cultivation"]');
+    if (cancelStopCultivation) {
+      STATE.stopCultivationConfirm = false;
+      STATE.stopCultivationError = null;
+      renderModal();
+      return;
+    }
+
+    const confirmStopCultivationBtn = e.target.closest('[data-action="confirm-stop-cultivation"]');
+    if (confirmStopCultivationBtn && !confirmStopCultivationBtn.disabled) { confirmStopCultivation(); return; }
 
     const recipeBack = e.target.closest('[data-action="recipe-back"]');
     if (recipeBack) { goBack(); return; }
@@ -3368,6 +3642,13 @@ function initEventDelegation() {
       renderModal();
       return;
     }
+
+    const addSectorRecipeSelect = e.target.closest('[data-action="add-sector-recipe-select"]');
+    if (addSectorRecipeSelect && STATE.addSectorForm) {
+      STATE.addSectorForm = { ...STATE.addSectorForm, recipeId: addSectorRecipeSelect.value, error: null };
+      renderHome();
+      return;
+    }
   });
 
   document.addEventListener("input", (e) => {
@@ -3376,20 +3657,12 @@ function initEventDelegation() {
       updateRecipeGridOnly();
     }
 
-    const addSectorField = e.target.closest('[data-action="add-sector-field"]');
-    if (addSectorField && STATE.addSectorForm) {
-      // Write straight into STATE only — no re-render, so typing doesn't
-      // fight the innerHTML refresh for cursor position/focus.
-      STATE.addSectorForm[addSectorField.dataset.field] = addSectorField.value;
-    }
-
     const plantQuarantineReason = e.target.closest('[data-action="plant-quarantine-reason"]');
     if (plantQuarantineReason) {
       const plantId = plantQuarantineReason.dataset.plantId;
       const ui = STATE.plantUi[plantId] || {};
-      // Same "write straight into STATE, no re-render" pattern as
-      // add-sector-field, so typing doesn't fight the modal's periodic poll
-      // re-render for cursor position/focus.
+      // Write straight into STATE only — no re-render, so typing doesn't
+      // fight the modal's periodic poll re-render for cursor position/focus.
       STATE.plantUi[plantId] = { ...ui, quarantineReason: plantQuarantineReason.value };
     }
 

@@ -432,6 +432,12 @@ a:hover { color: var(--accent-dark); }
   text-align: left;
 }
 .sector-slot-add:hover { background: rgba(255, 255, 255, .5); }
+.sector-slot-add:disabled {
+  color: var(--ink-faint);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+.sector-slot-add:disabled:hover { background: transparent; }
 
 .add-sector-form {
   display: flex; flex-direction: column; gap: 8px;
