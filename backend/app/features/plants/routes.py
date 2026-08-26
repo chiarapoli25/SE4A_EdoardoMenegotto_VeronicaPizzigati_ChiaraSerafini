@@ -2,7 +2,7 @@
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ...core.database import get_db
 from ..zones.repository import get_zone
@@ -10,6 +10,7 @@ from .models import Plant, PlantCreate, PlantMovement, PlantQuarantineUpdate
 from .repository import (
     PlantConflict,
     create_plant,
+    delete_plant,
     get_plant,
     list_plant_movements,
     list_plants,
@@ -129,3 +130,24 @@ def read_plant_movements(
     if get_plant(connection, plant_id) is None:
         raise HTTPException(status_code=404, detail=f"plant {plant_id!r} not found")
     return list_plant_movements(connection, plant_id, limit)
+
+
+@router.delete("/{plant_id}", status_code=204)
+def remove_plant(
+    plant_id: str,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """@brief Cancella definitivamente una pianta e il suo storico spostamenti.
+
+    @details Nessuna restrizione di stato: a differenza di un settore, una
+    pianta non ha un "processo attivo" legato a se' che renda pericolosa
+    una cancellazione immediata, quindi e' cancellabile sia normale sia in
+    quarantena. Lo storico in `plant_movements` viene cancellato insieme
+    alla pianta (cascade), perche' senza la pianta quei record non hanno
+    piu' un soggetto a cui riferirsi.
+    """
+    plant = get_plant(connection, plant_id)
+    if plant is None:
+        raise HTTPException(status_code=404, detail=f"plant {plant_id!r} not found")
+    delete_plant(connection, plant)
+    return Response(status_code=204)

@@ -32,6 +32,16 @@ const CHART_POLL_MS = 15000;
 const COMMAND_POLL_MS = 1500;
 const COMMAND_TIMEOUT_MS = 20000;
 
+// Frontend-only rule (not enforced by the backend): "Fai uscire" stays
+// disabled until at least this much time has passed since quarantined_at.
+// Placeholder value — change this constant to tune it, nothing else to touch.
+const QUARANTINE_MIN_RELEASE_MS = 24 * 60 * 60 * 1000;
+
+// The quarantine zone id is fixed: department 5 has exactly one sector
+// (backend now enforces sector_number=1 there, see zones/routes.py), so
+// there is only ever one valid destination for PATCH /plants/{id}/quarantine.
+const QUARANTINE_ZONE_ID = "r5-s1";
+
 const VARIABLES = [
   { key: "soil_moisture", label: "Umidità del terriccio", unit: "%", sensorField: "soil_moisture_percent", decimals: 1 },
   { key: "light", label: "Luce (PPFD)", unit: "µmol/m²s", sensorField: "light_ppfd_umol_m2_s", decimals: 0 },
@@ -264,6 +274,27 @@ const STATE = {
   deleteZoneStatus: null, // "sending" | null
   deleteZoneError: null,
 
+  // Plants of the zone currently open in the modal (production-sector
+  // detail): GET /plants?zone_id=<zone>, refreshed on every "modal" poll
+  // tick alongside telemetry/actuators.
+  modalPlants: [],
+  modalPlantsLoaded: false,
+  addPlantStatus: null, // "sending" | null
+  addPlantError: null,
+
+  // Quarantine detail pop-up (STATE.modalKind = "quarantine"): plants
+  // currently in r5-s1, is_quarantined=true.
+  quarantinePlants: [],
+  quarantinePlantsLoaded: false,
+
+  // Per-plant transient UI state, keyed by plant id — shared between the
+  // zone-detail plant list and the quarantine detail tiles, since plant ids
+  // are unique across both. Each entry may carry: quarantineFormOpen,
+  // quarantineReason, quarantineStatus, quarantineError (Metti in
+  // quarantena); releaseStatus, releaseError (Fai uscire); deleteConfirm,
+  // deleteStatus, deleteError (Rimuovi definitivamente).
+  plantUi: {},
+
   // Single shared "where did I come from" marker, captured once at the
   // moment a pop-up (or a sub-view inside one) is opened. Back buttons
   // consult this instead of hard-coding a destination, so the same
@@ -349,6 +380,44 @@ function fmtDateTime(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+/** Human-readable elapsed time since `iso` (e.g. "2g 4h", "5h 12m", "8m"),
+ * recomputed from Date.now() on every call so re-rendering on a poll tick
+ * is enough to keep it live — no page reload needed. */
+function fmtElapsed(iso) {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return "—";
+  const totalMinutes = Math.floor(Math.max(0, Date.now() - then) / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}g ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/** True once at least QUARANTINE_MIN_RELEASE_MS has passed since `iso`. */
+function quarantineReleaseAllowed(iso) {
+  if (!iso) return true;
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return true;
+  return Date.now() - then >= QUARANTINE_MIN_RELEASE_MS;
+}
+
+/** Remaining wait before "Fai uscire" becomes enabled, human-readable. */
+function quarantineReleaseWait(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return "";
+  const remainingMs = QUARANTINE_MIN_RELEASE_MS - (Date.now() - then);
+  if (remainingMs <= 0) return "";
+  const totalMinutes = Math.ceil(remainingMs / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 /** Dotted-path get/set into a plain nested object/array draft — used by the
@@ -531,7 +600,7 @@ function renderHome() {
   const degraded = zones.filter((z) => z.operational_state === "Degraded").length;
   const emergency = zones.filter((z) => z.operational_state === "EmergencyLockdown").length;
 
-  setPageTitle("Reparti della serra", `${total} settori registrati (massimo 10: 5 reparti × 2 settori) · ${online} online`);
+  setPageTitle("Reparti della serra", `${total} settori registrati (massimo 9: 4 reparti produttivi × 2 settori + quarantena × 1) · ${online} online`);
 
   const deptCards = [1, 2, 3, 4, 5].map((n) => renderDeptCard(n, byDept[n] || [])).join("");
 
@@ -569,11 +638,12 @@ function renderDeptCard(n, zones) {
 
   if (n === 5) {
     // Quarantine has no per-sector cultivation like the production
-    // departments — r5-s1/r5-s2 still exist server-side as the technical
-    // destination for PATCH /plants/{id}/quarantine, but showing them as
-    // "Settore" slots here doesn't make sense. Show plant-level info instead.
+    // departments — r5-s1 is its only physical sector, the fixed technical
+    // destination for PATCH /plants/{id}/quarantine, but showing it as a
+    // "Settore" slot here doesn't make sense. The whole card is clickable
+    // instead, opening the per-plant quarantine detail pop-up.
     return `
-      <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card dept-card-clickable" data-action="open-quarantine" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
         <div class="dept-card-head">
           <span class="dept-code">REPARTO ${n}</span>
         </div>
@@ -759,15 +829,32 @@ async function loadAlerts(zones) {
 async function loadQuarantineStats() {
   try {
     const plants = await apiGet("/plants", { is_quarantined: true, limit: 1000 });
-    if (!plants.length) return { count: 0, lastEntry: null };
+    // Keeps the full plant list (not just count/lastEntry) so the Home
+    // alerts panel can compute the "pianta senza settore di origine" alarm
+    // client-side without a second network call.
+    if (!plants.length) return { count: 0, lastEntry: null, plants: [] };
     let last = null;
     plants.forEach((p) => {
       if (p.quarantined_at && (!last || new Date(p.quarantined_at) > new Date(last))) last = p.quarantined_at;
     });
-    return { count: plants.length, lastEntry: last };
+    return { count: plants.length, lastEntry: last, plants };
   } catch (e) {
-    return { count: null, lastEntry: null };
+    return { count: null, lastEntry: null, plants: [] };
   }
+}
+
+/**
+ * Quarantined plants whose home_zone_id no longer resolves to any zone in
+ * STATE.zones — e.g. after their origin sector was deleted (see DELETE
+ * /zones/{id}, which deliberately leaves plants pointing at a since-removed
+ * zone rather than blocking the deletion). Computed entirely client-side
+ * from data already fetched for this page (STATE.zones, STATE.quarantine
+ * .plants) — no extra backend call.
+ */
+function computeOrphanQuarantinePlants() {
+  const plants = (STATE.quarantine && STATE.quarantine.plants) || [];
+  const zoneIds = new Set(STATE.zones.map((z) => z.id));
+  return plants.filter((p) => !zoneIds.has(p.home_zone_id));
 }
 
 function renderAlertsPanel() {
@@ -778,11 +865,14 @@ function renderAlertsPanel() {
     return;
   }
   const alerts = STATE.alerts || [];
-  if (!alerts.length) {
+  const orphanPlants = computeOrphanQuarantinePlants();
+
+  if (!alerts.length && !orphanPlants.length) {
     el.innerHTML = '<div class="empty-note">Nessun allarme attivo: tutti i settori registrati sono Nominal.</div>';
     return;
   }
-  el.innerHTML = alerts.map((a) => {
+
+  const zoneAlertsHtml = alerts.map((a) => {
     const op = OP_META[a.zone.operational_state] || OP_META.Nominal;
     const title = `${zoneLabel(a.zone)} in ${a.zone.operational_state}`;
     const detail = a.event
@@ -795,6 +885,21 @@ function renderAlertsPanel() {
       </div>
     `;
   }).join("");
+
+  // Third, client-computed category: plants stuck in quarantine because
+  // their origin sector no longer exists. Distinct title from the zone
+  // alerts above but the same visual shape, so it reads as one more entry
+  // in the same list rather than a separate widget.
+  const orphanHtml = orphanPlants.map((p) => {
+    return `
+      <div class="alert-item">
+        <span class="alert-bar" style="background:${OP_META.EmergencyLockdown.color}"></span>
+        <div><div class="alert-title">Pianta senza settore di origine</div><div class="alert-detail">${escapeHtml(p.species)} (${escapeHtml(p.id)}) · in quarantena da ${fmtElapsed(p.quarantined_at)}</div></div>
+      </div>
+    `;
+  }).join("");
+
+  el.innerHTML = zoneAlertsHtml + orphanHtml;
 }
 
 function renderQuarantineBox() {
@@ -1499,7 +1604,7 @@ function renderControl() {
     return true;
   });
 
-  setPageTitle("Controllo settori", `Accesso diretto al controllo avanzato di ogni settore · ${zones.length} settori registrati (massimo 10)`);
+  setPageTitle("Controllo settori", `Accesso diretto al controllo avanzato di ogni settore · ${zones.length} settori registrati (massimo 9)`);
 
   const rowsHtml = rows.map((z) => {
     const strategies = uniqueSorted(Object.values(z.current_strategies));
@@ -1567,6 +1672,11 @@ async function openZoneModal(zoneId, entry) {
   STATE.deleteZoneConfirm = false;
   STATE.deleteZoneStatus = null;
   STATE.deleteZoneError = null;
+  STATE.modalPlants = [];
+  STATE.modalPlantsLoaded = false;
+  STATE.addPlantStatus = null;
+  STATE.addPlantError = null;
+  STATE.plantUi = {};
 
   STATE.modalZone = STATE.zones.find((z) => z.id === zoneId) || null;
   document.getElementById("modal-overlay").classList.remove("hidden");
@@ -1605,6 +1715,13 @@ function closeModal() {
   STATE.deleteZoneConfirm = false;
   STATE.deleteZoneStatus = null;
   STATE.deleteZoneError = null;
+  STATE.modalPlants = [];
+  STATE.modalPlantsLoaded = false;
+  STATE.addPlantStatus = null;
+  STATE.addPlantError = null;
+  STATE.quarantinePlants = [];
+  STATE.quarantinePlantsLoaded = false;
+  STATE.plantUi = {};
 }
 
 /**
@@ -1648,10 +1765,11 @@ async function loadModalRecipe(recipeId) {
 async function tickModal() {
   if (!STATE.modalZoneId) return;
   const zoneId = STATE.modalZoneId;
-  const [zoneRes, telemetryRes, actuatorsRes] = await Promise.allSettled([
+  const [zoneRes, telemetryRes, actuatorsRes, plantsRes] = await Promise.allSettled([
     apiGet(`/zones/${encodeURIComponent(zoneId)}`),
     apiGet(`/zones/${encodeURIComponent(zoneId)}/telemetry/latest`),
     apiGet(`/zones/${encodeURIComponent(zoneId)}/actuators/latest`),
+    apiGet("/plants", { zone_id: zoneId, limit: 1000 }),
   ]);
   if (STATE.modalZoneId !== zoneId) return; // modal changed while requests were in flight
 
@@ -1666,19 +1784,66 @@ async function tickModal() {
   }
   STATE.modalTelemetry = telemetryRes.status === "fulfilled" ? telemetryRes.value : null;
   STATE.modalActuators = actuatorsRes.status === "fulfilled" ? actuatorsRes.value : null;
+  if (plantsRes.status === "fulfilled") {
+    // Don't clobber a plant the user is mid-action on (quarantine form open,
+    // delete confirm pending) with a stale poll response race — but a plain
+    // list refresh (new plant added elsewhere, one removed) is safe to apply.
+    STATE.modalPlants = plantsRes.value;
+    STATE.modalPlantsLoaded = true;
+  }
   renderModalIfSafe();
 }
 
+/**
+ * Quarantine detail pop-up: opened from the clickable REPARTO 5 card on
+ * Home, not tied to any single zone (STATE.modalZoneId stays null — there
+ * is no "zone" this pop-up is about, only the fixed quarantine sector).
+ */
+async function openQuarantineModal() {
+  STATE.modalKind = "quarantine";
+  STATE.modalZoneId = null;
+  STATE.modalZone = null;
+  STATE.quarantinePlants = [];
+  STATE.quarantinePlantsLoaded = false;
+  STATE.plantUi = {};
+  STATE.returnTo = null;
+
+  document.getElementById("modal-overlay").classList.remove("hidden");
+  renderModal();
+  setPoll("modal", tickQuarantineModal, MODAL_POLL_MS);
+}
+
+async function tickQuarantineModal() {
+  if (STATE.modalKind !== "quarantine") return;
+  try {
+    const plants = await apiGet("/plants", {
+      zone_id: QUARANTINE_ZONE_ID,
+      is_quarantined: true,
+      limit: 1000,
+    });
+    if (STATE.modalKind !== "quarantine") return; // modal changed while in flight
+    STATE.quarantinePlants = plants;
+    STATE.quarantinePlantsLoaded = true;
+    renderModalIfSafe();
+  } catch (e) {
+    if (STATE.modalKind !== "quarantine") return;
+    STATE.quarantinePlantsLoaded = true;
+    renderModalIfSafe();
+  }
+}
+
 function renderModalIfSafe() {
-  // Avoid yanking focus away from an open <select> mid-interaction.
+  // Avoid yanking focus away from an open <select> — or, since the plant
+  // quarantine reason field lives here too, a text <input> — mid-interaction.
   const active = document.activeElement;
-  if (active && active.tagName === "SELECT" && isFocusedInside("modal-content")) return;
+  if (active && (active.tagName === "SELECT" || active.tagName === "INPUT") && isFocusedInside("modal-content")) return;
   renderModal();
 }
 
 function renderModal() {
   if (STATE.modalKind === "recipe") { renderRecipeModal(); return; }
   if (STATE.modalKind === "recipe-form") { renderRecipeFormModal(); return; }
+  if (STATE.modalKind === "quarantine") { renderQuarantineModal(); return; }
   const zone = STATE.modalZone;
   const wrap = document.getElementById("modal-content");
   if (!zone) {
@@ -1775,9 +1940,99 @@ function renderZoneSummary(zone) {
           <button type="button" class="btn btn-primary" data-action="open-advanced-tab">Modifica parametri →</button>
         </div>
       </section>
+      <section class="zone-section span2">
+        ${renderZonePlants(zone)}
+      </section>
       <section class="zone-section span2 zone-danger-zone">
         ${renderDeleteZoneSection(zone)}
       </section>
+    </div>
+  `;
+}
+
+function renderZonePlants(zone) {
+  const plants = STATE.modalPlants || [];
+  const addSending = STATE.addPlantStatus === "sending";
+  let body;
+  if (!STATE.modalPlantsLoaded) {
+    body = '<div class="empty-note">Caricamento…</div>';
+  } else if (plants.length === 0) {
+    body = '<div class="empty-note">Nessuna pianta registrata in questo settore.</div>';
+  } else {
+    body = `<div class="plant-list">${plants.map((p) => renderZonePlantRow(p)).join("")}</div>`;
+  }
+  return `
+    <div class="live-head"><span class="title">Piante di questo settore</span><span class="ro">${plants.length} registrat${plants.length === 1 ? "a" : "e"}</span></div>
+    ${body}
+    ${STATE.addPlantError ? `<div class="zone-danger-error">${escapeHtml(STATE.addPlantError)}</div>` : ""}
+    <div style="display:flex;justify-content:flex-end;margin-top:14px">
+      <button type="button" class="btn" data-action="add-plant" data-zone-id="${escapeAttr(zone.id)}" ${addSending ? "disabled" : ""}>${addSending ? "Aggiunta…" : "+ Aggiungi pianta"}</button>
+    </div>
+  `;
+}
+
+/**
+ * One row for a plant currently hosted in this production zone. Two
+ * actions, deliberately unbalanced: "Metti in quarantena" is the frequent,
+ * inviting one (btn-warn, same weight as elsewhere in the app); "Rimuovi
+ * definitivamente" is the rare, irreversible one — same principle as
+ * "Rimuovi settore": muted styling, physically separated (own row below),
+ * explicit two-step confirmation before the DELETE actually fires.
+ */
+function renderZonePlantRow(p) {
+  const ui = STATE.plantUi[p.id] || {};
+  const qSending = ui.quarantineStatus === "sending";
+  const dSending = ui.deleteStatus === "sending";
+
+  let quarantineBlock;
+  if (ui.quarantineFormOpen) {
+    quarantineBlock = `
+      <div class="plant-inline-form">
+        <input type="text" class="add-sector-input" data-action="plant-quarantine-reason" data-plant-id="${escapeAttr(p.id)}"
+          placeholder="Motivo (obbligatorio)" value="${escapeAttr(ui.quarantineReason || "")}" ${qSending ? "disabled" : ""}>
+        ${ui.quarantineError ? `<div class="add-sector-error">${escapeHtml(ui.quarantineError)}</div>` : ""}
+        <div class="add-sector-actions">
+          <button type="button" class="btn" data-action="cancel-plant-quarantine" data-plant-id="${escapeAttr(p.id)}" ${qSending ? "disabled" : ""}>Annulla</button>
+          <button type="button" class="btn btn-warn" data-action="submit-plant-quarantine" data-plant-id="${escapeAttr(p.id)}" ${qSending ? "disabled" : ""}>${qSending ? "Invio…" : "Conferma quarantena"}</button>
+        </div>
+      </div>
+    `;
+  } else {
+    quarantineBlock = `<button type="button" class="btn btn-warn" data-action="open-plant-quarantine" data-plant-id="${escapeAttr(p.id)}">Metti in quarantena</button>`;
+  }
+
+  return `
+    <div class="plant-row">
+      <div class="plant-row-head">
+        <span class="plant-row-id mono">${escapeHtml(p.id)}</span>
+        <span class="plant-row-species">${escapeHtml(p.species)}</span>
+      </div>
+      <div class="plant-row-actions">${quarantineBlock}</div>
+      ${renderPlantRemoveBlock(p, ui, dSending)}
+    </div>
+  `;
+}
+
+/**
+ * "Rimuovi definitivamente" — shared between the zone-detail plant rows and
+ * the quarantine tiles, same muted/irreversible treatment in both places.
+ */
+function renderPlantRemoveBlock(p, ui, dSending) {
+  if (ui.deleteConfirm) {
+    return `
+      <div class="plant-remove-confirm">
+        <p>Rimuovere definitivamente <b>${escapeHtml(p.id)}</b> (${escapeHtml(p.species)})? Non è reversibile: cancella anche lo storico movimenti.</p>
+        ${ui.deleteError ? `<div class="zone-danger-error">${escapeHtml(ui.deleteError)}</div>` : ""}
+        <div class="zone-danger-actions">
+          <button type="button" class="btn" data-action="cancel-plant-remove" data-plant-id="${escapeAttr(p.id)}" ${dSending ? "disabled" : ""}>Annulla</button>
+          <button type="button" class="btn btn-danger" data-action="confirm-plant-remove" data-plant-id="${escapeAttr(p.id)}" ${dSending ? "disabled" : ""}>${dSending ? "Rimozione…" : "Conferma rimozione"}</button>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="plant-row-danger">
+      <button type="button" class="plant-remove-btn" data-action="open-plant-remove" data-plant-id="${escapeAttr(p.id)}">Rimuovi definitivamente</button>
     </div>
   `;
 }
@@ -1829,6 +2084,253 @@ async function deleteZoneNow() {
     STATE.deleteZoneError = err.message;
     if (STATE.modalZoneId === zone.id) renderModal();
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Plant actions — shared between the zone-detail plant list and the  */
+/* quarantine detail pop-up (per-plant STATE.plantUi, keyed by id)    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * id is auto-generated as "{zone_id}-p{n}" (n = 1 past the highest existing
+ * suffix already used by a plant with home_zone_id === zone_id), species and
+ * home_zone_id come from the zone itself — nothing is asked from the user,
+ * per spec.
+ */
+async function addPlantToZone(zoneId) {
+  if (STATE.addPlantStatus === "sending") return;
+  const zone = STATE.zones.find((z) => z.id === zoneId) || STATE.modalZone;
+  if (!zone) return;
+
+  STATE.addPlantStatus = "sending";
+  STATE.addPlantError = null;
+  renderModal();
+
+  const prefix = `${zoneId}-p`;
+  try {
+    // The next free number can NOT be derived from STATE.modalPlants (or
+    // any current_zone_id-filtered list, i.e. GET /plants?zone_id=...): a
+    // plant that started in this zone and was later quarantined keeps
+    // home_zone_id === zoneId forever, but its current_zone_id moves to
+    // r5-s1 — so a current_zone_id query is blind to it and its number
+    // could be reused. GET /plants has no home_zone_id filter, so ask the
+    // backend for every plant and filter client-side by home_zone_id here
+    // — always the backend's live state, never a locally-held counter (one
+    // would reset on every page reload and reintroduce this exact bug).
+    const allPlants = await apiGet("/plants", { limit: 1000 });
+    const usedNumbers = allPlants
+      .filter((p) => p.home_zone_id === zoneId)
+      .map((p) => p.id)
+      .filter((id) => id.startsWith(prefix))
+      .map((id) => Number(id.slice(prefix.length)))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    let n = usedNumbers.length ? Math.max(...usedNumbers) + 1 : 1;
+
+    // Belt-and-braces on top of the home_zone_id lookup above: POST
+    // /plants is idempotent by (id, species, home_zone_id), so if a
+    // concurrent add from elsewhere races this one and the id picked above
+    // gets taken first, the backend would silently hand back that OTHER
+    // record instead of erroring — its current_zone_id would then not be
+    // this zone. Treat that as "id taken" and move to the next number
+    // instead of showing someone else's plant as freshly added here.
+    const MAX_ATTEMPTS = 20;
+    let created = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const candidate = await apiPost("/plants", {
+        id: `${prefix}${n}`,
+        species: zone.plant_species,
+        home_zone_id: zoneId,
+      });
+      if (candidate.current_zone_id === zoneId) { created = candidate; break; }
+      n += 1;
+    }
+    if (STATE.modalZoneId !== zoneId) return; // modal changed meanwhile
+    if (!created) {
+      STATE.addPlantStatus = null;
+      STATE.addPlantError = "Impossibile generare un id pianta libero, riprova.";
+      renderModal();
+      return;
+    }
+    STATE.modalPlants = [...(STATE.modalPlants || []), created];
+    STATE.addPlantStatus = null;
+    renderModal();
+    showToast(`Pianta ${created.id} aggiunta.`);
+  } catch (err) {
+    if (STATE.modalZoneId !== zoneId) return;
+    STATE.addPlantStatus = null;
+    STATE.addPlantError = err.message;
+    renderModal();
+  }
+}
+
+function openPlantQuarantineForm(plantId) {
+  STATE.plantUi[plantId] = { ...(STATE.plantUi[plantId] || {}), quarantineFormOpen: true, quarantineReason: "", quarantineError: null };
+  renderModal();
+}
+
+function cancelPlantQuarantineForm(plantId) {
+  STATE.plantUi[plantId] = { ...(STATE.plantUi[plantId] || {}), quarantineFormOpen: false, quarantineError: null };
+  renderModal();
+}
+
+async function submitPlantQuarantine(plantId) {
+  const ui = STATE.plantUi[plantId] || {};
+  if (ui.quarantineStatus === "sending") return;
+  const reason = (ui.quarantineReason || "").trim();
+  if (!reason) {
+    // Backend rejects a quarantine request with no reason (see
+    // PlantQuarantineUpdate._validate_transition) — validated client-side
+    // too, so the round trip isn't needed just to learn that.
+    STATE.plantUi[plantId] = { ...ui, quarantineReason: reason, quarantineError: "Il motivo è obbligatorio." };
+    renderModal();
+    return;
+  }
+
+  STATE.plantUi[plantId] = { ...ui, quarantineReason: reason, quarantineStatus: "sending", quarantineError: null };
+  renderModal();
+
+  try {
+    await apiPatch(`/plants/${encodeURIComponent(plantId)}/quarantine`, {
+      is_quarantined: true,
+      quarantine_zone_id: QUARANTINE_ZONE_ID,
+      reason,
+    });
+    // The plant's current_zone_id just moved to quarantine — it no longer
+    // belongs in this zone's plant list.
+    if (STATE.modalPlants) STATE.modalPlants = STATE.modalPlants.filter((p) => p.id !== plantId);
+    delete STATE.plantUi[plantId];
+    renderModal();
+    showToast(`Pianta ${plantId} messa in quarantena.`);
+  } catch (err) {
+    STATE.plantUi[plantId] = { ...STATE.plantUi[plantId], quarantineStatus: null, quarantineError: err.message };
+    renderModal();
+  }
+}
+
+async function releasePlantFromQuarantine(plantId) {
+  const ui = STATE.plantUi[plantId] || {};
+  if (ui.releaseStatus === "sending") return;
+  STATE.plantUi[plantId] = { ...ui, releaseStatus: "sending", releaseError: null };
+  renderModal();
+
+  try {
+    await apiPatch(`/plants/${encodeURIComponent(plantId)}/quarantine`, { is_quarantined: false });
+    if (STATE.quarantinePlants) STATE.quarantinePlants = STATE.quarantinePlants.filter((p) => p.id !== plantId);
+    delete STATE.plantUi[plantId];
+    renderModal();
+    showToast(`Pianta ${plantId} uscita dalla quarantena.`);
+  } catch (err) {
+    // The one documented failure mode here is 409 (home zone no longer
+    // exists, see PATCH /plants/{id}/quarantine) — surfaced on this same
+    // tile instead of a generic toast, since "Rimuovi definitivamente"
+    // right below is the actual way out of that specific situation.
+    const message = err.status === 409
+      ? `Impossibile far uscire la pianta: ${err.message}`
+      : err.message;
+    STATE.plantUi[plantId] = { ...STATE.plantUi[plantId], releaseStatus: null, releaseError: message };
+    renderModal();
+  }
+}
+
+function openPlantRemoveConfirm(plantId) {
+  STATE.plantUi[plantId] = { ...(STATE.plantUi[plantId] || {}), deleteConfirm: true, deleteError: null };
+  renderModal();
+}
+
+function cancelPlantRemove(plantId) {
+  STATE.plantUi[plantId] = { ...(STATE.plantUi[plantId] || {}), deleteConfirm: false, deleteError: null };
+  renderModal();
+}
+
+async function confirmPlantRemove(plantId) {
+  const ui = STATE.plantUi[plantId] || {};
+  if (ui.deleteStatus === "sending") return;
+  STATE.plantUi[plantId] = { ...ui, deleteStatus: "sending", deleteError: null };
+  renderModal();
+
+  try {
+    await apiDelete(`/plants/${encodeURIComponent(plantId)}`);
+    if (STATE.modalPlants) STATE.modalPlants = STATE.modalPlants.filter((p) => p.id !== plantId);
+    if (STATE.quarantinePlants) STATE.quarantinePlants = STATE.quarantinePlants.filter((p) => p.id !== plantId);
+    delete STATE.plantUi[plantId];
+    renderModal();
+    showToast(`Pianta ${plantId} rimossa definitivamente.`);
+  } catch (err) {
+    STATE.plantUi[plantId] = { ...STATE.plantUi[plantId], deleteStatus: null, deleteError: err.message };
+    renderModal();
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Quarantine detail pop-up                                           */
+/* ------------------------------------------------------------------ */
+
+function renderQuarantineModal() {
+  const wrap = document.getElementById("modal-content");
+  const meta = DEPT_META[5];
+  const plants = STATE.quarantinePlants || [];
+
+  let body;
+  if (!STATE.quarantinePlantsLoaded) {
+    body = '<div class="empty-note">Caricamento…</div>';
+  } else if (plants.length === 0) {
+    body = '<div class="empty-note">Nessuna pianta attualmente in quarantena.</div>';
+  } else {
+    body = `<div class="quarantine-grid">${plants.map((p) => renderQuarantineTile(p)).join("")}</div>`;
+  }
+
+  wrap.innerHTML = `
+    <div class="zone-header" style="--zone-tint:${meta.tint}">
+      <div style="min-width:0">
+        <div class="zone-header-code">
+          <span class="code">REPARTO 5</span>
+        </div>
+        <h2>Quarantena</h2>
+        <div class="zone-header-meta">
+          <span>${plants.length} piant${plants.length === 1 ? "a" : "e"} attualmente in quarantena</span>
+        </div>
+      </div>
+      <button type="button" class="zone-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="zone-body">
+      <section class="zone-section span2">
+        ${body}
+      </section>
+    </div>
+  `;
+}
+
+/**
+ * One tile per quarantined plant: species, entry reason, live elapsed time,
+ * "Fai uscire" (disabled until QUARANTINE_MIN_RELEASE_MS has passed, 409
+ * surfaced inline instead of a generic error) and, distinctly styled,
+ * "Rimuovi definitivamente" — the real fix for a plant stuck here because
+ * its origin sector no longer exists (see the Home alarm above).
+ */
+function renderQuarantineTile(p) {
+  const ui = STATE.plantUi[p.id] || {};
+  const rSending = ui.releaseStatus === "sending";
+  const dSending = ui.deleteStatus === "sending";
+  const canRelease = quarantineReleaseAllowed(p.quarantined_at) && !rSending;
+  const wait = quarantineReleaseWait(p.quarantined_at);
+  const releaseLabel = rSending ? "Uscita…" : "Fai uscire";
+  const releaseTitle = !quarantineReleaseAllowed(p.quarantined_at) ? `Disponibile tra ${wait}` : "";
+
+  return `
+    <div class="quarantine-tile">
+      <div class="quarantine-tile-head">
+        <span class="plant-row-species">${escapeHtml(p.species)}</span>
+        <span class="plant-row-id mono">${escapeHtml(p.id)}</span>
+      </div>
+      <div class="quarantine-tile-row"><span class="k">Motivo</span><span class="v">${escapeHtml(p.quarantine_reason || "—")}</span></div>
+      <div class="quarantine-tile-row"><span class="k">In quarantena da</span><span class="v mono">${fmtElapsed(p.quarantined_at)}</span></div>
+      ${ui.releaseError ? `<div class="zone-danger-error">${escapeHtml(ui.releaseError)}</div>` : ""}
+      <div class="quarantine-tile-actions">
+        <button type="button" class="btn btn-primary" data-action="release-plant" data-plant-id="${escapeAttr(p.id)}" ${canRelease ? "" : "disabled"} title="${escapeAttr(releaseTitle)}">${releaseLabel}${!canRelease && !rSending && wait ? ` (tra ${wait})` : ""}</button>
+      </div>
+      ${renderPlantRemoveBlock(p, ui, dSending)}
+    </div>
+  `;
 }
 
 function renderZoneAdvanced(zone) {
@@ -2328,6 +2830,33 @@ function initEventDelegation() {
       if (rid && zone) openRecipeModal(rid, { action: "reopenZoneAdvanced", zoneId: zone.id });
       return;
     }
+
+    const openQuarantine = e.target.closest('[data-action="open-quarantine"]');
+    if (openQuarantine) { openQuarantineModal(); return; }
+
+    const addPlantBtn = e.target.closest('[data-action="add-plant"]');
+    if (addPlantBtn && !addPlantBtn.disabled) { addPlantToZone(addPlantBtn.dataset.zoneId); return; }
+
+    const openPlantQuarantine = e.target.closest('[data-action="open-plant-quarantine"]');
+    if (openPlantQuarantine) { openPlantQuarantineForm(openPlantQuarantine.dataset.plantId); return; }
+
+    const cancelPlantQuarantine = e.target.closest('[data-action="cancel-plant-quarantine"]');
+    if (cancelPlantQuarantine && !cancelPlantQuarantine.disabled) { cancelPlantQuarantineForm(cancelPlantQuarantine.dataset.plantId); return; }
+
+    const submitPlantQuarantineBtn = e.target.closest('[data-action="submit-plant-quarantine"]');
+    if (submitPlantQuarantineBtn && !submitPlantQuarantineBtn.disabled) { submitPlantQuarantine(submitPlantQuarantineBtn.dataset.plantId); return; }
+
+    const releasePlantBtn = e.target.closest('[data-action="release-plant"]');
+    if (releasePlantBtn && !releasePlantBtn.disabled) { releasePlantFromQuarantine(releasePlantBtn.dataset.plantId); return; }
+
+    const openPlantRemove = e.target.closest('[data-action="open-plant-remove"]');
+    if (openPlantRemove) { openPlantRemoveConfirm(openPlantRemove.dataset.plantId); return; }
+
+    const cancelPlantRemoveBtn = e.target.closest('[data-action="cancel-plant-remove"]');
+    if (cancelPlantRemoveBtn && !cancelPlantRemoveBtn.disabled) { cancelPlantRemove(cancelPlantRemoveBtn.dataset.plantId); return; }
+
+    const confirmPlantRemoveBtn = e.target.closest('[data-action="confirm-plant-remove"]');
+    if (confirmPlantRemoveBtn && !confirmPlantRemoveBtn.disabled) { confirmPlantRemove(confirmPlantRemoveBtn.dataset.plantId); return; }
   });
 
   document.addEventListener("change", (e) => {
@@ -2370,6 +2899,16 @@ function initEventDelegation() {
       // Write straight into STATE only — no re-render, so typing doesn't
       // fight the innerHTML refresh for cursor position/focus.
       STATE.addSectorForm[addSectorField.dataset.field] = addSectorField.value;
+    }
+
+    const plantQuarantineReason = e.target.closest('[data-action="plant-quarantine-reason"]');
+    if (plantQuarantineReason) {
+      const plantId = plantQuarantineReason.dataset.plantId;
+      const ui = STATE.plantUi[plantId] || {};
+      // Same "write straight into STATE, no re-render" pattern as
+      // add-sector-field, so typing doesn't fight the modal's periodic poll
+      // re-render for cursor position/focus.
+      STATE.plantUi[plantId] = { ...ui, quarantineReason: plantQuarantineReason.value };
     }
 
     // Recipe form text/number inputs: same "write straight into STATE,

@@ -72,6 +72,14 @@ def register_zone(
     @return Zona creata con stato iniziale `offline`.
     @throws HTTPException Se id o posizione sono gia occupati.
     """
+    if zone.department_number == 5 and zone.sector_number != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "department 5 (quarantena) has exactly one sector: "
+                "sector_number must be 1"
+            ),
+        )
     if zone.department_number < 5 and zone.assigned_edge_id is None:
         zone = zone.model_copy(update={"assigned_edge_id": default_edge_id()})
     if zone.active_recipe_id is not None:

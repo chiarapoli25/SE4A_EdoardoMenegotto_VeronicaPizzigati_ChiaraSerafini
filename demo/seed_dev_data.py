@@ -46,7 +46,8 @@ Topologia (stessa forma delle versioni precedenti dello script):
 - Reparto 3: r3-s1 (Nominal)
 - Reparto 4: r4-s1 (dimostrazione InjectFault persistente -> Degraded ->
   EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal)
-- Reparto 5: r5-s1, r5-s2 (container quarantena) + 5 piante quarantenate
+- Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 5 piante
+  quarantenate
 
 IMPORTANTE su cosa "genera" Degraded vs EmergencyLockdown nel codice reale
 dell'Edge (verificato leggendo edge/src/faults/fault_detector.cpp ed
@@ -122,7 +123,9 @@ PRODUCTION_ZONES = [
 ]
 QUARANTINE_ZONES = [
     ("r5-s1", "Quarantena - Settore 1", 5, 1),
-    ("r5-s2", "Quarantena - Settore 2", 5, 2),
+    # Il reparto 5 ha un solo settore fisico, sempre sector_number=1: il
+    # backend ora lo impone esplicitamente (400 su qualunque altro valore),
+    # quindi non esiste piu' un "r5-s2" da seedare qui.
 ]
 
 

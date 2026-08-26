@@ -198,3 +198,128 @@ def test_quarantined_plant_must_move_to_fifth_department(
     )
 
     assert response.status_code == 400
+
+
+def test_delete_plant_removes_it_and_returns_404_after(
+    client: TestClient,
+) -> None:
+    register_tomato(client)
+
+    deleted = client.delete("/plants/tomato-1")
+
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert client.get("/plants/tomato-1").status_code == 404
+
+
+def test_delete_plant_via_versioned_route_also_works(client: TestClient) -> None:
+    assert client.post(
+        "/plants",
+        json={
+            "id": "tomato-versioned",
+            "species": "Pomodoro",
+            "home_zone_id": "tomatoes",
+        },
+    ).status_code == 201
+
+    deleted = client.delete("/api/v1/plants/tomato-versioned")
+
+    assert deleted.status_code == 204
+    assert client.get("/plants/tomato-versioned").status_code == 404
+
+
+def test_delete_missing_plant_returns_404_not_500(client: TestClient) -> None:
+    response = client.delete("/plants/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_delete_plant_works_while_quarantined(client: TestClient) -> None:
+    # Unlike a zone, a plant has no "active process" of its own tied to it
+    # that would make an immediate deletion dangerous -- deletion is
+    # unconditional whether the plant is normal or currently quarantined.
+    register_tomato(client)
+    quarantine_tomato(client)
+    assert client.get("/plants/tomato-1").json()["is_quarantined"] is True
+
+    deleted = client.delete("/plants/tomato-1")
+
+    assert deleted.status_code == 204
+    assert client.get("/plants/tomato-1").status_code == 404
+
+
+def test_delete_plant_cascades_to_its_movement_history(
+    client: TestClient,
+) -> None:
+    register_tomato(client)
+    quarantine_tomato(client)
+    movements_before = client.get("/plants/tomato-1/movements")
+    assert len(movements_before.json()) == 1
+
+    deleted = client.delete("/plants/tomato-1")
+    assert deleted.status_code == 204
+
+    # The plant is gone, so /movements now 404s the same way it would for
+    # any other id that never existed.
+    assert client.get("/plants/tomato-1/movements").status_code == 404
+
+
+def test_delete_plant_actually_removes_movement_rows_from_the_database() -> None:
+    # The API-level check above only proves /movements 404s once the plant
+    # is gone -- that would be equally true if the rows were merely
+    # orphaned (unreachable via the plant's own id) rather than deleted. Set
+    # up an isolated connection so the underlying plant_movements table can
+    # be queried directly and the rows confirmed actually gone, not just
+    # unreachable.
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    init_db(connection)
+
+    def override_get_db():
+        yield connection
+
+    app.dependency_overrides[get_db] = override_get_db
+    test_client = TestClient(app)
+    try:
+        assert test_client.post(
+            "/zones",
+            json={
+                "id": "tomatoes",
+                "name": "Pomodori",
+                "department_number": 1,
+                "sector_number": 1,
+                "plant_species": "Pomodoro",
+            },
+        ).status_code == 201
+        assert test_client.post(
+            "/zones",
+            json={
+                "id": "quarantine-1",
+                "name": "Quarantena",
+                "department_number": 5,
+                "sector_number": 1,
+                "plant_species": None,
+            },
+        ).status_code == 201
+        register_tomato(test_client)
+        quarantine_tomato(test_client)
+
+        rows_before = connection.execute(
+            "SELECT COUNT(*) FROM plant_movements WHERE plant_id = ?",
+            ("tomato-1",),
+        ).fetchone()[0]
+        assert rows_before == 1
+
+        deleted = test_client.delete("/plants/tomato-1")
+        assert deleted.status_code == 204
+
+        rows_after = connection.execute(
+            "SELECT COUNT(*) FROM plant_movements WHERE plant_id = ?",
+            ("tomato-1",),
+        ).fetchone()[0]
+        assert rows_after == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM plants WHERE id = ?", ("tomato-1",)
+        ).fetchone()[0] == 0
+    finally:
+        app.dependency_overrides.clear()
+        connection.close()

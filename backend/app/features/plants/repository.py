@@ -196,3 +196,31 @@ def list_plant_movements(
         )
         for row in reversed(rows)
     ]
+
+
+def delete_plant(connection: sqlite3.Connection, stored_plant: Plant) -> None:
+    """@brief Cancella una pianta e il suo storico spostamenti collegato.
+
+    @details A differenza di una zona, una pianta non ha alcun "processo
+    attivo" legato a se' che renda pericolosa una cancellazione immediata:
+    non esiste equivalente di una coltivazione in corso da fermare prima.
+    Per questo la cancellazione e' incondizionata, sia che la pianta sia
+    normale sia che si trovi in quarantena.
+
+    Lo storico in `plant_movements` viene cancellato insieme alla pianta:
+    senza la pianta quei record non hanno piu' un soggetto a cui riferirsi
+    (a differenza del caso zona->piante, qui la pianta e' proprio l'entita'
+    che sparisce, non una entita' terza che sopravvive alla cancellazione).
+
+    @param connection Connessione SQLite sulla quale operare.
+    @param stored_plant Pianta gia' recuperata dal chiamante (deve esistere).
+    """
+    try:
+        connection.execute(
+            "DELETE FROM plant_movements WHERE plant_id = ?", (stored_plant.id,)
+        )
+        connection.execute("DELETE FROM plants WHERE id = ?", (stored_plant.id,))
+    except Exception:
+        connection.rollback()
+        raise
+    connection.commit()

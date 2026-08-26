@@ -63,8 +63,8 @@ script):
   online: nessuna telemetria le viene mai inviata)
 - Reparto 3: r3-s1 (online)
 - Reparto 4: r4-s1 (online)
-- Reparto 5: r5-s1, r5-s2 (quarantena) + 5 piante, tutte spostate in
-  quarantena in r5-s1
+- Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 5 piante,
+  tutte spostate in quarantena in r5-s1
 """
 
 from __future__ import annotations
@@ -89,7 +89,9 @@ PRODUCTION_ZONES = [
 ]
 QUARANTINE_ZONES = [
     ("r5-s1", "Quarantena - Settore 1", 5, 1),
-    ("r5-s2", "Quarantena - Settore 2", 5, 2),
+    # Il reparto 5 ha un solo settore fisico, sempre sector_number=1: il
+    # backend ora lo impone esplicitamente (400 su qualunque altro valore),
+    # quindi non esiste piu' un "r5-s2" da seedare qui.
 ]
 
 # Valori di sensore plausibili per i campi non coperti dalle sei variabili

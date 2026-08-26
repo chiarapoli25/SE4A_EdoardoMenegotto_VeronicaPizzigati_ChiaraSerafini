@@ -173,6 +173,22 @@ def test_fifth_department_is_reserved_for_quarantine(
     assert response.json()["plant_species"] is None
 
 
+def test_fifth_department_rejects_a_second_sector(
+    client: TestClient,
+) -> None:
+    # Department 5 (quarantine) has exactly one physical sector, always
+    # numbered 1 -- unlike the department/plant_species mismatch above,
+    # this is an explicit business-rule check (400), not a raw pydantic
+    # field-range violation (which would be 422).
+    response = client.post(
+        "/zones",
+        json=zone_payload("quarantine-2", 5, 2, plant_species=None),
+    )
+
+    assert response.status_code == 400
+    assert "sector_number" in response.json()["detail"]
+
+
 def test_quarantine_cannot_declare_one_plant_species(
     client: TestClient,
 ) -> None:

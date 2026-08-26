@@ -250,6 +250,62 @@ a:hover { color: var(--accent-dark); }
 
 .field-label { font-size: 12.5px; color: var(--ink-mute); }
 
+/* ---------- plants (zone-detail list + quarantine tiles) ---------- */
+
+.plant-list { display: flex; flex-direction: column; gap: 10px; }
+
+.plant-row {
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 12px 14px;
+  background: #fff;
+}
+.plant-row-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.plant-row-id { font-size: 11px; color: var(--ink-faint); }
+.plant-row-species { font-size: 13px; font-weight: 600; }
+.plant-row-actions { display: flex; }
+
+/* "Rimuovi definitivamente" — separated below a dashed rule, muted and
+   text-only (no border/background like the other buttons), same
+   "irreversible action should not look inviting" principle as
+   .btn-danger-ghost, taken one step further since this sits right next to
+   a frequent action within the same small card. */
+.plant-row-danger {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  text-align: right;
+}
+.plant-remove-btn {
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  font: 400 11px var(--sans);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.plant-remove-btn:hover { color: var(--danger); }
+
+.plant-remove-confirm {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--danger-soft);
+  border: 1px solid rgba(193, 90, 74, .3);
+  border-radius: var(--radius-sm);
+}
+.plant-remove-confirm p { font-size: 12px; color: var(--ink-soft); margin: 0 0 10px; }
+
+.plant-inline-form {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #f7fbf9;
+}
+
 /* ---------- home ---------- */
 
 .home-layout {
@@ -278,6 +334,9 @@ a:hover { color: var(--accent-dark); }
   flex-direction: column;
   gap: 14px;
 }
+
+.dept-card-clickable { cursor: pointer; transition: transform .16s, box-shadow .16s; }
+.dept-card-clickable:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(15, 54, 41, .1); }
 
 .dept-card-head {
   display: flex;
@@ -395,6 +454,24 @@ a:hover { color: var(--accent-dark); }
 }
 .quarantine-row { display: flex; justify-content: space-between; font-size: 12px; color: #7b6455; }
 .quarantine-row b { font: 500 12px var(--mono); color: #8a4f28; }
+
+.quarantine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.quarantine-tile {
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  padding: 14px;
+  background: #fff;
+}
+.quarantine-tile-head { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.quarantine-tile-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 4px 0; border-bottom: 1px solid #f0f3f1; }
+.quarantine-tile-row:last-of-type { border-bottom: none; }
+.quarantine-tile-row .k { color: var(--ink-mute); }
+.quarantine-tile-row .v { font-weight: 500; text-align: right; }
+.quarantine-tile-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
 
 .home-aside {
   flex: 1 1 340px;

@@ -115,10 +115,13 @@ class ZoneCreate(BaseModel):
     """@brief Dati necessari per registrare un settore della serra.
 
     @details La serra possiede quattro reparti produttivi, numerati da 1 a 4,
-    e il reparto 5 destinato alle piante in quarantena. Ogni reparto contiene
-    al massimo due settori, numerati da 1 a 2. I settori produttivi ospitano
-    una sola specie; quelli del quinto reparto sono misti e non dichiarano
-    `plant_species`. Lo stato di quarantena appartiene alla singola pianta.
+    e il reparto 5 destinato alle piante in quarantena. Ogni reparto
+    produttivo contiene al massimo due settori, numerati da 1 a 2; il
+    reparto 5 ha invece un solo settore, sempre numerato 1 (vincolo imposto
+    esplicitamente dalla route di creazione, non solo da convenzione). I
+    settori produttivi ospitano una sola specie; quello del quinto reparto
+    e' misto e non dichiara `plant_species`. Lo stato di quarantena
+    appartiene alla singola pianta.
     """
 
     ## @brief Identificativo univoco usato negli endpoint HTTP.
