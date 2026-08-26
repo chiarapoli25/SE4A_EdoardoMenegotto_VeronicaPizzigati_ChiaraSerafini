@@ -1,3 +1,9 @@
+# Test RIGOROSO — richiede l'Edge C++ reale acceso a mano.
+# Usa questo prima di una consegna/esame, per verificare che il sistema
+# vero (non simulato) si comporti correttamente.
+# Per popolare rapidamente la dashboard durante lo sviluppo, usa invece
+# demo/seed_test_scenario.py (non richiede l'Edge).
+
 """Popolamento SmartHydro basato ESCLUSIVAMENTE sull'Edge C++ reale.
 
 USO: con il backend già avviato (uvicorn backend.app.main:app --reload):
