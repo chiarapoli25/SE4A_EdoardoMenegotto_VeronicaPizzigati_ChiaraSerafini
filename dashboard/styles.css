@@ -316,17 +316,19 @@ a:hover { color: var(--accent-dark); }
 
 /* ---------- home ---------- */
 
+/* Stacked, not side-by-side: the department grid is its own full-width row
+   first, "Stato impianto"/"Allarmi recenti" (.home-summary) are a separate
+   row below it. They used to be flex siblings sharing one wrapping row,
+   which let .home-summary eat into the department grid's own columns on
+   the first row instead of sitting cleanly underneath it. */
 .home-layout {
   display: flex;
+  flex-direction: column;
   gap: 22px;
-  align-items: flex-start;
-  flex-wrap: wrap;
   min-width: 0;
 }
 
 .dept-grid {
-  flex: 1 1 720px;
-  min-width: 320px;
   display: grid;
   grid-template-columns: repeat(3, minmax(210px, 1fr));
   gap: 20px;
@@ -493,9 +495,10 @@ a:hover { color: var(--accent-dark); }
 .quarantine-tile-row .v { font-weight: 500; text-align: right; }
 .quarantine-tile-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
 
-.home-aside {
-  flex: 1 1 340px;
-  min-width: 300px;
+/* "Stato impianto" + "Allarmi recenti": a full-width row below the
+   department grid, the two cards side by side within it (was ".home-aside",
+   renamed since it's no longer beside anything). */
+.home-summary {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
@@ -944,7 +947,7 @@ a:hover { color: var(--accent-dark); }
 
 @media (max-width: 1180px) {
   .dept-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
-  .home-aside { grid-template-columns: 1fr; }
+  .home-summary { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 860px) {

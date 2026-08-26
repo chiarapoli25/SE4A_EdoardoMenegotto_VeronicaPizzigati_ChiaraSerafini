@@ -81,10 +81,11 @@ const DEPT_FALLBACK_NAMES = {
   4: "Piante da Frutto e Ortaggi",
   5: "Quarantena",
 };
-// Display order wherever departments are listed or filtered: Quarantena
-// (5) sits right after department 3, not after every production
-// department — this is the one order to use, not [1,2,3,4,5].
-const DEPT_ORDER = [1, 2, 3, 5, 4];
+// Display order wherever departments are listed or filtered: plain
+// numeric order. (A prior version of this spec put Quarantena (5) right
+// after department 3 — [1,2,3,5,4] — that was deliberately reverted back
+// to simple numeric order; don't reintroduce it without being asked.)
+const DEPT_ORDER = [1, 2, 3, 4, 5];
 
 const ADMIN_LABELS = { active: "In produzione", inactive: "Non attivo", maintenance: "Manutenzione" };
 const LIFECYCLE_LABELS = { Idle: "Inattivo", Running: "In esecuzione", Paused: "In pausa", Error: "Errore" };
@@ -664,7 +665,7 @@ function renderHome() {
   document.getElementById("view-home").innerHTML = `
     <div class="home-layout">
       <div class="dept-grid">${deptCards}</div>
-      <aside class="home-aside">
+      <aside class="home-summary">
         <div class="side-card">
           <div class="side-card-title">Stato impianto</div>
           <div class="status-line"><span class="swatch" style="background:var(--nominal)"></span><span class="label">Settori online</span><b>${online}/${total}</b></div>
@@ -2155,10 +2156,10 @@ function renderRecipeFormModal() {
 
 function renderControl() {
   const zones = STATE.zones;
-  // Department order everywhere is 1, 2, 3, 5, 4 (DEPT_ORDER) — not
-  // alphabetical by name (which uniqueSorted would give) and not simply
-  // ascending by number. Only departments that actually have a registered
-  // zone show up in the filter, same as before, just in the fixed order.
+  // Department order everywhere is DEPT_ORDER (plain numeric, 1-5) — not
+  // alphabetical by name (which uniqueSorted would give). Only departments
+  // that actually have a registered zone show up in the filter, same as
+  // before, just in the fixed order.
   const deptRank = Object.fromEntries(DEPT_ORDER.map((n, i) => [n, i]));
   const deptNumbersPresent = DEPT_ORDER.filter((n) => zones.some((z) => z.department_number === n));
   const deptOptions = deptNumbersPresent.map((n) => {
