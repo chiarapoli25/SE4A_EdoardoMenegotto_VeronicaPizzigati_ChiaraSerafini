@@ -1,7 +1,7 @@
 #include <smarthydro/backend/http_backend_client.hpp>
 
 #include <smarthydro/recipes/recipe_json.hpp>
-
+#define NOMINMAX
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 

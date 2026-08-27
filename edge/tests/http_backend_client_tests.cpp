@@ -356,11 +356,20 @@ TEST(HttpBackendClientTest, ReconcilesAddedAndRemovedZonesAtomically) {
 
     EXPECT_EQ(added, (std::vector<std::string>{"added-zone"}));
     EXPECT_EQ(removed, (std::vector<std::string>{"removed-zone"}));
-    std::ifstream cache(outbox / "assigned-zones.json");
-    const auto cached = nlohmann::json::parse(cache);
-    EXPECT_EQ(
-        cached,
-        nlohmann::json::array({"added-zone", "kept-zone"}));
+    {
+        // Scoped so the ifstream (and its underlying file handle) is
+        // closed before remove_all below runs — on Windows, deleting a
+        // directory while one of its files is still open elsewhere fails
+        // with "the process cannot access the file because it is being
+        // used by another process"; POSIX allows it, which is why this
+        // only ever surfaced there. Same fix as the std::ofstream setup
+        // block a few tests down (HttpErrorNeverRemovesKnownAssignments).
+        std::ifstream cache(outbox / "assigned-zones.json");
+        const auto cached = nlohmann::json::parse(cache);
+        EXPECT_EQ(
+            cached,
+            nlohmann::json::array({"added-zone", "kept-zone"}));
+    }
     std::filesystem::remove_all(outbox);
 }
 
@@ -394,8 +403,12 @@ TEST(HttpBackendClientTest, ValidEmptyManifestRemovesCachedAssignments) {
 
     EXPECT_EQ(removed, (std::vector<std::string>{"removed-zone"}));
     EXPECT_TRUE(client.take_commands().empty());
-    std::ifstream cache(outbox / "assigned-zones.json");
-    EXPECT_EQ(nlohmann::json::parse(cache), nlohmann::json::array());
+    {
+        // See the comment in ReconcilesAddedAndRemovedZonesAtomically
+        // above — scoped so the file handle is closed before remove_all.
+        std::ifstream cache(outbox / "assigned-zones.json");
+        EXPECT_EQ(nlohmann::json::parse(cache), nlohmann::json::array());
+    }
     std::filesystem::remove_all(outbox);
 }
 
@@ -428,10 +441,14 @@ TEST(HttpBackendClientTest, HttpErrorNeverRemovesKnownAssignments) {
     client.stop();
 
     EXPECT_TRUE(client.take_removed_zone_ids().empty());
-    std::ifstream cache(outbox / "assigned-zones.json");
-    EXPECT_EQ(
-        nlohmann::json::parse(cache),
-        nlohmann::json::array({"known-zone"}));
+    {
+        // See the comment in ReconcilesAddedAndRemovedZonesAtomically
+        // above — scoped so the file handle is closed before remove_all.
+        std::ifstream cache(outbox / "assigned-zones.json");
+        EXPECT_EQ(
+            nlohmann::json::parse(cache),
+            nlohmann::json::array({"known-zone"}));
+    }
     std::filesystem::remove_all(outbox);
 }
 

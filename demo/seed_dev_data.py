@@ -687,15 +687,32 @@ def main() -> None:
     for zone_id, name, dept, sector in QUARANTINE_ZONES:
         ensure_zone(zone_id, name, dept, sector, {"plant_species": None})
 
-    print("\n[seed] --- Passo 2 + 2bis: ActivateCultivation (via POST /cultivations) + SetSimulationSpeed ---")
+    print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) ---")
     for zone_id in edge_zone_ids:
         ensure_cultivation(zone_id, zone_recipe[zone_id])
-        enqueue_command(
-            zone_id,
-            f"set-time-scale-{zone_id}",
-            "SetSimulationSpeed",
-            {"time_scale": DEV_TIME_SCALE},
-        )
+    # SetSimulationSpeed (Passo 2bis) NON viene più accodato qui: vedi il
+    # Passo 4bis più sotto, dopo la conferma lifecycle_state=Running.
+    # Motivo (verificato leggendo il codice, non assunto): accodarlo subito
+    # dopo POST /cultivations, PRIMA che l'Edge reale sia anche solo avviato
+    # (wait_for_edge_start() arriva più avanti in questo script), rendeva
+    # l'esecuzione dipendente da come l'Edge processa in un colpo solo, al
+    # primo poll, sia la scoperta della zona sia i comandi già in coda
+    # (edge/src/backend/http_backend_client.cpp poll_zone_assignments() +
+    # poll_commands() nello stesso tick, edge/src/main.cpp la stessa
+    # iterazione del loop principale) — E soprattutto usava un command_id
+    # fisso (senza suffisso di run): su un rerun dello script, la POST con
+    # lo stesso command_id+payload non crea un nuovo comando ma restituisce
+    # SEMPRE la riga già esistente in DB, qualunque sia il suo status
+    # (backend/app/features/commands/repository.py create_command) — e
+    # enqueue_command() stampa "accodato" guardando solo lo status HTTP
+    # (201, identico sia per un comando nuovo sia per la rilettura di uno
+    # vecchio), MAI il campo status del comando restituito. Risultato: se
+    # anche una sola volta, in passato, quel comando fosse stato rifiutato
+    # (es. perché la zona non aveva ancora raggiunto Running quando fu
+    # processato), ogni rerun successivo dello script continuerebbe a
+    # rileggere silenziosamente quello stesso rifiuto per sempre, mostrando
+    # comunque "accodato" — esattamente il sintomo osservato (log
+    # "accodato" per ogni zona, ma time_scale rimasto a 1 su tutte).
 
     print("\n[seed] --- Passo 8: piante e quarantena (puro input, invariato) ---")
     plant_sources = [
@@ -731,6 +748,38 @@ def main() -> None:
             "passi 5/6/7 procederanno solo sulle zone confermate; controlla che "
             "l'Edge sia stato avviato con l'edge-id corretto e che veda il backend."
         )
+
+    # --- Passo 4bis: SetSimulationSpeed, ORA che ogni zona è Running -------
+    # (vedi la nota nel Passo 2 sul perché non viene più accodato prima).
+    # set_time_scale() lato Edge (edge/src/runtime/greenhouse_manager.cpp)
+    # rifiuta esplicitamente il comando finché lifecycle_state non è Running
+    # o Paused: accodarlo solo ora, con command_id univoco per questo run
+    # (grazie a run_suffix) e attendendone davvero l'esito con
+    # enqueue_and_wait_command() invece del solo status HTTP 201, elimina
+    # sia la finestra di rifiuto sia il rischio di rileggere in silenzio lo
+    # stato di un comando di un run precedente.
+    print(
+        f"\n[seed] --- Passo 4bis: SetSimulationSpeed (time_scale={DEV_TIME_SCALE:g}) "
+        "sulle zone Running ---"
+    )
+    for zone_id in edge_zone_ids:
+        if not running.get(zone_id):
+            print(f"[seed] salto SetSimulationSpeed su {zone_id}: non è Running")
+            continue
+        time_scale_status = enqueue_and_wait_command(
+            zone_id,
+            f"set-time-scale-{zone_id}-{run_suffix}",
+            "SetSimulationSpeed",
+            {"time_scale": DEV_TIME_SCALE},
+        )
+        if time_scale_status != "succeeded":
+            print(
+                f"[seed] AVVISO: SetSimulationSpeed su {zone_id} non risulta "
+                f"'succeeded' (esito: {time_scale_status!r}) — questa zona "
+                "resterà a time_scale=1 (tempo reale): i timeout di polling dei "
+                "passi successivi, calibrati assumendo time_scale=60 già "
+                "attivo, potrebbero non bastare per questa zona."
+            )
 
     # --- Passo 5 + 6: InjectFault -> Degraded (obbligatorio) ---------------
     if running.get(DEGRADED_DEMO_ZONE_ID):

@@ -10,9 +10,8 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_EDGE_EXECUTABLE = (
-    PROJECT_ROOT / "edge" / "build" / "bin" / "edge_simulator"
-)
+EDGE_SIMULATOR_BIN_DIR = PROJECT_ROOT / "edge" / "build" / "bin"
+DEFAULT_EDGE_EXECUTABLE = EDGE_SIMULATOR_BIN_DIR / "edge_simulator"
 EDGE_TIMEOUT_SECONDS = 20
 
 
@@ -32,17 +31,54 @@ class EdgeOutputInvalid(RuntimeError):
     """L'Edge non ha prodotto il contratto JSON atteso."""
 
 
-def configured_edge_executable() -> Path:
-    """Legge il percorso del simulatore batch, con fallback locale."""
-    configured = os.environ.get(
-        "SMARTHYDRO_EDGE_SIMULATOR_EXECUTABLE"
-    ) or os.environ.get("SMARTHYDRO_EDGE_EXECUTABLE")
-    return Path(configured).expanduser() if configured else DEFAULT_EDGE_EXECUTABLE
-
-
 def edge_is_ready(executable: Path) -> bool:
     """Controlla esistenza e permesso di esecuzione senza avviare processi."""
     return executable.is_file() and os.access(executable, os.X_OK)
+
+
+def _edge_simulator_candidates() -> list[Path]:
+    """Ogni percorso in cui un edge_simulator compilato può trovarsi.
+
+    Un generatore CMake a singola configurazione (Makefiles/Ninja, il caso
+    storico su Linux/macOS) mette l'eseguibile direttamente in bin/. I
+    generatori multi-configurazione di Windows (Visual Studio) lo mettono
+    invece in una sottocartella bin/<Config>/ a seconda della
+    configurazione scelta in fase di build (Debug o Release), con
+    estensione .exe. Si prova ciascuna combinazione nell'ordine
+    bin/, bin/Debug/, bin/Release/, senza assumere la piattaforma
+    corrente (nessuna dipendenza da os.name/sys.platform): un eseguibile
+    con o senza .exe viene riconosciuto ovunque si trovi.
+    """
+    directories = (
+        EDGE_SIMULATOR_BIN_DIR,
+        EDGE_SIMULATOR_BIN_DIR / "Debug",
+        EDGE_SIMULATOR_BIN_DIR / "Release",
+    )
+    names = ("edge_simulator", "edge_simulator.exe")
+    return [directory / name for directory in directories for name in names]
+
+
+def configured_edge_executable() -> Path:
+    """Legge il percorso del simulatore batch, con fallback locale.
+
+    Un override esplicito via variabile d'ambiente ha sempre precedenza
+    assoluta e non viene validato qui (lo fa edge_is_ready quando serve
+    davvero avviarlo). In assenza di override, cerca un eseguibile già
+    pronto tra le posizioni note (vedi _edge_simulator_candidates) e
+    restituisce la prima trovata; se nessuna esiste ancora (build non
+    fatta), ricade sul percorso storico DEFAULT_EDGE_EXECUTABLE, cosi'
+    il messaggio "Edge simulator is not available at ..." resta
+    comprensibile invece di elencare percorsi mai esistiti.
+    """
+    configured = os.environ.get(
+        "SMARTHYDRO_EDGE_SIMULATOR_EXECUTABLE"
+    ) or os.environ.get("SMARTHYDRO_EDGE_EXECUTABLE")
+    if configured:
+        return Path(configured).expanduser()
+    for candidate in _edge_simulator_candidates():
+        if edge_is_ready(candidate):
+            return candidate
+    return DEFAULT_EDGE_EXECUTABLE
 
 
 def run_edge_simulation(

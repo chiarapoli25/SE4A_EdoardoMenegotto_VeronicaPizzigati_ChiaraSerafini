@@ -79,9 +79,22 @@ std::optional<double> SensorSimulator::measure(
         return 0.0;
     }
 
-    std::normal_distribution<double> noise(0.0, channel.noise_standard_deviation);
+    // channel.noise_standard_deviation == 0.0 is a legitimate, validated
+    // configuration (validate_channel above only rejects < 0.0) — every
+    // "deterministic, zero-noise" test config uses it deliberately, to get
+    // reproducible readings. std::normal_distribution(mean, 0.0) is well
+    // defined on libstdc++ (always returns mean), but MSVC's Debug STL
+    // asserts on a non-positive sigma ("invalid sigma argument"). Skip
+    // constructing the distribution entirely when sigma <= 0 and use its
+    // mean (0.0 here) directly instead, which reproduces the exact
+    // observable behavior the code already had on Linux — not a workaround
+    // that changes results, just avoiding a distribution call that would
+    // add nothing anyway.
+    const double noise_sample = channel.noise_standard_deviation > 0.0
+        ? std::normal_distribution<double>(0.0, channel.noise_standard_deviation)(generator_)
+        : 0.0;
     double measured = physical_value + channel.bias +
-                      channel.calibration_correction + noise(generator_);
+                      channel.calibration_correction + noise_sample;
     if (channel.resolution > 0.0) {
         measured = std::round(measured / channel.resolution) * channel.resolution;
     }
