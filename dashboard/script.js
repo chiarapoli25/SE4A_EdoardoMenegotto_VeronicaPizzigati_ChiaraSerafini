@@ -345,6 +345,14 @@ const STATE = {
   stopCultivationStatus: null, // "sending" | "waiting" | null
   stopCultivationError: null,
 
+  // "Avvia coltivazione" (same section, mirror of the stop block above) —
+  // shown instead of it when the zone has no active_cultivation_id but
+  // already has a recipe assigned (active_recipe_id): a single-click
+  // action, no confirm step (starting isn't destructive) and no recipe
+  // picker (always the zone's own active_recipe_id).
+  startCultivationStatus: null, // "sending" | "waiting" | null
+  startCultivationError: null,
+
   // Plants of the zone currently open in the modal (production-sector
   // detail): GET /plants?zone_id=<zone>, refreshed on every "modal" poll
   // tick alongside telemetry/actuators.
@@ -3082,6 +3090,8 @@ async function openZoneModal(zoneId, entry) {
   STATE.stopCultivationConfirm = false;
   STATE.stopCultivationStatus = null;
   STATE.stopCultivationError = null;
+  STATE.startCultivationStatus = null;
+  STATE.startCultivationError = null;
   STATE.modalPlants = [];
   STATE.modalPlantsLoaded = false;
   STATE.addPlantStatus = null;
@@ -3128,6 +3138,8 @@ function closeModal() {
   STATE.stopCultivationConfirm = false;
   STATE.stopCultivationStatus = null;
   STATE.stopCultivationError = null;
+  STATE.startCultivationStatus = null;
+  STATE.startCultivationError = null;
   STATE.modalPlants = [];
   STATE.modalPlantsLoaded = false;
   STATE.addPlantStatus = null;
@@ -3345,7 +3357,9 @@ function renderZoneSummary(zone) {
           <div><div class="phase-name">${escapeHtml(zone.current_phase || "Nessuna coltivazione attiva")}</div><div class="phase-sub" style="color:${STATE.phasePending ? "var(--warn)" : "var(--ink-faint)"}">${escapeHtml(phaseSub)}</div></div>
           <button type="button" class="btn ${canAdvance ? "btn-primary" : ""}" data-action="advance-phase" ${canAdvance ? "" : "disabled"}>${STATE.phasePending ? "Attesa conferma…" : "Avanza alla fase successiva"}</button>
         </div>
-        ${zone.active_cultivation_id ? renderStopCultivationBlock() : ""}
+        ${zone.active_cultivation_id
+          ? renderStopCultivationBlock()
+          : (zone.active_recipe_id ? renderStartCultivationBlock() : "")}
       </section>
       <section class="zone-section span2">
         <div class="live-head"><span class="title">Controlli</span><span class="ro">6 variabili · target dalla ricetta attiva</span></div>
@@ -4073,6 +4087,87 @@ function pollForCultivationStopped(zoneId) {
   STATE.adhocIntervals.push(iv);
 }
 
+/* ---- start cultivation -------------------------------------------------- */
+
+/**
+ * Mirror of renderStopCultivationBlock, rendered in the same spot instead
+ * of it — only reached when the zone has NO active_cultivation_id but
+ * already has a recipe assigned (active_recipe_id), see the ternary in
+ * renderZoneSummary. Mutually exclusive with the stop block by
+ * construction: one is gated on active_cultivation_id being set, this one
+ * on it being unset, so a zone can never show both at once. No confirm
+ * step (starting isn't destructive, unlike stopping) and no recipe picker
+ * — POST /cultivations always takes the zone's own active_recipe_id, per
+ * the diagnostic finding that nothing in the UI could start one before
+ * this. Same async confirm-from-Edge poll pattern as stop/advance
+ * (ActivateCultivation is applied by the Edge Controller, not instantly).
+ */
+function renderStartCultivationBlock() {
+  const sending = STATE.startCultivationStatus === "sending" || STATE.startCultivationStatus === "waiting";
+  const label = STATE.startCultivationStatus === "sending" ? "Invio…"
+    : STATE.startCultivationStatus === "waiting" ? "Attesa conferma…"
+    : "Avvia coltivazione";
+  return `
+    <div style="margin-top:12px">
+      <button type="button" class="btn btn-primary" data-action="start-cultivation" ${sending ? "disabled" : ""}>${label}</button>
+      ${STATE.startCultivationError ? `<div class="zone-danger-error" style="margin-top:10px">${escapeHtml(STATE.startCultivationError)}</div>` : ""}
+    </div>
+  `;
+}
+
+async function startCultivation() {
+  const zone = STATE.modalZone;
+  if (!zone || zone.active_cultivation_id || !zone.active_recipe_id) return;
+  if (STATE.startCultivationStatus === "sending" || STATE.startCultivationStatus === "waiting") return;
+  STATE.startCultivationStatus = "sending";
+  STATE.startCultivationError = null;
+  renderModal();
+  try {
+    await apiPost("/cultivations", { zone_id: zone.id, recipe_id: zone.active_recipe_id });
+    STATE.startCultivationStatus = "waiting";
+    renderModal();
+    showToast("Comando di avvio inviato: in attesa che l'Edge Controller lo applichi.");
+    pollForCultivationStarted(zone.id);
+  } catch (err) {
+    STATE.startCultivationStatus = null;
+    STATE.startCultivationError = translateApiError(err.message);
+    renderModal();
+  }
+}
+
+function pollForCultivationStarted(zoneId) {
+  let elapsed = 0;
+  const iv = setInterval(async () => {
+    elapsed += COMMAND_POLL_MS;
+    try {
+      const zone = await apiGet(`/zones/${encodeURIComponent(zoneId)}`);
+      updateZoneInState(zone);
+      // Unlike the stop flow, active_cultivation_id is set synchronously by
+      // POST /cultivations itself (before any Edge involvement) — the real
+      // "the Edge actually applied it" signal is lifecycle_state flipping
+      // to Running, written only once apply_command_result processes the
+      // ActivateCultivation result (backend/app/features/cultivations/
+      // repository.py).
+      if (zone.lifecycle_state === "Running") {
+        clearInterval(iv);
+        STATE.startCultivationStatus = null;
+        renderModalIfSafe();
+        showToast("Coltivazione avviata: il settore è ora in esecuzione.");
+        return;
+      }
+    } catch (e) { /* transient error, keep polling */ }
+    if (elapsed >= COMMAND_TIMEOUT_MS) {
+      clearInterval(iv);
+      if (STATE.startCultivationStatus === "waiting") {
+        STATE.startCultivationStatus = null;
+        renderModalIfSafe();
+        showToast("Nessuna conferma dall'Edge Controller entro il timeout (verifica che sia in esecuzione).", "warn");
+      }
+    }
+  }, COMMAND_POLL_MS);
+  STATE.adhocIntervals.push(iv);
+}
+
 /* ---- telemetry chart (hand-rolled canvas, no external deps) ----------- */
 
 async function refreshChartData() {
@@ -4400,6 +4495,9 @@ function initEventDelegation() {
 
     const confirmStopCultivationBtn = e.target.closest('[data-action="confirm-stop-cultivation"]');
     if (confirmStopCultivationBtn && !confirmStopCultivationBtn.disabled) { confirmStopCultivation(); return; }
+
+    const startCultivationBtn = e.target.closest('[data-action="start-cultivation"]');
+    if (startCultivationBtn && !startCultivationBtn.disabled) { startCultivation(); return; }
 
     const recipeBack = e.target.closest('[data-action="recipe-back"]');
     if (recipeBack) { goBack(); return; }
