@@ -49,6 +49,20 @@ descritto in [`doc/domain_model.md`](doc/domain_model.md). In sintesi:
 
 Tutti i comandi seguenti devono essere eseguiti dalla radice del repository.
 
+## Avvio rapido multipiattaforma
+
+Dopo aver creato `.venv` e installato le dipendenze del backend, la dashboard
+demo si avvia con lo stesso launcher Python su Windows, macOS e Linux:
+
+```bash
+python avvia_demo.py
+```
+
+Il launcher seleziona automaticamente il Python di `.venv`, avvia il backend,
+attende che sia disponibile, carica i dati dimostrativi e apre la dashboard nel
+browser. Su macOS e Linux si puo usare anche `./avvia_demo.py`. Premere `Ctrl+C`
+nel terminale per arrestare il backend avviato dal launcher.
+
 ## Demo end-to-end automatizzata
 
 Dopo aver creato l'ambiente Python e installato le dipendenze del backend come
