@@ -36,6 +36,10 @@ const ALERTS_POLL_MS = 20000;
 const CHART_POLL_MS = 15000;
 const COMMAND_POLL_MS = 1500;
 const COMMAND_TIMEOUT_MS = 20000;
+// Simulatore page: batch preview job polling — isolated from every
+// operational poll above, see the dedicated section near
+// selectSimulatorRecipe().
+const SIMULATION_POLL_MS = 1500;
 
 // Frontend-only rule (not enforced by the backend): "Fai uscire" stays
 // disabled until at least this much time has passed since quarantined_at.
@@ -47,15 +51,35 @@ const QUARANTINE_MIN_RELEASE_MS = 24 * 60 * 60 * 1000;
 // there is only ever one valid destination for PATCH /plants/{id}/quarantine.
 const QUARANTINE_ZONE_ID = "r5-s1";
 
+// simKey is a SEPARATE field from sensorField: sensorField names the live
+// telemetry sample field (GET /zones/{id}/telemetry, "..._estimate_..."
+// for the three nutrients), simKey names the raw Edge batch-simulation
+// step field (POST /simulations result series' sensors+models, no
+// "_estimate_" — see edge/src/simulation_main.cpp). The two pipelines are
+// genuinely different data sources with different field names; simKey
+// exists only for the "Simula questa ricetta" chart (drawSimulationChart).
 const VARIABLES = [
-  { key: "soil_moisture", label: "Umidità del terriccio", unit: "%", sensorField: "soil_moisture_percent", decimals: 1 },
-  { key: "light", label: "Luce (PPFD)", unit: "µmol/m²s", sensorField: "light_ppfd_umol_m2_s", decimals: 0 },
-  { key: "ph", label: "pH", unit: "pH", sensorField: "ph", decimals: 2 },
-  { key: "nitrogen", label: "Azoto (N)", unit: "mg/L", sensorField: "nitrogen_estimate_mg_per_liter", decimals: 1 },
-  { key: "phosphorus", label: "Fosforo (P)", unit: "mg/L", sensorField: "phosphorus_estimate_mg_per_liter", decimals: 1 },
-  { key: "potassium", label: "Potassio (K)", unit: "mg/L", sensorField: "potassium_estimate_mg_per_liter", decimals: 1 },
+  { key: "soil_moisture", label: "Umidità del terriccio", unit: "%", sensorField: "soil_moisture_percent", simKey: "soil_moisture_percent", decimals: 1 },
+  { key: "light", label: "Luce (PPFD)", unit: "µmol/m²s", sensorField: "light_ppfd_umol_m2_s", simKey: "light_ppfd_umol_m2_s", decimals: 0 },
+  { key: "ph", label: "pH", unit: "pH", sensorField: "ph", simKey: "ph", decimals: 2 },
+  { key: "nitrogen", label: "Azoto (N)", unit: "mg/L", sensorField: "nitrogen_estimate_mg_per_liter", simKey: "nitrogen_mg_per_liter", decimals: 1 },
+  { key: "phosphorus", label: "Fosforo (P)", unit: "mg/L", sensorField: "phosphorus_estimate_mg_per_liter", simKey: "phosphorus_mg_per_liter", decimals: 1 },
+  { key: "potassium", label: "Potassio (K)", unit: "mg/L", sensorField: "potassium_estimate_mg_per_liter", simKey: "potassium_mg_per_liter", decimals: 1 },
 ];
 const VARIABLES_BY_KEY = Object.fromEntries(VARIABLES.map((v) => [v.key, v]));
+
+// "Simula questa ricetta" duration presets (giorni, mai secondi digitati
+// dall'utente): 1/7/30/90/180/360 giorni × 86400 sono tutti multipli
+// esatti di STEP_SECONDS=900, quindi sempre validi per il backend senza
+// bisogno di ulteriore validazione client-side sul valore convertito.
+const SIMULATION_DURATION_PRESETS = [
+  { days: 1, label: "1 giorno" },
+  { days: 7, label: "1 settimana" },
+  { days: 30, label: "1 mese" },
+  { days: 90, label: "3 mesi" },
+  { days: 180, label: "6 mesi" },
+  { days: 360, label: "1 anno" },
+];
 
 const STRATEGIES = ["Threshold", "PID", "Predictive"];
 
@@ -256,6 +280,24 @@ const STATE = {
   // or null when the form is not open. Routed through the same pop-up
   // overlay as the zone/recipe modals via STATE.modalKind = "recipe-form".
   recipeForm: null,
+
+  // Simulatore (STATE.view = "simulator"): an isolated batch preview of a
+  // recipe from the full catalog, entirely separate from live operational
+  // data (see POST /simulations — never touches a zone). Shape:
+  // { recipeId, durationDays, starting, job, result, error, chartVariable }
+  // — job is the polled SimulationJob (queued/running/succeeded/failed/
+  // cancelled); result is the SimulationPreview, fetched once job succeeds.
+  // null until a recipe is picked on the Simulatore page. Reset to null
+  // (after discarding any still-active job — see
+  // discardActiveSimulationIfAny) both when picking a *different* recipe
+  // (selectSimulatorRecipe) and when navigating away from the Simulatore
+  // page (switchView), so a job never outlives the page occupying the
+  // system's single global batch slot.
+  simulation: null,
+  // Search box state for the Simulatore page's recipe picker — kept
+  // separate from recipeQuery (Ricette page) since the two searches are
+  // independent UIs over the same STATE.recipes catalog.
+  simulatorQuery: "",
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
@@ -1482,17 +1524,30 @@ async function tickAlertsView() {
 /* Recipes view                                                       */
 /* ------------------------------------------------------------------ */
 
+// Backs BOTH the Ricette page and the Simulatore page's recipe picker —
+// both consume the exact same unfiltered GET /recipes catalog (no
+// department scoping on either), so a single poll/cache serves both
+// rather than fetching the same list twice.
 async function tickRecipes() {
   try {
     const recipes = await apiGet("/recipes");
     STATE.recipes = recipes;
     STATE.recipesLoaded = true;
     STATE.recipesById = Object.fromEntries(recipes.map((r) => [r.id, r]));
-    if (isFocusedInside("view-recipes")) updateRecipeGridOnly();
-    else renderRecipes();
+    if (STATE.view === "recipes") {
+      if (isFocusedInside("view-recipes")) updateRecipeGridOnly();
+      else renderRecipes();
+    } else if (STATE.view === "simulator") {
+      if (isFocusedInside("view-simulator")) updateSimulatorPickerOnly();
+      else renderSimulatorView();
+    }
   } catch (e) {
     console.error("failed to refresh recipes", e);
-    document.getElementById("view-recipes").innerHTML = `<div class="empty-note">Impossibile caricare le ricette: ${escapeHtml(e.message)}</div>`;
+    if (STATE.view === "recipes") {
+      document.getElementById("view-recipes").innerHTML = `<div class="empty-note">Impossibile caricare le ricette: ${escapeHtml(e.message)}</div>`;
+    } else if (STATE.view === "simulator") {
+      document.getElementById("view-simulator").innerHTML = `<div class="empty-note">Impossibile caricare le ricette: ${escapeHtml(e.message)}</div>`;
+    }
   }
 }
 
@@ -1668,6 +1723,548 @@ function renderRecipeModal() {
       </div>
     </div>
   `;
+}
+
+/* ------------------------------------------------------------------ */
+/* Simulatore — isolated batch preview page (POST /simulations)         */
+/*                                                                       */
+/* Deliberately kept separate from every operational code path above:   */
+/* it never touches a zone, a command, or telemetry. The backend allows */
+/* exactly ONE batch simulation system-wide at a time (409 if another   */
+/* is already queued/running), so this page is careful to free that     */
+/* slot (DELETE) the moment the user stops watching — see               */
+/* discardActiveSimulationIfAny(), called both from selectSimulatorRecipe*/
+/* (switching to a different recipe mid-run) and from switchView()      */
+/* (navigating away from the Simulatore page entirely).                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Selecting a recipe to simulate from the catalog-wide picker — either the
+ * very first pick, or switching to a different one while a job for the
+ * previous recipe is still queued/running. In the latter case the
+ * previous job is discarded first (DELETE) so it doesn't keep occupying
+ * the system's single global batch-simulation slot after the user has
+ * stopped watching it. A no-op if the same recipe is clicked again.
+ */
+function selectSimulatorRecipe(recipeId) {
+  if (STATE.simulation && STATE.simulation.recipeId === recipeId) return;
+  discardActiveSimulationIfAny();
+  const previous = STATE.simulation;
+  STATE.simulation = {
+    recipeId,
+    durationDays: (previous && previous.durationDays) || 7,
+    starting: false,
+    job: null,
+    result: null,
+    error: null,
+    chartVariable: (previous && previous.chartVariable) || "soil_moisture",
+  };
+  renderSimulatorView();
+}
+
+/** Frees the global batch-simulation slot if the current job is still
+ * queued/running when the user navigates away (to a different recipe or
+ * off the Simulatore page entirely) — fire-and-forget, since there's
+ * nothing more to show regardless of whether the DELETE itself succeeds.
+ * A no-op if there is no job, or the job already reached a final state
+ * (nothing to free). */
+function discardActiveSimulationIfAny() {
+  const sim = STATE.simulation;
+  clearPoll("simulation-job");
+  if (!sim || !sim.job) return;
+  if (sim.job.status === "queued" || sim.job.status === "running") {
+    apiDelete(`/simulations/${encodeURIComponent(sim.job.id)}`).catch(() => {});
+  }
+}
+
+function restartSimulationSetup() {
+  const sim = STATE.simulation;
+  if (!sim) return;
+  clearPoll("simulation-job");
+  STATE.simulation = {
+    recipeId: sim.recipeId,
+    durationDays: sim.durationDays || 7,
+    starting: false,
+    job: null,
+    result: null,
+    error: null,
+    chartVariable: sim.chartVariable || "soil_moisture",
+  };
+  renderSimulatorView();
+}
+
+async function startSimulation() {
+  const sim = STATE.simulation;
+  if (!sim || sim.starting) return;
+  const durationSeconds = sim.durationDays * 86400;
+  sim.starting = true;
+  sim.error = null;
+  renderSimulatorView();
+  try {
+    const job = await apiPost("/simulations", { recipe_id: sim.recipeId, duration_seconds: durationSeconds });
+    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId) return; // navigated away meanwhile
+    STATE.simulation.starting = false;
+    STATE.simulation.job = job;
+    STATE.simulation.result = null;
+    renderSimulatorView();
+    pollSimulationJob();
+  } catch (err) {
+    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId) return;
+    STATE.simulation.starting = false;
+    // 409 here means "the system's one global batch slot is already
+    // taken" — a normal, expected condition, not a fault. Never show the
+    // raw backend detail for it.
+    STATE.simulation.error = err.status === 409
+      ? "È già in corso un'altra simulazione nel sistema, riprova tra poco."
+      : err.message;
+    renderSimulatorView();
+  }
+}
+
+async function cancelSimulation() {
+  const sim = STATE.simulation;
+  if (!sim || !sim.job) return;
+  const runId = sim.job.id;
+  clearPoll("simulation-job");
+  try {
+    await apiDelete(`/simulations/${encodeURIComponent(runId)}`);
+  } catch (e) { /* best effort — the job expires on its own regardless */ }
+  if (STATE.simulation && STATE.simulation.job && STATE.simulation.job.id === runId) {
+    STATE.simulation.job = null;
+    STATE.simulation.result = null;
+    STATE.simulation.error = null;
+    renderSimulatorView();
+  }
+}
+
+function pollSimulationJob() {
+  setPoll("simulation-job", tickSimulationJob, SIMULATION_POLL_MS);
+}
+
+async function tickSimulationJob() {
+  const sim = STATE.simulation;
+  if (!sim || !sim.job) { clearPoll("simulation-job"); return; }
+  if (sim.job.status !== "queued" && sim.job.status !== "running") { clearPoll("simulation-job"); return; }
+  const runId = sim.job.id;
+  try {
+    const job = await apiGet(`/simulations/${encodeURIComponent(runId)}`);
+    if (!STATE.simulation || !STATE.simulation.job || STATE.simulation.job.id !== runId) return; // stale
+    STATE.simulation.job = job;
+    if (job.status === "succeeded") {
+      clearPoll("simulation-job");
+      try {
+        const result = await apiGet(`/simulations/${encodeURIComponent(runId)}/result`);
+        if (STATE.simulation && STATE.simulation.job && STATE.simulation.job.id === runId) {
+          STATE.simulation.result = result;
+        }
+      } catch (err) {
+        if (STATE.simulation && STATE.simulation.job && STATE.simulation.job.id === runId) {
+          STATE.simulation.error = err.message;
+        }
+      }
+    } else if (job.status === "failed" || job.status === "cancelled") {
+      clearPoll("simulation-job");
+    }
+    renderSimulatorViewIfSafe();
+  } catch (e) { /* transient network error, keep polling */ }
+}
+
+/**
+ * Simulatore page: a catalog-wide recipe picker (left) beside the working
+ * area for whichever recipe is currently selected (right) — see
+ * renderSimulatorPicker / renderSimulatorWorkspace. Distinct visual
+ * treatment (--sim palette banner + header tint) so a simulated scenario
+ * can never be mistaken for operational data, matching the backend's own
+ * source_label ("Scenario simulato — non operativo").
+ */
+function renderSimulatorView() {
+  const sim = STATE.simulation || { recipeId: null };
+  setPageTitle(
+    "Simulatore",
+    `${STATE.recipes.length} ricette nel catalogo · anteprima batch isolata, nessun settore reale coinvolto`
+  );
+  document.getElementById("view-simulator").innerHTML = `
+    <div class="simulator-intro">
+      <div class="simulator-intro-title">Ambiente di simulazione</div>
+      <div class="simulator-intro-text">
+        Le simulazioni avviate da questa pagina sono scenari batch isolati: non toccano mai un settore reale,
+        una telemetria o un comando dell'impianto. Ogni risultato è marcato esplicitamente
+        <strong>«Scenario simulato — non operativo»</strong>.
+      </div>
+    </div>
+    <div class="simulator-layout">
+      <div class="simulator-picker-col">${renderSimulatorPicker(sim)}</div>
+      <div class="simulator-workspace-col">
+        ${sim.recipeId
+          ? renderSimulatorWorkspace(sim)
+          : '<div class="simulator-empty">Seleziona una ricetta dall\'elenco a sinistra per avviare una simulazione.</div>'}
+      </div>
+    </div>
+  `;
+  if (sim.result) drawSimulationChart();
+}
+
+/**
+ * Avoids yanking focus away from the recipe-search input mid-typing —
+ * same pattern as renderModalIfSafe(), scoped to the Simulatore page.
+ */
+function renderSimulatorViewIfSafe() {
+  const active = document.activeElement;
+  if (active && (active.tagName === "SELECT" || active.tagName === "INPUT") && isFocusedInside("view-simulator")) return;
+  renderSimulatorView();
+}
+
+function simulatorFilteredRecipes() {
+  const q = (STATE.simulatorQuery || "").trim().toLowerCase();
+  if (!q) return STATE.recipes;
+  return STATE.recipes.filter((r) => `${r.id} ${r.plant_type} ${r.department_name || ""}`.toLowerCase().includes(q));
+}
+
+function simulatorRecipeRowsHtml(list, sim) {
+  if (!list.length) return '<div class="empty-note">Nessuna ricetta trovata.</div>';
+  return list.map((r) => `
+    <button type="button" class="simulator-recipe-row ${sim.recipeId === r.id ? "active" : ""}"
+      data-action="sim-pick-recipe" data-recipe-id="${escapeAttr(r.id)}">
+      <div class="simulator-recipe-row-top">
+        <span class="simulator-recipe-row-name">${escapeHtml(r.plant_type)}</span>
+        <span class="recipe-badge">v${r.version}</span>
+      </div>
+      <div class="simulator-recipe-row-sub">${escapeHtml(r.id)} · ${escapeHtml(r.department_name || "Reparto non catalogato")} · ${r.phases.length} fasi</div>
+    </button>
+  `).join("");
+}
+
+/** Full picker markup (search box + result list) — rendered once as part
+ * of renderSimulatorView(). Typing in the search box only repaints the
+ * list/count via updateSimulatorPickerOnly(), never this whole block, so
+ * the input never loses focus mid-keystroke. */
+function renderSimulatorPicker(sim) {
+  const list = simulatorFilteredRecipes();
+  return `
+    <div class="toolbar">
+      <input type="search" id="simulator-recipe-search" placeholder="Cerca per nome, id o reparto…" value="${escapeAttr(STATE.simulatorQuery || "")}">
+      <span class="count" id="simulator-recipe-count">${list.length} ${list.length === 1 ? "ricetta" : "ricette"}</span>
+    </div>
+    <div class="simulator-recipe-list" id="simulator-recipe-list">${simulatorRecipeRowsHtml(list, sim)}</div>
+  `;
+}
+
+function updateSimulatorPickerOnly() {
+  const sim = STATE.simulation || { recipeId: null };
+  const list = simulatorFilteredRecipes();
+  const listEl = document.getElementById("simulator-recipe-list");
+  const countEl = document.getElementById("simulator-recipe-count");
+  if (listEl) listEl.innerHTML = simulatorRecipeRowsHtml(list, sim);
+  if (countEl) countEl.textContent = `${list.length} ${list.length === 1 ? "ricetta" : "ricette"}`;
+}
+
+/** Working area for the currently-selected recipe: setup / progress /
+ * result, exactly the same three-state body used when this lived in the
+ * "Simula questa ricetta" pop-up — only the surrounding header changed. */
+function renderSimulatorWorkspace(sim) {
+  const recipe = STATE.recipesById[sim.recipeId];
+  if (!recipe) return '<div class="empty-note">Caricamento ricetta…</div>';
+
+  let body;
+  if (sim.result) {
+    body = renderSimulationResult(sim);
+  } else if (sim.job && (sim.job.status === "queued" || sim.job.status === "running")) {
+    body = renderSimulationProgress(sim);
+  } else {
+    body = renderSimulationSetup(sim);
+  }
+
+  return `
+    <div class="simulator-recipe-card">
+      <div class="zone-header" style="--zone-tint:var(--sim-soft)">
+        <div style="min-width:0">
+          <div class="zone-header-code">
+            <span class="code">${escapeHtml(recipe.id)}</span>
+            <span class="recipe-badge">Versione ${recipe.version}</span>
+          </div>
+          <h2>${escapeHtml(recipe.plant_type)}</h2>
+          <div class="zone-header-meta"><span>${escapeHtml(recipe.department_name || "Reparto non catalogato")}</span></div>
+        </div>
+      </div>
+      <div style="padding:20px 28px 28px">${body}</div>
+    </div>
+  `;
+}
+
+function renderSimulationSetup(sim) {
+  const disabled = sim.starting;
+  const failedNote = sim.job && sim.job.status === "failed"
+    ? `<div class="zone-danger-error" style="margin-top:12px">Simulazione non riuscita: ${escapeHtml(sim.job.error || "errore sconosciuto")}</div>`
+    : "";
+  const cancelledNote = sim.job && sim.job.status === "cancelled"
+    ? `<div class="empty-note" style="margin-top:12px">Simulazione annullata.</div>`
+    : "";
+  return `
+    <div class="zone-section" style="margin-top:16px">
+      <div class="zone-section-title">Durata della simulazione</div>
+      <div class="sim-preset-row">
+        ${SIMULATION_DURATION_PRESETS.map((p) => `
+          <button type="button" class="btn ${sim.durationDays === p.days ? "btn-primary" : ""}"
+            data-action="sim-select-duration" data-days="${p.days}" ${disabled ? "disabled" : ""}>${p.label}</button>
+        `).join("")}
+      </div>
+      ${sim.error ? `<div class="zone-danger-error" style="margin-top:12px">${escapeHtml(sim.error)}</div>` : ""}
+      ${failedNote}
+      ${cancelledNote}
+      <div style="display:flex;justify-content:flex-end;margin-top:16px">
+        <button type="button" class="btn btn-primary" data-action="sim-start" ${disabled ? "disabled" : ""}>${disabled ? "Avvio…" : "Avvia simulazione"}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSimulationProgress(sim) {
+  const job = sim.job;
+  const pct = job.progress_percent;
+  const label = job.status === "queued" ? "In coda…" : `In corso — ${fmtNum(pct, 0)}%`;
+  return `
+    <div class="zone-section" style="margin-top:16px">
+      <div class="zone-section-title">Simulazione in corso</div>
+      <div class="sim-progress-track"><div class="sim-progress-fill" style="width:${Math.max(job.status === "queued" ? 3 : 0, pct)}%"></div></div>
+      <div class="empty-note" style="margin-top:10px">${escapeHtml(label)} · ${job.completed_steps}/${job.total_steps} cicli di controllo simulati</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:16px">
+        <button type="button" class="btn btn-danger-ghost" data-action="sim-cancel">Annulla simulazione</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSimulationResult(sim) {
+  const result = sim.result;
+  return `
+    <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
+    <div class="zone-section" style="margin-top:16px">
+      <div class="chart-head">
+        <span class="title">Andamento simulato</span>
+        <select id="sim-chart-variable-select">
+          ${VARIABLES.map((v) => `<option value="${v.key}" ${sim.chartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
+        </select>
+        <span class="hint">durata simulata: ${fmtSimDuration(result.duration_seconds)}</span>
+      </div>
+      <div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
+    </div>
+    <div class="zone-section" style="margin-top:16px">
+      <div class="zone-section-title">Riepilogo</div>
+      ${renderSimulationSummary(result.summary)}
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px">
+      <button type="button" class="btn" data-action="sim-restart">Nuova simulazione</button>
+    </div>
+  `;
+}
+
+const SIM_FERTILIZER_LABELS = {
+  nitrogen: "Azoto (N)", phosphorus: "Fosforo (P)", potassium: "Potassio (K)",
+  "ph-up": "pH+", "ph-down": "pH−",
+};
+const SIM_ACTUATOR_LABELS = {
+  water_pump: "Pompa acqua", lighting: "Barra LED",
+  valve_nitrogen: "Elettrovalvola azoto (N)", valve_phosphorus: "Elettrovalvola fosforo (P)",
+  valve_potassium: "Elettrovalvola potassio (K)", "valve_ph-up": "Elettrovalvola pH+",
+  "valve_ph-down": "Elettrovalvola pH−",
+};
+
+function renderSimulationSummary(summary) {
+  const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
+    .map(([k, v]) => `<div class="kv-row"><span class="k">${escapeHtml(SIM_FERTILIZER_LABELS[k] || k)}</span><b class="v">${fmtNum(v, 0)} mL</b></div>`)
+    .join("");
+  const actuatorEntries = Object.entries(summary.actuator_active_seconds || {}).sort((a, b) => b[1] - a[1]);
+  const actRows = actuatorEntries
+    .map(([k, v]) => `<div class="kv-row"><span class="k">${escapeHtml(SIM_ACTUATOR_LABELS[k] || k)}</span><b class="v">${fmtDurationHM(v)}</b></div>`)
+    .join("");
+  return `
+    <div class="kv-row"><span class="k">Acqua erogata (totale)</span><b class="v">${fmtNum(summary.delivered_water_liters, 1)} L</b></div>
+    <div class="status-sep"></div>
+    <div class="field-label" style="margin:10px 0 6px">Fertilizzante erogato</div>
+    ${fertRows || '<div class="empty-note">Nessun fertilizzante erogato.</div>'}
+    <div class="status-sep"></div>
+    <div class="field-label" style="margin:10px 0 6px">Tempo di attivazione attuatori</div>
+    ${actRows || '<div class="empty-note">Nessun attuatore attivato.</div>'}
+    <div class="status-sep"></div>
+    <div class="kv-row"><span class="k">Cicli di controllo calcolati</span><b class="v">${summary.control_cycles}</b></div>
+  `;
+}
+
+/** "30 giorni" style phrasing for the result hint text (duration_seconds
+ * is always a whole number of days here since every preset is). */
+function fmtSimDuration(totalSeconds) {
+  const days = Math.round(totalSeconds / 86400);
+  return days === 1 ? "1 giorno" : `${days} giorni`;
+}
+
+/** Compact elapsed-time axis label ("3h", "2g 6h") — distinct from
+ * fmtSimDuration (whole-days phrasing for the header hint) since chart
+ * axis ticks land at arbitrary points within the simulated span. */
+function fmtElapsedSeconds(totalSeconds) {
+  const totalMinutes = Math.round(Math.max(0, totalSeconds) / 60);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  if (days > 0) return hours > 0 ? `${days}g ${hours}h` : `${days}g`;
+  return `${hours}h`;
+}
+
+/** "7h 45m" style phrasing for a raw seconds duration (summary's
+ * actuator_active_seconds) — same shape as fmtElapsed but from a plain
+ * seconds count instead of "elapsed since an ISO timestamp". */
+function fmtDurationHM(totalSeconds) {
+  const totalMinutes = Math.round(Math.max(0, totalSeconds) / 60);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}g ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function drawSimulationChart() {
+  const canvas = document.getElementById("simulation-chart");
+  const sim = STATE.simulation;
+  if (!canvas || !sim || !sim.result) return;
+  const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
+  drawSimulationSeriesChart(canvas, sim.result.series, sim.result.phases, varMeta);
+}
+
+/**
+ * Unlike drawTelemetryChart (a single flat setpoint line, since live data
+ * only ever has ONE current setpoint), a simulation spans potentially many
+ * phases with different targets — and, unlike the live-data case, we know
+ * exactly when each phase starts and ends, so the target band is drawn
+ * precisely per phase instead of approximated. Phases past the recipe's
+ * own total duration don't exist (a finished recipe just holds on its
+ * last phase), so the last phase's band is extended to the end of the
+ * simulated span rather than leaving a gap.
+ */
+function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(rect.width, 1);
+  const height = Math.max(rect.height, 1);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  if (!series.length) {
+    ctx.fillStyle = "#8aa39a";
+    ctx.font = "11px Poppins, sans-serif";
+    ctx.fillText("Nessun dato nella simulazione", 16, height / 2);
+    return;
+  }
+
+  const key = varMeta.simKey;
+  const points = series
+    .map((s) => ({ t0: s.start_seconds, t1: s.end_seconds, avg: s.average[key], min: s.minimum[key], max: s.maximum[key] }))
+    .filter((p) => isFinite(p.avg) && p.avg !== null && p.avg !== undefined);
+  if (!points.length) {
+    ctx.fillStyle = "#8aa39a";
+    ctx.font = "11px Poppins, sans-serif";
+    ctx.fillText("Variabile non disponibile in questa simulazione", 16, height / 2);
+    return;
+  }
+
+  const pad = { l: 46, r: 14, t: 14, b: 20 };
+  const w = width - pad.l - pad.r;
+  const h = height - pad.t - pad.b;
+
+  const minT = series[0].start_seconds;
+  const maxT = series[series.length - 1].end_seconds;
+  const spanT = Math.max(maxT - minT, 1);
+
+  let minV = Math.min(...points.map((p) => p.min));
+  let maxV = Math.max(...points.map((p) => p.max));
+  phases.forEach((ph) => {
+    const t = ph.targets[varMeta.key];
+    if (t) { minV = Math.min(minV, t.allowed_minimum); maxV = Math.max(maxV, t.allowed_maximum); }
+  });
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const spanPad = (maxV - minV) * 0.1;
+  minV -= spanPad;
+  maxV += spanPad;
+
+  const x = (t) => pad.l + ((t - minT) / spanT) * w;
+  const y = (v) => pad.t + h - ((v - minV) / (maxV - minV)) * h;
+
+  ctx.strokeStyle = "#eef3ef";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const gy = pad.t + (h / 3) * i;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, gy);
+    ctx.lineTo(pad.l + w, gy);
+    ctx.stroke();
+  }
+
+  // Target band + setpoint, per phase — the last phase's band is extended
+  // to maxT since the Edge just holds on it once the recipe is "done".
+  phases.forEach((ph, i) => {
+    const target = ph.targets[varMeta.key];
+    if (!target) return;
+    const segStart = Math.max(ph.start_seconds, minT);
+    const segEnd = i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT);
+    const bx0 = x(segStart);
+    const bx1 = x(segEnd);
+    if (bx1 <= bx0) return;
+    ctx.fillStyle = "rgba(63,122,96,0.10)";
+    ctx.fillRect(bx0, y(target.allowed_maximum), bx1 - bx0, y(target.allowed_minimum) - y(target.allowed_maximum));
+    ctx.strokeStyle = "#c9803f";
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(bx0, y(target.setpoint));
+    ctx.lineTo(bx1, y(target.setpoint));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (i > 0) {
+      ctx.strokeStyle = "#d8e2da";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx0, pad.t);
+      ctx.lineTo(bx0, pad.t + h);
+      ctx.stroke();
+    }
+  });
+
+  // Observed min/max spread per bucket (visible mainly on aggregated,
+  // long-duration simulations where each point covers many raw steps).
+  ctx.fillStyle = "rgba(31,122,81,0.14)";
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const px = x((p.t0 + p.t1) / 2);
+    const py = y(p.max);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  for (let i = points.length - 1; i >= 0; i--) {
+    const px = x((points[i].t0 + points[i].t1) / 2);
+    ctx.lineTo(px, y(points[i].min));
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // Average line.
+  ctx.strokeStyle = "#1f7a51";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const px = x((p.t0 + p.t1) / 2);
+    const py = y(p.avg);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  ctx.fillStyle = "#8aa39a";
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  ctx.fillText(`${maxV.toFixed(varMeta.decimals)} ${varMeta.unit}`, 2, pad.t + 8);
+  ctx.fillText(`${minV.toFixed(varMeta.decimals)} ${varMeta.unit}`, 2, pad.t + h);
+  ctx.fillText(fmtElapsedSeconds(minT), pad.l, height - 4);
+  ctx.textAlign = "right";
+  ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
+  ctx.textAlign = "left";
 }
 
 /* ------------------------------------------------------------------ */
@@ -3374,19 +3971,34 @@ function paintViewImmediately(view) {
     if (STATE.zonesLoaded) renderControl(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
   } else if (view === "recipes") {
     if (STATE.recipesLoaded) renderRecipes(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
+  } else if (view === "simulator") {
+    if (STATE.recipesLoaded) renderSimulatorView(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
   } else if (view === "alerts") {
     renderAlertsView(); // already shows its own "Caricamento…" until STATE.alertsPage.loaded
   }
 }
 
 function switchView(view) {
+  if (STATE.view === "simulator" && view !== "simulator") {
+    // Leaving the Simulatore page entirely: free the system's single
+    // global batch-simulation slot right away if a job is still
+    // queued/running, instead of leaving it occupied until the job
+    // expires on its own — a second user shouldn't be blocked for no
+    // reason just because this tab stopped watching.
+    discardActiveSimulationIfAny();
+    STATE.simulation = null;
+  }
   STATE.view = view;
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === view);
   });
-  ["home", "recipes", "control", "alerts"].forEach((v) => {
+  ["home", "recipes", "simulator", "control", "alerts"].forEach((v) => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
   });
+  // Retints the topbar title on the Simulatore page — one more visual cue
+  // (alongside the intro banner and the sidebar dot) that this section is
+  // an isolated preview environment, not operational data.
+  document.querySelector(".main").classList.toggle("theme-simulator", view === "simulator");
   // A view switch always starts from the top — otherwise a tall previous
   // page (e.g. Ricette, scrolled down) can leave the viewport stranded
   // mid-page on a shorter or still-loading new one, looking exactly like
@@ -3404,6 +4016,8 @@ function switchView(view) {
   } else if (view === "control") {
     setPoll("zones", tickZones, ZONES_POLL_MS);
   } else if (view === "recipes") {
+    setPoll("recipes-poll", tickRecipes, RECIPES_POLL_MS);
+  } else if (view === "simulator") {
     setPoll("recipes-poll", tickRecipes, RECIPES_POLL_MS);
   } else if (view === "alerts") {
     setPoll("alerts-view", tickAlertsView, ALERTS_POLL_MS);
@@ -3614,6 +4228,25 @@ function initEventDelegation() {
 
     const confirmPlantRemoveBtn = e.target.closest('[data-action="confirm-plant-remove"]');
     if (confirmPlantRemoveBtn && !confirmPlantRemoveBtn.disabled) { confirmPlantRemove(confirmPlantRemoveBtn.dataset.plantId); return; }
+
+    const simPickRecipe = e.target.closest('[data-action="sim-pick-recipe"]');
+    if (simPickRecipe) { selectSimulatorRecipe(simPickRecipe.dataset.recipeId); return; }
+
+    const simSelectDuration = e.target.closest('[data-action="sim-select-duration"]');
+    if (simSelectDuration && !simSelectDuration.disabled && STATE.simulation) {
+      STATE.simulation.durationDays = Number(simSelectDuration.dataset.days);
+      renderSimulatorView();
+      return;
+    }
+
+    const simStartBtn = e.target.closest('[data-action="sim-start"]');
+    if (simStartBtn && !simStartBtn.disabled) { startSimulation(); return; }
+
+    const simCancelBtn = e.target.closest('[data-action="sim-cancel"]');
+    if (simCancelBtn) { cancelSimulation(); return; }
+
+    const simRestartBtn = e.target.closest('[data-action="sim-restart"]');
+    if (simRestartBtn) { restartSimulationSetup(); return; }
   });
 
   document.addEventListener("change", (e) => {
@@ -3624,6 +4257,15 @@ function initEventDelegation() {
     if (filterSelect) { STATE.controlFilters[filterSelect.dataset.filter] = filterSelect.value; renderControl(); return; }
 
     if (e.target.id === "chart-variable-select") { onChartVariableChange(e.target.value); return; }
+
+    if (e.target.id === "sim-chart-variable-select" && STATE.simulation) {
+      // The simulation's series/phases are already in memory (no re-fetch
+      // needed, unlike the live chart) — just update which variable is
+      // plotted and redraw the canvas directly.
+      STATE.simulation.chartVariable = e.target.value;
+      drawSimulationChart();
+      return;
+    }
 
     // Recipe form selects/checkboxes: bound by dotted data-path into
     // STATE.recipeForm (see getPath/setPath). Re-rendered on change since
@@ -3656,6 +4298,11 @@ function initEventDelegation() {
     if (e.target.id === "recipe-search") {
       STATE.recipeQuery = e.target.value;
       updateRecipeGridOnly();
+    }
+
+    if (e.target.id === "simulator-recipe-search") {
+      STATE.simulatorQuery = e.target.value;
+      updateSimulatorPickerOnly();
     }
 
     const plantQuarantineReason = e.target.closest('[data-action="plant-quarantine-reason"]');

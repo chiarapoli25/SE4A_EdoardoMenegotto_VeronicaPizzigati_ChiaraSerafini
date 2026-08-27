@@ -20,6 +20,12 @@
   --danger-soft: rgba(193, 90, 74, .14);
   --nominal: #1f7a51;
   --nominal-soft: rgba(31, 122, 81, .12);
+  /* Simulatore page accent — the same green used by every other card in
+     the dashboard (see --accent above), so the page reads as part of the
+     same visual family rather than a separate app. */
+  --sim: var(--accent);
+  --sim-dark: var(--accent-dark);
+  --sim-soft: var(--nominal-soft);
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: 'Poppins', system-ui, -apple-system, sans-serif;
   --radius-lg: 22px;
@@ -621,6 +627,127 @@ a:hover { color: var(--accent-dark); }
   background: #f4f8f5; border: 1px dashed var(--line); border-radius: 9px; padding: 9px 10px;
 }
 
+/* ---------- Simulatore page: setup/progress/result panel ---------- */
+/* (shared by the standalone Simulatore page — see .simulator-* below for
+   the page's own layout/picker/header styles) */
+
+.sim-preset-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.sim-progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.sim-progress-fill {
+  height: 100%;
+  background: var(--sim);
+  border-radius: 999px;
+  transition: width .3s ease;
+}
+
+/* Prominent, unmistakable "this is not real data" label shown above every
+   simulation result — deliberately its own accent color (see --sim above)
+   so it can never be mistaken for a live/operational status chip. */
+.sim-nonop-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--sim-soft);
+  border: 1px solid rgba(31, 122, 81, .35);
+  color: var(--sim-dark);
+  border-radius: var(--radius-sm);
+  padding: 11px 16px;
+  font: 600 12.5px var(--sans);
+  letter-spacing: .01em;
+}
+.sim-nonop-banner::before { content: "⚠"; font-size: 14px; }
+
+/* ---------- Simulatore page: layout, recipe picker, theme ---------- */
+/* Uses the --sim palette, defined at the top of this file, which now
+   mirrors the same green accent used by every other card — the page is
+   still visually flagged as an isolated preview via the intro banner and
+   the "Scenario simulato — non operativo" label, just no longer in a
+   separate color family from the rest of the dashboard. */
+
+.main.theme-simulator .topbar-titles h1 { color: var(--sim-dark); }
+
+.simulator-intro {
+  background: var(--sim-soft);
+  border: 1px solid rgba(31, 122, 81, .3);
+  border-radius: var(--radius-lg);
+  padding: 18px 22px;
+  margin-bottom: 22px;
+}
+.simulator-intro-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 600 13.5px var(--sans);
+  color: var(--sim-dark);
+  margin-bottom: 6px;
+}
+.simulator-intro-title::before { content: "⚠"; font-size: 13px; }
+.simulator-intro-text {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+  max-width: 78ch;
+}
+.simulator-intro-text strong { color: var(--sim-dark); }
+
+.simulator-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 22px;
+  align-items: start;
+}
+
+.simulator-recipe-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 640px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.simulator-recipe-row {
+  text-align: left;
+  cursor: pointer;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--sans);
+  transition: border-color .15s, background .15s;
+}
+.simulator-recipe-row:hover { border-color: var(--sim); }
+.simulator-recipe-row.active { border-color: var(--sim); background: var(--sim-soft); }
+.simulator-recipe-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.simulator-recipe-row-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.simulator-recipe-row-sub { font-size: 11px; color: var(--ink-faint); font-family: var(--mono); }
+
+.simulator-workspace-col { min-width: 0; }
+.simulator-empty {
+  border: 1px dashed var(--line);
+  border-radius: 18px;
+  padding: 44px 24px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+
+.simulator-recipe-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
 /* ---------- control page ---------- */
 
 .settore-cell { display: flex; align-items: center; gap: 8px; }
@@ -948,6 +1075,8 @@ a:hover { color: var(--accent-dark); }
 @media (max-width: 1180px) {
   .dept-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
   .home-summary { grid-template-columns: 1fr; }
+  .simulator-layout { grid-template-columns: 1fr; }
+  .simulator-recipe-list { max-height: 320px; }
 }
 
 @media (max-width: 860px) {
