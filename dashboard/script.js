@@ -650,19 +650,23 @@ function buildStrategyParameters(strategy, target) {
 /* System status pill                                                 */
 /* ------------------------------------------------------------------ */
 
+// Updates every copy of the backend-status indicator by class — there are
+// two in the DOM (the sidebar footer, always present, and the login
+// screen's own copy, shown before the sidebar exists), kept in sync from
+// this single poll rather than duplicating it per screen.
 async function tickSystemStatus() {
-  const dot = document.getElementById("system-status-dot");
-  const nameEl = document.getElementById("system-status-name");
-  const detailEl = document.getElementById("system-status-detail");
+  const dots = document.querySelectorAll(".status-dot");
+  const nameEls = document.querySelectorAll(".status-name");
+  const detailEls = document.querySelectorAll(".status-detail");
   try {
     const [root, health] = await Promise.all([apiGet("/"), apiGet("/health")]);
-    dot.className = "status-dot ok";
-    nameEl.textContent = `${root.name} v${root.version}`;
-    detailEl.textContent = health.status === "healthy" ? "operativo" : health.status;
+    dots.forEach((el) => { el.className = "status-dot ok"; });
+    nameEls.forEach((el) => { el.textContent = `${root.name} v${root.version}`; });
+    detailEls.forEach((el) => { el.textContent = health.status === "healthy" ? "operativo" : health.status; });
   } catch (e) {
-    dot.className = "status-dot down";
-    nameEl.textContent = "SmartHydro Backend";
-    detailEl.textContent = "non raggiungibile";
+    dots.forEach((el) => { el.className = "status-dot down"; });
+    nameEls.forEach((el) => { el.textContent = "SmartHydro Backend"; });
+    detailEls.forEach((el) => { el.textContent = "non raggiungibile"; });
   }
 }
 
@@ -4326,13 +4330,123 @@ function initEventDelegation() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Login screen — local-only display identity, no real auth            */
+/*                                                                       */
+/* Nothing here is checked by the backend: it's a name + role the user  */
+/* picks to be shown next to their actions in the sidebar, persisted    */
+/* only in this browser's localStorage. Gates the whole app on first    */
+/* load; "CAMBIA UTENTE" clears it and returns to the login screen.     */
+/* ------------------------------------------------------------------ */
+
+const DEMO_USER_KEY = "smarthydro_demo_user";
+
+function loadDemoUser() {
+  try {
+    const raw = localStorage.getItem(DEMO_USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.name === "string" && parsed.name.trim()) {
+      return { name: parsed.name, role: parsed.role || "Grower" };
+    }
+  } catch (e) { /* malformed or inaccessible storage — treat as logged out */ }
+  return null;
+}
+
+function saveDemoUser(user) {
+  try { localStorage.setItem(DEMO_USER_KEY, JSON.stringify(user)); } catch (e) { /* storage unavailable — session-only */ }
+}
+
+function clearDemoUser() {
+  try { localStorage.removeItem(DEMO_USER_KEY); } catch (e) {}
+}
+
+function applySidebarUser(user) {
+  document.getElementById("sidebar-user-avatar").textContent = user.name.trim().charAt(0).toUpperCase() || "?";
+  document.getElementById("sidebar-user-name").textContent = user.name;
+  document.getElementById("sidebar-user-role").textContent = String(user.role).toUpperCase();
+}
+
+/** Shows the login screen. `prefill` (the just-cleared user, on "cambia
+ * utente") pre-fills the form so switching identity is a quick edit
+ * rather than starting from a blank form. */
+function showLoginScreen(prefill) {
+  document.getElementById("app-shell").classList.add("hidden");
+  document.getElementById("login-screen").classList.remove("hidden");
+  const errorEl = document.getElementById("login-error");
+  errorEl.classList.add("hidden");
+  errorEl.textContent = "";
+  const nameInput = document.getElementById("login-name");
+  nameInput.value = (prefill && prefill.name) || "";
+  document.getElementById("login-role").value = (prefill && prefill.role) || "Grower";
+  nameInput.focus();
+}
+
+/** Reveals the already-built app behind the login gate and (re)starts it
+ * fresh on Home — mirrors a normal first load, whether this is the very
+ * first visit (user just submitted the form) or a re-entry after
+ * switching identity. */
+function enterApp(user) {
+  applySidebarUser(user);
+  document.getElementById("login-screen").classList.add("hidden");
+  document.getElementById("app-shell").classList.remove("hidden");
+  switchView("home");
+}
+
+function submitLogin() {
+  const nameInput = document.getElementById("login-name");
+  const name = nameInput.value.trim();
+  const errorEl = document.getElementById("login-error");
+  if (!name) {
+    errorEl.textContent = "Inserisci un nome per continuare.";
+    errorEl.classList.remove("hidden");
+    nameInput.focus();
+    return;
+  }
+  const role = document.getElementById("login-role").value;
+  const user = { name, role };
+  saveDemoUser(user);
+  enterApp(user);
+}
+
+/** "CAMBIA UTENTE": drops the stored identity and whatever view state is
+ * mid-flight (view polls, an in-progress batch simulation) before
+ * returning to the login screen — the same discipline switchView()
+ * already applies when navigating away from any single view, just for
+ * the whole app at once. */
+function switchDemoUser() {
+  const previous = loadDemoUser();
+  clearDemoUser();
+  clearPoll("zones");
+  clearPoll("recipes-poll");
+  clearPoll("alerts-view");
+  discardActiveSimulationIfAny();
+  STATE.simulation = null;
+  showLoginScreen(previous);
+}
+
+function initLoginScreen() {
+  document.getElementById("login-submit").addEventListener("click", submitLogin);
+  document.getElementById("login-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitLogin();
+  });
+  document.getElementById("sidebar-user-switch").addEventListener("click", switchDemoUser);
+}
+
+/* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
 function init() {
+  initLoginScreen();
   initEventDelegation();
-  switchView("home");
   setPoll("system-status", tickSystemStatus, STATUS_POLL_MS);
+
+  const user = loadDemoUser();
+  if (user) {
+    enterApp(user);
+  } else {
+    showLoginScreen(null);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

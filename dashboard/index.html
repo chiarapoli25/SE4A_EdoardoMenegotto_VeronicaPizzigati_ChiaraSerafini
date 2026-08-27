@@ -10,9 +10,61 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <div class="app-shell">
+    <div id="login-screen" class="login-screen hidden">
+      <div class="login-card">
+        <div class="login-brand-panel">
+          <div class="login-brand">Smart<span class="brand-accent">Hydro</span></div>
+          <div class="login-tag">CONTROL ROOM</div>
+          <p class="login-brand-text">Indica come vuoi essere identificato nella dashboard. Il nome e il ruolo restano su questo dispositivo.</p>
+          <div class="sidebar-footer login-status">
+            <span class="status-dot"></span>
+            <div>
+              <div class="status-name">SmartHydro Backend</div>
+              <div class="status-detail">connessione…</div>
+            </div>
+          </div>
+        </div>
+        <div class="login-form-panel">
+          <div>
+            <h1 class="login-title">Accesso alla dashboard</h1>
+            <p class="login-subtitle">Nessuna password: scegli un nome e un ruolo da mostrare accanto alle azioni sull'impianto.</p>
+          </div>
+          <div class="login-field">
+            <label for="login-name" class="login-label">NOME</label>
+            <input type="text" id="login-name" class="login-input" placeholder="es. Chiara Belotti" autocomplete="off">
+          </div>
+          <div class="login-field">
+            <label for="login-role" class="login-label">RUOLO</label>
+            <select id="login-role" class="login-input login-select">
+              <option value="Grower">Grower</option>
+              <option value="Agronomo">Agronomo</option>
+              <option value="Amministratore">Amministratore</option>
+            </select>
+            <div class="login-role-hint">etichetta visiva — non cambia permessi</div>
+          </div>
+          <div id="login-error" class="login-error hidden"></div>
+          <button type="button" id="login-submit" class="btn btn-primary login-submit">Accedi</button>
+        </div>
+      </div>
+      <div class="login-disclaimer">
+        <span class="login-disclaimer-dot"></span>
+        <span>Accesso dimostrativo — nessun dato di login viene verificato.</span>
+      </div>
+    </div>
+
+    <div class="app-shell hidden" id="app-shell">
       <aside class="sidebar">
         <div class="brand">Smart<span class="brand-accent">Hydro</span></div>
+        <div class="sidebar-user" id="sidebar-user">
+          <div class="sidebar-user-row">
+            <span class="sidebar-user-avatar" id="sidebar-user-avatar">?</span>
+            <div class="sidebar-user-info">
+              <div class="sidebar-user-name" id="sidebar-user-name"></div>
+              <div class="sidebar-user-role" id="sidebar-user-role"></div>
+            </div>
+          </div>
+          <button type="button" class="sidebar-user-switch" id="sidebar-user-switch">CAMBIA UTENTE</button>
+        </div>
         <nav class="nav" id="main-nav">
           <button type="button" class="nav-item" data-view="home">
             <span class="nav-dot"></span>Reparti della serra
