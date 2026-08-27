@@ -1762,6 +1762,7 @@ function selectSimulatorRecipe(recipeId) {
     result: null,
     error: null,
     chartVariable: (previous && previous.chartVariable) || "soil_moisture",
+    playback: null,
   };
   renderSimulatorView();
 }
@@ -1775,6 +1776,7 @@ function selectSimulatorRecipe(recipeId) {
 function discardActiveSimulationIfAny() {
   const sim = STATE.simulation;
   clearPoll("simulation-job");
+  cancelSimulationPlayback();
   if (!sim || !sim.job) return;
   if (sim.job.status === "queued" || sim.job.status === "running") {
     apiDelete(`/simulations/${encodeURIComponent(sim.job.id)}`).catch(() => {});
@@ -1785,6 +1787,7 @@ function restartSimulationSetup() {
   const sim = STATE.simulation;
   if (!sim) return;
   clearPoll("simulation-job");
+  cancelSimulationPlayback();
   STATE.simulation = {
     recipeId: sim.recipeId,
     durationDays: sim.durationDays || 7,
@@ -1793,6 +1796,7 @@ function restartSimulationSetup() {
     result: null,
     error: null,
     chartVariable: sim.chartVariable || "soil_moisture",
+    playback: null,
   };
   renderSimulatorView();
 }
@@ -1905,7 +1909,7 @@ function renderSimulatorView() {
       </div>
     </div>
   `;
-  if (sim.result) drawSimulationChart();
+  if (sim.result) { drawSimulationChart(); drawActuatorTimelineChart(); }
 }
 
 /**
@@ -2040,8 +2044,16 @@ function renderSimulationProgress(sim) {
 
 function renderSimulationResult(sim) {
   const result = sim.result;
+  const playing = !!(sim.playback && sim.playback.active);
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
+    <div class="sim-result-toolbar">
+      ${playing
+        ? `<span class="sim-playback-hint">Riproduzione in accelerato in corso…</span>
+           <button type="button" class="btn" data-action="sim-playback-skip">Salta al risultato completo →</button>`
+        : `<span class="sim-playback-hint">Il risultato completo è già mostrato qui sotto.</span>
+           <button type="button" class="btn" data-action="sim-playback-start">▶ Riproduci in accelerato</button>`}
+    </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
         <span class="title">Andamento simulato</span>
@@ -2051,6 +2063,13 @@ function renderSimulationResult(sim) {
         <span class="hint">durata simulata: ${fmtSimDuration(result.duration_seconds)}</span>
       </div>
       <div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
+    </div>
+    <div class="zone-section" style="margin-top:16px">
+      <div class="chart-head">
+        <span class="title">Attuatori nel tempo</span>
+        <span class="hint">stesso asse temporale del grafico sopra</span>
+      </div>
+      <div class="sim-actuator-canvas-wrap"><canvas id="simulation-actuator-chart" style="width:100%;height:100%;display:block"></canvas></div>
     </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="zone-section-title">Riepilogo</div>
@@ -2072,6 +2091,94 @@ const SIM_ACTUATOR_LABELS = {
   valve_potassium: "Elettrovalvola potassio (K)", "valve_ph-up": "Elettrovalvola pH+",
   "valve_ph-down": "Elettrovalvola pH−",
 };
+
+/** Row order (top→bottom) for the actuator timeline chart, with a short
+ * gutter label — the full SIM_ACTUATOR_LABELS names don't fit inside the
+ * same 46px left margin the sensor chart above uses, and reusing that
+ * exact margin is what keeps the two canvases' time axes pixel-aligned. */
+const SIM_ACTUATOR_ROWS = [
+  { key: "water_pump", short: "Acqua" },
+  { key: "lighting", short: "Luce" },
+  { key: "valve_nitrogen", short: "N" },
+  { key: "valve_phosphorus", short: "P" },
+  { key: "valve_potassium", short: "K" },
+  { key: "valve_ph-up", short: "pH+" },
+  { key: "valve_ph-down", short: "pH−" },
+];
+
+/* -------------------------------------------------------------------- */
+/* "Riproduci in accelerato" — client-side animated replay of an        */
+/* already-complete simulation result. GET /simulations/{id}/result     */
+/* only ever returns once the job is "succeeded" (409 otherwise), so     */
+/* there is no such thing as live-streaming an in-progress computation — */
+/* this instead reveals an already-fetched, already-complete result     */
+/* progressively over a few real seconds. Both charts are redrawn with   */
+/* the same full data either way; only how much of it is clipped by      */
+/* revealT differs, which is what guarantees the animation's end state   */
+/* is pixel-identical to the static "risultato completo" view.           */
+/* -------------------------------------------------------------------- */
+
+const SIMULATION_PLAYBACK_DURATION_MS = 5000;
+
+function startSimulationPlayback() {
+  const sim = STATE.simulation;
+  if (!sim || !sim.result) return;
+  cancelSimulationPlayback();
+  const series = sim.result.series || [];
+  const minT = series.length ? series[0].start_seconds : 0;
+  const maxT = series.length ? series[series.length - 1].end_seconds : 0;
+  sim.playback = {
+    active: true,
+    minT,
+    maxT,
+    revealT: minT,
+    startedAt: null,
+    durationMs: SIMULATION_PLAYBACK_DURATION_MS,
+    rafId: null,
+  };
+  renderSimulatorView();
+  sim.playback.rafId = requestAnimationFrame(tickSimulationPlayback);
+}
+
+function tickSimulationPlayback(ts) {
+  const sim = STATE.simulation;
+  if (!sim || !sim.playback || !sim.playback.active) return;
+  const pb = sim.playback;
+  if (pb.startedAt === null) pb.startedAt = ts;
+  const frac = pb.durationMs > 0 ? Math.min(1, (ts - pb.startedAt) / pb.durationMs) : 1;
+  pb.revealT = pb.minT + (pb.maxT - pb.minT) * frac;
+  drawSimulationChart();
+  drawActuatorTimelineChart();
+  if (frac >= 1) {
+    finishSimulationPlayback();
+  } else {
+    pb.rafId = requestAnimationFrame(tickSimulationPlayback);
+  }
+}
+
+/** Ends the animation and falls back to the ordinary static render — the
+ * same code path "Mostra risultato completo" always used, so there is no
+ * separate "final frame" to keep in sync with it. */
+function finishSimulationPlayback() {
+  const sim = STATE.simulation;
+  if (!sim) return;
+  sim.playback = null;
+  renderSimulatorView();
+}
+
+function skipSimulationPlayback() {
+  finishSimulationPlayback();
+}
+
+/** Pure cleanup — cancels any pending animation frame without redrawing.
+ * Called before STATE.simulation is replaced or torn down (new recipe,
+ * restart, navigating away) so a stray rAF never fires against a
+ * detached/replaced canvas. */
+function cancelSimulationPlayback() {
+  const sim = STATE.simulation;
+  if (sim && sim.playback && sim.playback.rafId) cancelAnimationFrame(sim.playback.rafId);
+  if (sim) sim.playback = null;
+}
 
 function renderSimulationSummary(summary) {
   const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
@@ -2130,7 +2237,16 @@ function drawSimulationChart() {
   const sim = STATE.simulation;
   if (!canvas || !sim || !sim.result) return;
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
-  drawSimulationSeriesChart(canvas, sim.result.series, sim.result.phases, varMeta);
+  const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
+  drawSimulationSeriesChart(canvas, sim.result.series, sim.result.phases, varMeta, revealT);
+}
+
+function drawActuatorTimelineChart() {
+  const canvas = document.getElementById("simulation-actuator-chart");
+  const sim = STATE.simulation;
+  if (!canvas || !sim || !sim.result) return;
+  const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
+  drawActuatorTimeline(canvas, sim.result.actuator_intervals || [], sim.result.series, sim.result.phases, revealT);
 }
 
 /**
@@ -2142,8 +2258,15 @@ function drawSimulationChart() {
  * own total duration don't exist (a finished recipe just holds on its
  * last phase), so the last phase's band is extended to the end of the
  * simulated span rather than leaving a gap.
+ *
+ * revealT (optional): when set, clips everything drawn to t <= revealT —
+ * used by the "Riproduci in accelerato" playback to reveal the (already
+ * fully computed) result progressively. Axis domains (minV/maxV/minT/maxT)
+ * are always computed from the FULL dataset regardless, so the axes never
+ * jitter mid-animation and the end state is pixel-identical to passing no
+ * revealT at all (the static "risultato completo" view).
  */
-function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
+function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -2179,6 +2302,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   const minT = series[0].start_seconds;
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
+  const revealCap = revealT != null ? Math.min(Math.max(revealT, minT), maxT) : maxT;
 
   let minV = Math.min(...points.map((p) => p.min));
   let maxV = Math.max(...points.map((p) => p.max));
@@ -2210,7 +2334,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     const target = ph.targets[varMeta.key];
     if (!target) return;
     const segStart = Math.max(ph.start_seconds, minT);
-    const segEnd = i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT);
+    const segEnd = Math.min(i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT), revealCap);
     const bx0 = x(segStart);
     const bx1 = x(segEnd);
     if (bx1 <= bx0) return;
@@ -2234,37 +2358,147 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     }
   });
 
+  // Progressively revealed subset for the playback animation — point by
+  // point, as the user's own spec asked for ("punto per punto"). Unset
+  // revealT (the ordinary static render) keeps every point.
+  const drawPoints = revealT != null ? points.filter((p) => (p.t0 + p.t1) / 2 <= revealCap) : points;
+
   // Observed min/max spread per bucket (visible mainly on aggregated,
   // long-duration simulations where each point covers many raw steps).
-  ctx.fillStyle = "rgba(31,122,81,0.14)";
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const px = x((p.t0 + p.t1) / 2);
-    const py = y(p.max);
-    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-  });
-  for (let i = points.length - 1; i >= 0; i--) {
-    const px = x((points[i].t0 + points[i].t1) / 2);
-    ctx.lineTo(px, y(points[i].min));
-  }
-  ctx.closePath();
-  ctx.fill();
+  if (drawPoints.length) {
+    ctx.fillStyle = "rgba(31,122,81,0.14)";
+    ctx.beginPath();
+    drawPoints.forEach((p, i) => {
+      const px = x((p.t0 + p.t1) / 2);
+      const py = y(p.max);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    for (let i = drawPoints.length - 1; i >= 0; i--) {
+      const px = x((drawPoints[i].t0 + drawPoints[i].t1) / 2);
+      ctx.lineTo(px, y(drawPoints[i].min));
+    }
+    ctx.closePath();
+    ctx.fill();
 
-  // Average line.
-  ctx.strokeStyle = "#1f7a51";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  points.forEach((p, i) => {
-    const px = x((p.t0 + p.t1) / 2);
-    const py = y(p.avg);
-    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-  });
-  ctx.stroke();
+    // Average line.
+    ctx.strokeStyle = "#1f7a51";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    drawPoints.forEach((p, i) => {
+      const px = x((p.t0 + p.t1) / 2);
+      const py = y(p.avg);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  }
 
   ctx.fillStyle = "#8aa39a";
   ctx.font = "10px 'IBM Plex Mono', monospace";
   ctx.fillText(`${maxV.toFixed(varMeta.decimals)} ${varMeta.unit}`, 2, pad.t + 8);
   ctx.fillText(`${minV.toFixed(varMeta.decimals)} ${varMeta.unit}`, 2, pad.t + h);
+  ctx.fillText(fmtElapsedSeconds(minT), pad.l, height - 4);
+  ctx.textAlign = "right";
+  ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
+  ctx.textAlign = "left";
+}
+
+/**
+ * Horizontal Gantt-style timeline, one row per actuator (7 total, see
+ * SIM_ACTUATOR_ROWS) — deliberately reuses the exact same pad.l/pad.r and
+ * the exact same minT/maxT source (series[0]/series[last]) as
+ * drawSimulationSeriesChart above, so this canvas's plot area lines up
+ * pixel-for-pixel under the sensor chart's and a valve opening visibly
+ * lines up with whatever sensor reading triggered it.
+ *
+ * revealT (optional): same contract as drawSimulationSeriesChart — clips
+ * each interval's drawn end to revealT (bars visibly "grow" during
+ * playback) while every other computed value (minT/maxT, row layout,
+ * phase-boundary positions) stays derived from the full dataset.
+ */
+function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(rect.width, 1);
+  const height = Math.max(rect.height, 1);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  if (!series.length) {
+    ctx.fillStyle = "#8aa39a";
+    ctx.font = "11px Poppins, sans-serif";
+    ctx.fillText("Nessun dato nella simulazione", 16, height / 2);
+    return;
+  }
+
+  const pad = { l: 46, r: 14, t: 6, b: 20 };
+  const w = width - pad.l - pad.r;
+  const h = height - pad.t - pad.b;
+  const rowH = h / SIM_ACTUATOR_ROWS.length;
+
+  const minT = series[0].start_seconds;
+  const maxT = series[series.length - 1].end_seconds;
+  const spanT = Math.max(maxT - minT, 1);
+  const revealCap = revealT != null ? Math.min(Math.max(revealT, minT), maxT) : maxT;
+
+  const x = (t) => pad.l + ((t - minT) / spanT) * w;
+
+  // Row separators + short gutter labels.
+  ctx.strokeStyle = "#eef3ef";
+  ctx.lineWidth = 1;
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  ctx.fillStyle = "#8aa39a";
+  ctx.textBaseline = "middle";
+  SIM_ACTUATOR_ROWS.forEach((row, i) => {
+    const ry = pad.t + rowH * i;
+    if (i > 0) {
+      ctx.beginPath();
+      ctx.moveTo(pad.l, ry);
+      ctx.lineTo(pad.l + w, ry);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#8aa39a";
+    ctx.fillText(row.short, 2, ry + rowH / 2);
+  });
+  ctx.textBaseline = "alphabetic";
+
+  // Phase boundary lines — same source/positions as the sensor chart
+  // above, so a phase change lines up visually between the two stacked
+  // canvases; hidden past revealCap so a future phase change doesn't leak
+  // through before its data has been revealed.
+  ctx.strokeStyle = "#d8e2da";
+  ctx.lineWidth = 1;
+  phases.forEach((ph, i) => {
+    if (i === 0 || ph.start_seconds > revealCap) return;
+    const bx = x(Math.min(Math.max(ph.start_seconds, minT), maxT));
+    ctx.beginPath();
+    ctx.moveTo(bx, pad.t);
+    ctx.lineTo(bx, pad.t + h);
+    ctx.stroke();
+  });
+
+  // One bar per active interval, clipped to revealCap.
+  ctx.fillStyle = "rgba(31,122,81,0.55)";
+  const inset = rowH * 0.28;
+  SIM_ACTUATOR_ROWS.forEach((row, i) => {
+    const ry = pad.t + rowH * i;
+    const barH = Math.max(rowH - inset * 2, 2);
+    intervals
+      .filter((iv) => iv.actuator === row.key && iv.start_seconds <= revealCap)
+      .forEach((iv) => {
+        const end = Math.min(iv.end_seconds, revealCap);
+        if (end <= iv.start_seconds) return;
+        const bx0 = x(iv.start_seconds);
+        const bx1 = x(end);
+        if (bx1 <= bx0) return;
+        ctx.fillRect(bx0, ry + inset, Math.max(bx1 - bx0, 1.5), barH);
+      });
+  });
+
+  ctx.fillStyle = "#8aa39a";
+  ctx.font = "10px 'IBM Plex Mono', monospace";
   ctx.fillText(fmtElapsedSeconds(minT), pad.l, height - 4);
   ctx.textAlign = "right";
   ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
@@ -4251,6 +4485,12 @@ function initEventDelegation() {
 
     const simRestartBtn = e.target.closest('[data-action="sim-restart"]');
     if (simRestartBtn) { restartSimulationSetup(); return; }
+
+    const simPlaybackStartBtn = e.target.closest('[data-action="sim-playback-start"]');
+    if (simPlaybackStartBtn) { startSimulationPlayback(); return; }
+
+    const simPlaybackSkipBtn = e.target.closest('[data-action="sim-playback-skip"]');
+    if (simPlaybackSkipBtn) { skipSimulationPlayback(); return; }
   });
 
   document.addEventListener("change", (e) => {
