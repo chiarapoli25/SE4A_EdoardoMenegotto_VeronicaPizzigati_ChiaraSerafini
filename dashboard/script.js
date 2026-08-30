@@ -38,7 +38,7 @@ const COMMAND_POLL_MS = 1500;
 const COMMAND_TIMEOUT_MS = 20000;
 // Simulatore page: batch preview job polling — isolated from every
 // operational poll above, see the dedicated section near
-// selectSimulatorRecipe().
+// openSimulatorModal().
 const SIMULATION_POLL_MS = 1500;
 
 // Frontend-only rule (not enforced by the backend): "Fai uscire" stays
@@ -281,23 +281,24 @@ const STATE = {
   // overlay as the zone/recipe modals via STATE.modalKind = "recipe-form".
   recipeForm: null,
 
-  // Simulatore (STATE.view = "simulator"): an isolated batch preview of a
-  // recipe from the full catalog, entirely separate from live operational
-  // data (see POST /simulations — never touches a zone). Shape:
-  // { recipeId, durationDays, starting, job, result, error, chartVariable }
-  // — job is the polled SimulationJob (queued/running/succeeded/failed/
-  // cancelled); result is the SimulationPreview, fetched once job succeeds.
-  // null until a recipe is picked on the Simulatore page. Reset to null
+  // Simulatore (STATE.view = "simulator"): an isolated batch preview of the
+  // recipe REALLY assigned to one REAL, currently-registered sector — never
+  // a free pick from the full catalog (see POST /simulations — never
+  // touches the zone itself, only reads its active_recipe_id once when the
+  // pop-up is opened). Shape:
+  // { zoneId, recipeId, durationDays, starting, job, result, error,
+  //   chartVariable, playback } — zoneId is the sector this scenario was
+  // opened for (header context + the "which sector's recipe is this"
+  // banner inside the pop-up); recipeId is that sector's active_recipe_id
+  // at open time. job is the polled SimulationJob (queued/running/
+  // succeeded/failed/cancelled); result is the SimulationPreview, fetched
+  // once job succeeds. null whenever the simulation pop-up (STATE.modalKind
+  // = "simulator", see openSimulatorModal) is not open. Reset to null
   // (after discarding any still-active job — see
-  // discardActiveSimulationIfAny) both when picking a *different* recipe
-  // (selectSimulatorRecipe) and when navigating away from the Simulatore
-  // page (switchView), so a job never outlives the page occupying the
-  // system's single global batch slot.
+  // discardActiveSimulationIfAny) both when the pop-up is closed and when
+  // navigating away from the Simulatore page (switchView), so a job never
+  // outlives its pop-up occupying the system's single global batch slot.
   simulation: null,
-  // Search box state for the Simulatore page's recipe picker — kept
-  // separate from recipeQuery (Ricette page) since the two searches are
-  // independent UIs over the same STATE.recipes catalog.
-  simulatorQuery: "",
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
@@ -697,6 +698,10 @@ async function tickZones() {
       if (!isFocusedInside("view-home")) renderHome();
     } else if (STATE.view === "control") {
       if (!isFocusedInside("view-control")) renderControl();
+    } else if (STATE.view === "simulator") {
+      // The grid has no inputs to protect focus on; the pop-up (if open)
+      // is a separate DOM subtree (#modal-content) untouched by this.
+      renderSimulatorView();
     }
     updateNavAlertsBadge();
   } catch (e) {
@@ -899,24 +904,46 @@ async function submitAddSector() {
   }
 }
 
-function renderSectorRow(z) {
+/**
+ * Shared innards of a sector tile — connection dot, species, phase/state/
+ * plant-count tags — used both by Home's real sector row (renderSectorRow)
+ * and the Simulatore page's own grid (renderSimulatorSectorRow, see the
+ * "Simulatore" section below). Only the OUTER wrapper differs between the
+ * two (data-action target, clickability, trailing arrow) — keeping the
+ * inner markup in one place means the two pages can never silently drift
+ * apart in what a sector tile actually shows.
+ *
+ * The plant-count tag is identified by data-plant-count (not an id): the
+ * same zone can now legitimately appear in two different grids at once
+ * (Home's and Simulatore's DOM subtrees both stay mounted, just toggled
+ * with .hidden — see switchView), so an id would collide; renderPlantCounts
+ * below updates every matching element via querySelectorAll instead of
+ * getElementById.
+ */
+function renderSectorRowInner(z) {
   const online = z.status === "online";
   const species = z.plant_species || (z.department_number === 5 ? "Zona mista (quarantena)" : "—");
   return `
-    <div class="sector-row" data-action="open-zone" data-zone-id="${escapeAttr(z.id)}">
-      <span class="conn-dot ${online ? "online" : "offline"}"></span>
-      <div class="sector-row-body">
-        <div class="sector-row-top">
-          <span class="sector-num">SETTORE ${z.sector_number}</span>
-          <span class="sector-conn" style="color:${online ? "#2f9e6b" : "#c15a4a"}">${online ? "ONLINE" : "OFFLINE"}</span>
-        </div>
-        <div class="sector-row-species">${escapeHtml(species)}</div>
-        <div class="sector-row-tags">
-          <span class="tag-phase">${escapeHtml(z.current_phase || "nessuna fase attiva")}</span>
-          <span class="pill op-${z.operational_state}">${z.operational_state}</span>
-          <span class="tag-phase" id="plant-count-${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
-        </div>
+    <span class="conn-dot ${online ? "online" : "offline"}"></span>
+    <div class="sector-row-body">
+      <div class="sector-row-top">
+        <span class="sector-num">SETTORE ${z.sector_number}</span>
+        <span class="sector-conn" style="color:${online ? "#2f9e6b" : "#c15a4a"}">${online ? "ONLINE" : "OFFLINE"}</span>
       </div>
+      <div class="sector-row-species">${escapeHtml(species)}</div>
+      <div class="sector-row-tags">
+        <span class="tag-phase">${escapeHtml(z.current_phase || "nessuna fase attiva")}</span>
+        <span class="pill op-${z.operational_state}">${z.operational_state}</span>
+        <span class="tag-phase" data-plant-count="${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderSectorRow(z) {
+  return `
+    <div class="sector-row" data-action="open-zone" data-zone-id="${escapeAttr(z.id)}">
+      ${renderSectorRowInner(z)}
       <span class="sector-row-arrow">→</span>
     </div>
   `;
@@ -947,11 +974,18 @@ async function loadPlantCounts(zones) {
 
 function renderPlantCounts() {
   STATE.zones.forEach((z) => {
-    const el = document.getElementById(`plant-count-${z.id}`);
-    if (el) el.textContent = plantCountLabel(z.id);
+    document.querySelectorAll(`[data-plant-count="${z.id}"]`).forEach((el) => {
+      el.textContent = plantCountLabel(z.id);
+    });
   });
 }
 
+// Despite the name, also called from the Simulatore page (renderSimulatorView):
+// its own sector tiles show the same live plant count as Home's, via the
+// shared renderSectorRowInner — reusing this single throttled fetch instead
+// of a second one. renderAlertsPanel/renderQuarantineBox/renderDeptGridOnly
+// below all no-op harmlessly when their target element isn't in the
+// currently-visible view's DOM (see each function's own `if (!el) return`).
 async function maybeFetchHomeExtras() {
   const now = Date.now();
   if (now - STATE.homeExtrasLastRun < HOME_EXTRAS_MIN_INTERVAL_MS) return;
@@ -1536,10 +1570,11 @@ async function tickAlertsView() {
 /* Recipes view                                                       */
 /* ------------------------------------------------------------------ */
 
-// Backs BOTH the Ricette page and the Simulatore page's recipe picker —
-// both consume the exact same unfiltered GET /recipes catalog (no
-// department scoping on either), so a single poll/cache serves both
-// rather than fetching the same list twice.
+// Backs BOTH the Ricette page and the Simulatore page's simulation pop-up
+// (renderSimulatorModal reads recipe details from STATE.recipesById) — both
+// consume the exact same unfiltered GET /recipes catalog (no department
+// scoping on either), so a single poll/cache serves both rather than
+// fetching the same list twice.
 async function tickRecipes() {
   try {
     const recipes = await apiGet("/recipes");
@@ -1550,8 +1585,11 @@ async function tickRecipes() {
       if (isFocusedInside("view-recipes")) updateRecipeGridOnly();
       else renderRecipes();
     } else if (STATE.view === "simulator") {
-      if (isFocusedInside("view-simulator")) updateSimulatorPickerOnly();
-      else renderSimulatorView();
+      // The grid itself has no inputs to protect focus on; the pop-up
+      // (if open) might have a chart-variable <select> mid-interaction,
+      // same guard tickModal()/tickSimulationJob() already use elsewhere.
+      renderSimulatorView();
+      if (STATE.modalKind === "simulator") renderModalIfSafe();
     }
   } catch (e) {
     console.error("failed to refresh recipes", e);
@@ -1741,46 +1779,35 @@ function renderRecipeModal() {
 /* Simulatore — isolated batch preview page (POST /simulations)         */
 /*                                                                       */
 /* Deliberately kept separate from every operational code path above:   */
-/* it never touches a zone, a command, or telemetry. The backend allows */
-/* exactly ONE batch simulation system-wide at a time (409 if another   */
-/* is already queued/running), so this page is careful to free that     */
-/* slot (DELETE) the moment the user stops watching — see               */
-/* discardActiveSimulationIfAny(), called both from selectSimulatorRecipe*/
-/* (switching to a different recipe mid-run) and from switchView()      */
-/* (navigating away from the Simulatore page entirely).                 */
+/* it never touches a zone, a command, or telemetry — POST /simulations */
+/* only ever reads the picked sector's active_recipe_id ONCE, at the    */
+/* moment its pop-up is opened. The backend allows exactly ONE batch    */
+/* simulation system-wide at a time (409 if another is already queued/  */
+/* running), so this page is careful to free that slot (DELETE) the     */
+/* moment the user stops watching — see discardActiveSimulationIfAny(), */
+/* called both from closeModal() (STATE.modalKind === "simulator") and  */
+/* from switchView() (navigating away from the Simulatore page          */
+/* entirely, pop-up open or not).                                       */
+/*                                                                       */
+/* Page layout: the SAME department-card grid as "Reparti della serra"  */
+/* (renderDeptCard/renderSectorRow in the Home section above), reused    */
+/* via renderSimulatorSectorRow/renderSimulatorDeptCard rather than a   */
+/* catalog-wide recipe picker — restricted to departments 1-4 (no       */
+/* Quarantena: department 5 never has an active_recipe_id) and, within  */
+/* those, only real registered sectors. A sector tile opens the         */
+/* simulation pop-up (openSimulatorModal, STATE.modalKind = "simulator")*/
+/* on THAT sector's own active_recipe_id — a separate pop-up from the   */
+/* real zone-detail one (openZoneModal/"zone"): the two must never      */
+/* converge into the same component/handler, since one is read-only     */
+/* live data and the other starts a batch job.                          */
 /* ------------------------------------------------------------------ */
 
-/**
- * Selecting a recipe to simulate from the catalog-wide picker — either the
- * very first pick, or switching to a different one while a job for the
- * previous recipe is still queued/running. In the latter case the
- * previous job is discarded first (DELETE) so it doesn't keep occupying
- * the system's single global batch-simulation slot after the user has
- * stopped watching it. A no-op if the same recipe is clicked again.
- */
-function selectSimulatorRecipe(recipeId) {
-  if (STATE.simulation && STATE.simulation.recipeId === recipeId) return;
-  discardActiveSimulationIfAny();
-  const previous = STATE.simulation;
-  STATE.simulation = {
-    recipeId,
-    durationDays: (previous && previous.durationDays) || 7,
-    starting: false,
-    job: null,
-    result: null,
-    error: null,
-    chartVariable: (previous && previous.chartVariable) || "soil_moisture",
-    playback: null,
-  };
-  renderSimulatorView();
-}
-
 /** Frees the global batch-simulation slot if the current job is still
- * queued/running when the user navigates away (to a different recipe or
- * off the Simulatore page entirely) — fire-and-forget, since there's
- * nothing more to show regardless of whether the DELETE itself succeeds.
- * A no-op if there is no job, or the job already reached a final state
- * (nothing to free). */
+ * queued/running when the user stops watching it (pop-up closed, or the
+ * Simulatore page left entirely) — fire-and-forget, since there's nothing
+ * more to show regardless of whether the DELETE itself succeeds. A no-op
+ * if there is no job, or the job already reached a final state (nothing
+ * to free). */
 function discardActiveSimulationIfAny() {
   const sim = STATE.simulation;
   clearPoll("simulation-job");
@@ -1797,6 +1824,7 @@ function restartSimulationSetup() {
   clearPoll("simulation-job");
   cancelSimulationPlayback();
   STATE.simulation = {
+    zoneId: sim.zoneId,
     recipeId: sim.recipeId,
     durationDays: sim.durationDays || 7,
     starting: false,
@@ -1806,7 +1834,7 @@ function restartSimulationSetup() {
     chartVariable: sim.chartVariable || "soil_moisture",
     playback: null,
   };
-  renderSimulatorView();
+  renderModal();
 }
 
 async function startSimulation() {
@@ -1815,17 +1843,17 @@ async function startSimulation() {
   const durationSeconds = sim.durationDays * 86400;
   sim.starting = true;
   sim.error = null;
-  renderSimulatorView();
+  renderModal();
   try {
     const job = await apiPost("/simulations", { recipe_id: sim.recipeId, duration_seconds: durationSeconds });
-    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId) return; // navigated away meanwhile
+    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId || STATE.modalKind !== "simulator") return; // pop-up closed/changed meanwhile
     STATE.simulation.starting = false;
     STATE.simulation.job = job;
     STATE.simulation.result = null;
-    renderSimulatorView();
+    renderModal();
     pollSimulationJob();
   } catch (err) {
-    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId) return;
+    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId || STATE.modalKind !== "simulator") return;
     STATE.simulation.starting = false;
     // 409 here means "the system's one global batch slot is already
     // taken" — a normal, expected condition, not a fault. Never show the
@@ -1833,7 +1861,7 @@ async function startSimulation() {
     STATE.simulation.error = err.status === 409
       ? "È già in corso un'altra simulazione nel sistema, riprova tra poco."
       : err.message;
-    renderSimulatorView();
+    renderModal();
   }
 }
 
@@ -1849,7 +1877,7 @@ async function cancelSimulation() {
     STATE.simulation.job = null;
     STATE.simulation.result = null;
     STATE.simulation.error = null;
-    renderSimulatorView();
+    renderModal();
   }
 }
 
@@ -1881,105 +1909,180 @@ async function tickSimulationJob() {
     } else if (job.status === "failed" || job.status === "cancelled") {
       clearPoll("simulation-job");
     }
-    renderSimulatorViewIfSafe();
+    if (STATE.modalKind === "simulator") renderModalIfSafe();
   } catch (e) { /* transient network error, keep polling */ }
 }
 
 /**
- * Simulatore page: a catalog-wide recipe picker (left) beside the working
- * area for whichever recipe is currently selected (right) — see
- * renderSimulatorPicker / renderSimulatorWorkspace. Distinct visual
- * treatment (--sim palette banner + header tint) so a simulated scenario
- * can never be mistaken for operational data, matching the backend's own
- * source_label ("Scenario simulato — non operativo").
+ * Simulatore page: the department-card grid, restricted to production
+ * departments (1-4) and — within those — sectors that actually have a
+ * recipe assigned (active_recipe_id). --sim chrome on the intro banner/
+ * page title matches the app's normal green (--accent) rather than a
+ * separate color, so the page reads as one visual system with "Reparti
+ * della serra"; see renderSimulatorSectorRow for the equally-deliberate
+ * "not clickable" treatment of a production sector that has no recipe
+ * assigned yet.
  */
 function renderSimulatorView() {
-  const sim = STATE.simulation || { recipeId: null };
+  const byDept = groupZonesByDepartment(STATE.zones);
+  const simulable = STATE.zones.filter((z) => z.department_number !== 5 && !!z.active_recipe_id);
+
   setPageTitle(
     "Simulatore",
-    `${STATE.recipes.length} ricette nel catalogo · anteprima batch isolata, nessun settore reale coinvolto`
+    `${simulable.length} settor${simulable.length === 1 ? "e" : "i"} disponibil${simulable.length === 1 ? "e" : "i"} per la simulazione · nessun dato reale coinvolto`
   );
+
+  const deptCards = [1, 2, 3, 4].map((n) => renderSimulatorDeptCard(n, byDept[n] || [])).join("");
+
   document.getElementById("view-simulator").innerHTML = `
-    <div class="simulator-intro">
+    <div class="simulator-intro simulator-intro-prominent">
       <div class="simulator-intro-title">Ambiente di simulazione</div>
       <div class="simulator-intro-text">
-        Le simulazioni avviate da questa pagina sono scenari batch isolati: non toccano mai un settore reale,
-        una telemetria o un comando dell'impianto. Ogni risultato è marcato esplicitamente
-        <strong>«Scenario simulato — non operativo»</strong>.
+        Questa griglia rispecchia i settori reali della serra — stessa specie, stessa fase, stesso stato — ma cliccarne
+        uno avvia solo uno scenario batch isolato sulla ricetta che quel settore ha davvero assegnata:
+        <strong>non tocca mai la telemetria, i comandi o la coltivazione reale di quel settore</strong>.
+        Ogni risultato è marcato esplicitamente <strong>«Scenario simulato — non operativo»</strong>.
       </div>
     </div>
-    <div class="simulator-layout">
-      <div class="simulator-picker-col">${renderSimulatorPicker(sim)}</div>
-      <div class="simulator-workspace-col">
-        ${sim.recipeId
-          ? renderSimulatorWorkspace(sim)
-          : '<div class="simulator-empty">Seleziona una ricetta dall\'elenco a sinistra per avviare una simulazione.</div>'}
+    <div class="dept-grid">${deptCards}</div>
+    ${simulable.length === 0 && STATE.zonesLoaded
+      ? '<div class="simulator-empty" style="margin-top:20px">Nessun settore produttivo ha ancora una ricetta assegnata: non c\'è ancora nulla da simulare.</div>'
+      : ""}
+  `;
+  maybeFetchHomeExtras(); // plant counts shown on each tile — same throttled fetch Home uses
+}
+
+/** One department card for the Simulatore grid — same visual shell as
+ * renderDeptCard (Home), but only ever showing REAL registered sectors
+ * (no "+ Aggiungi settore" slots: this page never creates anything) and
+ * routing clicks through renderSimulatorSectorRow instead of
+ * renderSectorRow. */
+function renderSimulatorDeptCard(n, zones) {
+  const meta = DEPT_META[n];
+  const name = (zones[0] && zones[0].department_name) || DEPT_FALLBACK_NAMES[n];
+  const rows = zones.length
+    ? zones.map((z) => renderSimulatorSectorRow(z)).join("")
+    : '<div class="sector-slot-empty">Nessun settore registrato in questo reparto.</div>';
+  return `
+    <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card-head">
+        <span class="dept-code">REPARTO ${n}</span>
+        <span class="dept-count">${zones.length} settor${zones.length === 1 ? "e" : "i"}</span>
       </div>
+      <div class="dept-title">${escapeHtml(name)}</div>
+      <div class="sector-list">${rows}</div>
     </div>
   `;
-  if (sim.result) { drawSimulationChart(); drawActuatorTimelineChart(); }
+}
+
+/** A single sector tile on the Simulatore grid — same inner content as
+ * Home's own sector row (species/phase/state/plant-count, via the shared
+ * renderSectorRowInner), but clicking it opens the SIMULATION pop-up on
+ * data-action="open-simulator-sector", never "open-zone". A production
+ * sector without an active_recipe_id (should not happen with the current
+ * creation flow, which always assigns one — but defensively handled
+ * anyway) renders as a plain, non-clickable tile instead of one that would
+ * fail on click: no data-action, muted styling, no arrow. */
+function renderSimulatorSectorRow(z) {
+  const inner = renderSectorRowInner(z);
+  if (!z.active_recipe_id) {
+    return `
+      <div class="sector-row sector-row-disabled" title="Nessuna ricetta assegnata a questo settore: non simulabile.">
+        ${inner}
+        <span class="sector-row-arrow" style="visibility:hidden">→</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="sector-row" data-action="open-simulator-sector" data-zone-id="${escapeAttr(z.id)}">
+      ${inner}
+      <span class="sector-row-arrow">→</span>
+    </div>
+  `;
 }
 
 /**
- * Avoids yanking focus away from the recipe-search input mid-typing —
- * same pattern as renderModalIfSafe(), scoped to the Simulatore page.
+ * Opens the simulation pop-up for one real sector's active_recipe_id.
+ * Reuses #modal-overlay/#modal-content (STATE.modalKind = "simulator") —
+ * the same overlay mechanism as the real zone pop-up, but its own kind, so
+ * renderModal()/closeModal() never confuse the two. A no-op (defensive
+ * only — the grid never renders a data-action for this case) if the zone
+ * has no active_recipe_id.
  */
-function renderSimulatorViewIfSafe() {
-  const active = document.activeElement;
-  if (active && (active.tagName === "SELECT" || active.tagName === "INPUT") && isFocusedInside("view-simulator")) return;
-  renderSimulatorView();
+function openSimulatorModal(zoneId) {
+  const zone = STATE.zones.find((z) => z.id === zoneId);
+  if (!zone || !zone.active_recipe_id) return;
+
+  // A job for a *different* sector is still occupying the system's single
+  // batch slot (shouldn't normally happen — the grid is hidden behind the
+  // overlay while a pop-up is open — but defensive all the same): free it
+  // before starting this one.
+  if (STATE.simulation && STATE.simulation.zoneId !== zoneId) {
+    discardActiveSimulationIfAny();
+    STATE.simulation = null;
+  }
+  if (!STATE.simulation) {
+    STATE.simulation = {
+      zoneId,
+      recipeId: zone.active_recipe_id,
+      durationDays: 7,
+      starting: false,
+      job: null,
+      result: null,
+      error: null,
+      chartVariable: "soil_moisture",
+      playback: null,
+    };
+  }
+
+  STATE.modalKind = "simulator";
+  document.getElementById("modal-overlay").classList.remove("hidden");
+  renderModal();
+
+  if (!STATE.recipesById[zone.active_recipe_id]) {
+    apiGet(`/recipes/${encodeURIComponent(zone.active_recipe_id)}`).then((r) => {
+      STATE.recipesById[r.id] = r;
+      if (STATE.modalKind === "simulator" && STATE.simulation && STATE.simulation.recipeId === r.id) renderModal();
+    }).catch(() => {
+      if (STATE.modalKind === "simulator" && STATE.simulation) {
+        STATE.simulation.error = "Impossibile caricare la ricetta assegnata a questo settore.";
+        renderModal();
+      }
+    });
+  }
 }
 
-function simulatorFilteredRecipes() {
-  const q = (STATE.simulatorQuery || "").trim().toLowerCase();
-  if (!q) return STATE.recipes;
-  return STATE.recipes.filter((r) => `${r.id} ${r.plant_type} ${r.department_name || ""}`.toLowerCase().includes(q));
-}
+/** Pop-up body: setup / progress / result, exactly the same three-state
+ * body previously used inline on the Simulatore page — only the
+ * surrounding header changed (now the sector + recipe it was opened for,
+ * plus a compact repeat of the "Ambiente di simulazione" banner — see the
+ * NEW LAYOUT note 3 this was written against: the grid looks enough like
+ * the real one that the warning belongs inside the pop-up too, not only
+ * above the grid). */
+function renderSimulatorModal() {
+  const wrap = document.getElementById("modal-content");
+  const sim = STATE.simulation;
+  if (!sim) { wrap.innerHTML = '<div class="empty-note">Nessuna simulazione selezionata.</div>'; return; }
 
-function simulatorRecipeRowsHtml(list, sim) {
-  if (!list.length) return '<div class="empty-note">Nessuna ricetta trovata.</div>';
-  return list.map((r) => `
-    <button type="button" class="simulator-recipe-row ${sim.recipeId === r.id ? "active" : ""}"
-      data-action="sim-pick-recipe" data-recipe-id="${escapeAttr(r.id)}">
-      <div class="simulator-recipe-row-top">
-        <span class="simulator-recipe-row-name">${escapeHtml(r.plant_type)}</span>
-        <span class="recipe-badge">v${r.version}</span>
-      </div>
-      <div class="simulator-recipe-row-sub">${escapeHtml(r.id)} · ${escapeHtml(r.department_name || "Reparto non catalogato")} · ${r.phases.length} fasi</div>
-    </button>
-  `).join("");
-}
-
-/** Full picker markup (search box + result list) — rendered once as part
- * of renderSimulatorView(). Typing in the search box only repaints the
- * list/count via updateSimulatorPickerOnly(), never this whole block, so
- * the input never loses focus mid-keystroke. */
-function renderSimulatorPicker(sim) {
-  const list = simulatorFilteredRecipes();
-  return `
-    <div class="toolbar">
-      <input type="search" id="simulator-recipe-search" placeholder="Cerca per nome, id o reparto…" value="${escapeAttr(STATE.simulatorQuery || "")}">
-      <span class="count" id="simulator-recipe-count">${list.length} ${list.length === 1 ? "ricetta" : "ricette"}</span>
-    </div>
-    <div class="simulator-recipe-list" id="simulator-recipe-list">${simulatorRecipeRowsHtml(list, sim)}</div>
-  `;
-}
-
-function updateSimulatorPickerOnly() {
-  const sim = STATE.simulation || { recipeId: null };
-  const list = simulatorFilteredRecipes();
-  const listEl = document.getElementById("simulator-recipe-list");
-  const countEl = document.getElementById("simulator-recipe-count");
-  if (listEl) listEl.innerHTML = simulatorRecipeRowsHtml(list, sim);
-  if (countEl) countEl.textContent = `${list.length} ${list.length === 1 ? "ricetta" : "ricette"}`;
-}
-
-/** Working area for the currently-selected recipe: setup / progress /
- * result, exactly the same three-state body used when this lived in the
- * "Simula questa ricetta" pop-up — only the surrounding header changed. */
-function renderSimulatorWorkspace(sim) {
+  const zone = STATE.zones.find((z) => z.id === sim.zoneId) || null;
   const recipe = STATE.recipesById[sim.recipeId];
-  if (!recipe) return '<div class="empty-note">Caricamento ricetta…</div>';
+  if (!recipe) {
+    wrap.innerHTML = `
+      <div class="zone-header" style="--zone-tint:var(--sim-soft)">
+        <div style="min-width:0">
+          <div class="zone-header-code"><span class="code">${zone ? zoneLabel(zone) : "—"}</span></div>
+          <h2>Simulazione</h2>
+        </div>
+        <button type="button" class="zone-close" data-action="close-modal">✕</button>
+      </div>
+      <div style="padding:20px 28px 28px">
+        ${sim.error
+          ? `<div class="zone-danger-error">${escapeHtml(sim.error)}</div>`
+          : '<div class="empty-note">Caricamento ricetta…</div>'}
+      </div>
+    `;
+    return;
+  }
 
   let body;
   if (sim.result) {
@@ -1990,21 +2093,34 @@ function renderSimulatorWorkspace(sim) {
     body = renderSimulationSetup(sim);
   }
 
-  return `
-    <div class="simulator-recipe-card">
-      <div class="zone-header" style="--zone-tint:var(--sim-soft)">
-        <div style="min-width:0">
-          <div class="zone-header-code">
-            <span class="code">${escapeHtml(recipe.id)}</span>
-            <span class="recipe-badge">Versione ${recipe.version}</span>
-          </div>
-          <h2>${escapeHtml(recipe.plant_type)}</h2>
-          <div class="zone-header-meta"><span>${escapeHtml(recipe.department_name || "Reparto non catalogato")}</span></div>
+  wrap.innerHTML = `
+    <div class="zone-header" style="--zone-tint:var(--sim-soft)">
+      <div style="min-width:0">
+        <div class="zone-header-code">
+          <span class="code">${zone ? zoneLabel(zone) : "settore rimosso"} · ${escapeHtml(recipe.id)}</span>
+          <span class="recipe-badge">Versione ${recipe.version}</span>
+        </div>
+        <h2>${escapeHtml(recipe.plant_type)}</h2>
+        <div class="zone-header-meta">
+          <span>${zone ? `Ricetta assegnata a Reparto ${zone.department_number} — Settore ${zone.sector_number}` : "Questo settore non è più registrato"}</span>
+          <span class="sep"></span>
+          <span>${escapeHtml(recipe.department_name || "Reparto non catalogato")}</span>
         </div>
       </div>
-      <div style="padding:20px 28px 28px">${body}</div>
+      <button type="button" class="zone-close" data-action="close-modal">✕</button>
+    </div>
+    <div style="padding:20px 28px 28px">
+      <div class="simulator-intro simulator-intro-compact">
+        <div class="simulator-intro-title">Ambiente di simulazione</div>
+        <div class="simulator-intro-text">
+          Questo scenario usa la ricetta assegnata a ${zone ? zoneLabel(zone) : "questo settore"}, ma resta un'anteprima
+          batch isolata: <strong>non tocca mai la telemetria, i comandi o la coltivazione reale del settore</strong>.
+        </div>
+      </div>
+      ${body}
     </div>
   `;
+  if (sim.result) { drawSimulationChart(); drawActuatorTimelineChart(); }
 }
 
 function renderSimulationSetup(sim) {
@@ -2050,9 +2166,20 @@ function renderSimulationProgress(sim) {
   `;
 }
 
+/** "Umidità del terriccio (%)" / "pH" style label+unit combo for one
+ * variable — used by the sensor chart's legend so it's obvious which
+ * physical quantity, and in what unit, the simulated line represents
+ * (VARIABLES.label alone omits the unit; pH's own unit equals its label,
+ * so that one case is left bare instead of showing "pH · pH"). */
+function varLegendLabel(v) {
+  if (!v.unit || v.unit === v.label) return v.label;
+  return `${v.label} · ${v.unit}`;
+}
+
 function renderSimulationResult(sim) {
   const result = sim.result;
   const playing = !!(sim.playback && sim.playback.active);
+  const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
     <div class="sim-result-toolbar">
@@ -2070,12 +2197,20 @@ function renderSimulationResult(sim) {
         </select>
         <span class="hint">durata simulata: ${fmtSimDuration(result.duration_seconds)}</span>
       </div>
+      <div class="chart-legend">
+        <span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>
+        <span class="legend-item"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>
+      </div>
       <div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
     </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
         <span class="title">Attuatori nel tempo</span>
         <span class="hint">stesso asse temporale del grafico sopra</span>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-item"><span class="legend-glyph active">■</span> attivo</span>
+        <span class="legend-item"><span class="legend-glyph inactive">□</span> spento</span>
       </div>
       <div class="sim-actuator-canvas-wrap"><canvas id="simulation-actuator-chart" style="width:100%;height:100%;display:block"></canvas></div>
     </div>
@@ -2144,7 +2279,7 @@ function startSimulationPlayback() {
     durationMs: SIMULATION_PLAYBACK_DURATION_MS,
     rafId: null,
   };
-  renderSimulatorView();
+  renderModal();
   sim.playback.rafId = requestAnimationFrame(tickSimulationPlayback);
 }
 
@@ -2171,7 +2306,7 @@ function finishSimulationPlayback() {
   const sim = STATE.simulation;
   if (!sim) return;
   sim.playback = null;
-  renderSimulatorView();
+  renderModal();
 }
 
 function skipSimulationPlayback() {
@@ -3122,6 +3257,16 @@ async function openZoneModal(zoneId, entry) {
 }
 
 function closeModal() {
+  // Closing the simulation pop-up specifically: free the system's single
+  // global batch-simulation slot right away if a job is still
+  // queued/running, instead of leaving it occupied until it expires on its
+  // own — a second user shouldn't be blocked for no reason just because
+  // this tab stopped watching. Every other modal kind has nothing
+  // equivalent to free.
+  if (STATE.modalKind === "simulator") {
+    discardActiveSimulationIfAny();
+    STATE.simulation = null;
+  }
   document.getElementById("modal-overlay").classList.add("hidden");
   clearPoll("modal");
   clearPoll("modal-chart");
@@ -3269,6 +3414,7 @@ function renderModal() {
   if (STATE.modalKind === "recipe") { renderRecipeModal(); return; }
   if (STATE.modalKind === "recipe-form") { renderRecipeFormModal(); return; }
   if (STATE.modalKind === "quarantine") { renderQuarantineModal(); return; }
+  if (STATE.modalKind === "simulator") { renderSimulatorModal(); return; }
   const zone = STATE.modalZone;
   const wrap = document.getElementById("modal-content");
   if (!zone) {
@@ -4305,7 +4451,9 @@ function paintViewImmediately(view) {
   } else if (view === "recipes") {
     if (STATE.recipesLoaded) renderRecipes(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
   } else if (view === "simulator") {
-    if (STATE.recipesLoaded) renderSimulatorView(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
+    // The grid is built from STATE.zones (active_recipe_id per sector), not
+    // the recipe catalog — unlike the old catalog-wide picker this replaced.
+    if (STATE.zonesLoaded) renderSimulatorView(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
   } else if (view === "alerts") {
     renderAlertsView(); // already shows its own "Caricamento…" until STATE.alertsPage.loaded
   }
@@ -4317,9 +4465,13 @@ function switchView(view) {
     // global batch-simulation slot right away if a job is still
     // queued/running, instead of leaving it occupied until the job
     // expires on its own — a second user shouldn't be blocked for no
-    // reason just because this tab stopped watching.
+    // reason just because this tab stopped watching. In practice the
+    // simulation pop-up (STATE.modalKind === "simulator") covers the whole
+    // viewport including the sidebar nav, so this path shouldn't be
+    // reachable with it still open — kept as a defensive safety net.
     discardActiveSimulationIfAny();
     STATE.simulation = null;
+    if (STATE.modalKind === "simulator") STATE.modalKind = null;
   }
   STATE.view = view;
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
@@ -4351,6 +4503,10 @@ function switchView(view) {
   } else if (view === "recipes") {
     setPoll("recipes-poll", tickRecipes, RECIPES_POLL_MS);
   } else if (view === "simulator") {
+    // Needs both now: STATE.zones for the grid itself (species/phase/state/
+    // active_recipe_id per sector) and the recipe catalog for whichever
+    // sector's pop-up is open.
+    setPoll("zones", tickZones, ZONES_POLL_MS);
     setPoll("recipes-poll", tickRecipes, RECIPES_POLL_MS);
   } else if (view === "alerts") {
     setPoll("alerts-view", tickAlertsView, ALERTS_POLL_MS);
@@ -4565,13 +4721,13 @@ function initEventDelegation() {
     const confirmPlantRemoveBtn = e.target.closest('[data-action="confirm-plant-remove"]');
     if (confirmPlantRemoveBtn && !confirmPlantRemoveBtn.disabled) { confirmPlantRemove(confirmPlantRemoveBtn.dataset.plantId); return; }
 
-    const simPickRecipe = e.target.closest('[data-action="sim-pick-recipe"]');
-    if (simPickRecipe) { selectSimulatorRecipe(simPickRecipe.dataset.recipeId); return; }
+    const openSimulatorSector = e.target.closest('[data-action="open-simulator-sector"]');
+    if (openSimulatorSector) { openSimulatorModal(openSimulatorSector.dataset.zoneId); return; }
 
     const simSelectDuration = e.target.closest('[data-action="sim-select-duration"]');
     if (simSelectDuration && !simSelectDuration.disabled && STATE.simulation) {
       STATE.simulation.durationDays = Number(simSelectDuration.dataset.days);
-      renderSimulatorView();
+      renderModal();
       return;
     }
 
@@ -4606,6 +4762,8 @@ function initEventDelegation() {
       // plotted and redraw the canvas directly.
       STATE.simulation.chartVariable = e.target.value;
       drawSimulationChart();
+      const legendLabel = document.getElementById("sim-chart-legend-label");
+      if (legendLabel) legendLabel.textContent = `${varLegendLabel(VARIABLES_BY_KEY[e.target.value])} — valore simulato`;
       return;
     }
 
@@ -4640,11 +4798,6 @@ function initEventDelegation() {
     if (e.target.id === "recipe-search") {
       STATE.recipeQuery = e.target.value;
       updateRecipeGridOnly();
-    }
-
-    if (e.target.id === "simulator-recipe-search") {
-      STATE.simulatorQuery = e.target.value;
-      updateSimulatorPickerOnly();
     }
 
     const plantQuarantineReason = e.target.closest('[data-action="plant-quarantine-reason"]');

@@ -20,9 +20,10 @@
   --danger-soft: rgba(193, 90, 74, .14);
   --nominal: #1f7a51;
   --nominal-soft: rgba(31, 122, 81, .12);
-  /* Simulatore page accent — the same green used by every other card in
-     the dashboard (see --accent above), so the page reads as part of the
-     same visual family rather than a separate app. */
+  /* Simulatore page accent — intentionally the SAME green family as every
+     other card in the app (--accent/--accent-dark/--nominal-soft), so the
+     Simulatore grid reads as one visual system with "Reparti della serra"
+     rather than a separate color language. */
   --sim: var(--accent);
   --sim-dark: var(--accent-dark);
   --sim-soft: var(--nominal-soft);
@@ -764,9 +765,10 @@ a:hover { color: var(--accent-dark); }
   transition: width .3s ease;
 }
 
-/* Prominent, unmistakable "this is not real data" label shown above every
-   simulation result — deliberately its own accent color (see --sim above)
-   so it can never be mistaken for a live/operational status chip. */
+/* Prominent "this is not real data" label shown above every simulation
+   result — same green (--sim, aliased to --accent) as the rest of the
+   app, kept unmistakable through weight/icon/copy rather than a separate
+   color family. */
 .sim-nonop-banner {
   display: flex;
   align-items: center;
@@ -781,31 +783,47 @@ a:hover { color: var(--accent-dark); }
 }
 .sim-nonop-banner::before { content: "⚠"; font-size: 14px; }
 
-/* ---------- Simulatore page: layout, recipe picker, theme ---------- */
-/* Uses the --sim palette, defined at the top of this file, which now
-   mirrors the same green accent used by every other card — the page is
-   still visually flagged as an isolated preview via the intro banner and
-   the "Scenario simulato — non operativo" label, just no longer in a
-   separate color family from the rest of the dashboard. */
+/* ---------- Simulatore page: theme, intro banner, sector grid ---------- */
+/* Uses the --sim palette (aliased to the app's normal green --accent) —
+   the grid below (dept-card/sector-row) is intentionally the SAME
+   component Home uses — real species, phase, state, per sector — so the
+   page reads as one consistent visual system. The intro banner and the
+   pop-up's own repeat of it (see .simulator-intro-compact) still carry
+   the "this isn't the real thing" signal, just through weight/copy/icon
+   instead of a separate accent color. */
 
 .main.theme-simulator .topbar-titles h1 { color: var(--sim-dark); }
 
 .simulator-intro {
   background: var(--sim-soft);
-  border: 1px solid rgba(31, 122, 81, .3);
+  border: 1.5px solid var(--sim);
+  border-left: 5px solid var(--sim);
   border-radius: var(--radius-lg);
-  padding: 18px 22px;
+  padding: 16px 22px;
   margin-bottom: 22px;
+  box-shadow: 0 2px 10px rgba(31, 122, 81, .1);
 }
+/* The page-level banner (above the grid) — bigger and louder than the
+   copy duplicated inside each simulation pop-up (.simulator-intro-compact
+   below), since this is the first, page-wide warning a user sees. */
+.simulator-intro-prominent { padding: 18px 24px; }
+.simulator-intro-prominent .simulator-intro-title { font-size: 15px; }
+.simulator-intro-prominent .simulator-intro-title::before { font-size: 16px; }
+/* Repeated inside the simulation pop-up itself (renderSimulatorModal): the
+   grid it was opened from looks close enough to the real one that the
+   warning belongs at both levels, not just above the grid — same colors,
+   tighter spacing to fit a pop-up body instead of a full page. */
+.simulator-intro-compact { padding: 12px 16px; margin-bottom: 18px; }
+.simulator-intro-compact .simulator-intro-title { font-size: 12.5px; margin-bottom: 4px; }
 .simulator-intro-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font: 600 13.5px var(--sans);
+  font: 700 13.5px var(--sans);
   color: var(--sim-dark);
   margin-bottom: 6px;
 }
-.simulator-intro-title::before { content: "⚠"; font-size: 13px; }
+.simulator-intro-title::before { content: "⚠"; font-size: 14px; }
 .simulator-intro-text {
   font-size: 12.5px;
   color: var(--ink-soft);
@@ -814,41 +832,14 @@ a:hover { color: var(--accent-dark); }
 }
 .simulator-intro-text strong { color: var(--sim-dark); }
 
-.simulator-layout {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 22px;
-  align-items: start;
-}
+/* A production sector with no active_recipe_id (shouldn't happen with the
+   current creation flow, but handled defensively — see
+   renderSimulatorSectorRow): shown, not hidden, so the grid still mirrors
+   every real sector, but explicitly not clickable. */
+.sector-row-disabled { cursor: default; opacity: .55; }
+.sector-row-disabled:hover { transform: none; box-shadow: none; }
 
-.simulator-recipe-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 640px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-.simulator-recipe-row {
-  text-align: left;
-  cursor: pointer;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-family: var(--sans);
-  transition: border-color .15s, background .15s;
-}
-.simulator-recipe-row:hover { border-color: var(--sim); }
-.simulator-recipe-row.active { border-color: var(--sim); background: var(--sim-soft); }
-.simulator-recipe-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.simulator-recipe-row-name { font-size: 13px; font-weight: 600; color: var(--ink); }
-.simulator-recipe-row-sub { font-size: 11px; color: var(--ink-faint); font-family: var(--mono); }
-
-.simulator-workspace-col { min-width: 0; }
+.simulator-recipe-card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
 .simulator-empty {
   border: 1px dashed var(--line);
   border-radius: 18px;
@@ -856,13 +847,6 @@ a:hover { color: var(--accent-dark); }
   text-align: center;
   color: var(--ink-faint);
   font-size: 13px;
-}
-
-.simulator-recipe-card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  overflow: hidden;
 }
 
 /* ---------- control page ---------- */
@@ -992,6 +976,26 @@ a:hover { color: var(--accent-dark); }
 .chart-head .title { font-size: 13.5px; font-weight: 600; }
 .chart-head .hint { font: 400 10.5px var(--mono); color: #9aada4; margin-left: auto; }
 .chart-head select { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 11.5px; }
+
+/* Legend row for the Simulatore result charts — explicit text + swatch for
+   what each visual encoding means (simulated value line vs. target band on
+   the sensor chart; active vs. inactive on the actuator timeline), since
+   neither canvas draws any text-labeled key of its own. */
+.chart-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 2px 0 10px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-mute); white-space: nowrap; }
+.legend-line { display: inline-block; width: 16px; height: 0; border-top: 2.5px solid #1f7a51; flex: none; }
+.legend-band {
+  position: relative; display: inline-block; width: 16px; height: 12px;
+  border-radius: 3px; background: rgba(63, 122, 96, .14); flex: none;
+}
+.legend-band::after {
+  content: ""; position: absolute; left: 1px; right: 1px; top: 50%;
+  border-top: 1.5px dashed #c9803f; transform: translateY(-50%);
+}
+.legend-glyph { font-size: 12px; line-height: 1; flex: none; }
+.legend-glyph.active { color: rgba(31, 122, 81, .8); }
+.legend-glyph.inactive { color: #c3d1c8; }
+
 .chart-canvas-wrap { height: 196px; border-radius: 14px; background: #f9fbfa; position: relative; }
 
 /* Actuator Gantt-style timeline under the Simulatore result chart — same
@@ -1203,12 +1207,16 @@ a:hover { color: var(--accent-dark); }
 @media (max-width: 1180px) {
   .dept-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
   .home-summary { grid-template-columns: 1fr; }
-  .simulator-layout { grid-template-columns: 1fr; }
-  .simulator-recipe-list { max-height: 320px; }
 }
 
 @media (max-width: 860px) {
-  .sidebar { position: static; height: auto; }
+  /* Below this width the shell stacks: sidebar becomes a full-width bar
+     on top instead of a fixed-width column beside content. Without the
+     width override here the sidebar keeps its desktop 246px in the now-
+     vertical flex stack, leaving a large empty gap beside it before the
+     page title/content start below — that gap, not the stacking itself,
+     was the actual layout bug. */
+  .sidebar { position: static; height: auto; width: 100%; }
   .app-shell { flex-direction: column; }
   .login-card { grid-template-columns: 1fr; }
   .login-brand-panel { padding: 26px 24px; }
