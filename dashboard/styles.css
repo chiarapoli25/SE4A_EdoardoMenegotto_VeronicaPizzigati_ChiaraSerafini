@@ -736,6 +736,7 @@ a:hover { color: var(--accent-dark); }
 .cols-recipe { grid-template-columns: 1.9fr 1fr .9fr .9fr 1.2fr; }
 .cols-control { grid-template-columns: .8fr 1.6fr 1.4fr 1fr .9fr 1.5fr .5fr; }
 .cols-advanced { grid-template-columns: 1.6fr .8fr .7fr .7fr 1.9fr; }
+.cols-global-strategy { grid-template-columns: 1.6fr 2.2fr 1.4fr; }
 
 .var-name { font-size: 13px; font-weight: 500; }
 .var-unit { font: 400 10.5px var(--mono); color: var(--ink-faint); margin-top: 2px; }
@@ -964,6 +965,25 @@ a:hover { color: var(--accent-dark); }
 .strategy-status { white-space: nowrap; font: 500 10.5px var(--mono); }
 .strategy-status.applied { color: var(--accent); }
 .strategy-status.pending { color: var(--warn); }
+.strategy-status.failed { color: var(--danger); }
+
+/* ---------- Controllo page: plant-wide Strategy panel ---------- */
+/* One row per variable (cols-global-strategy: label / select+apply /
+   scope), plus a per-zone results breakdown that only appears once that
+   variable's Apply has actually been clicked — see renderGlobalStrategyPanel
+   in script.js. Reuses .strategy-status (applied/pending/failed above) for
+   each zone's real outcome instead of inventing a parallel color language. */
+.global-strategy-scope { font: 400 11px var(--mono); color: var(--ink-faint); text-align: right; }
+.global-strategy-results {
+  padding: 4px 18px 16px; border-top: 1px solid var(--line-soft); background: #fbfdfc;
+}
+.global-strategy-summary { font-size: 11.5px; color: var(--ink-mute); margin: 10px 0 8px; }
+.global-strategy-result-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px 0; font-size: 12.5px; border-top: 1px solid var(--line-soft);
+}
+.global-strategy-result-row:first-of-type { border-top: none; }
+.global-strategy-result-row .label { color: var(--ink); }
 
 .recipe-hint-box {
   display: flex; align-items: center; gap: 12px; margin-top: 14px; padding: 13px 16px;

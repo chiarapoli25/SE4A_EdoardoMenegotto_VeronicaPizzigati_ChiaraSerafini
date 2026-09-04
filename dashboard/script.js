@@ -82,6 +82,26 @@ const SIMULATION_DURATION_PRESETS = [
 ];
 
 const STRATEGIES = ["Threshold", "PID", "Predictive"];
+// Threshold/PID are the only two Strategy values that make sense as a real
+// per-variable choice (see StrategyName in backend/app/features/zones/
+// models.py) — Predictive is always forced for the three nutrients, never a
+// real choice, and there is no separate "photoperiod" Strategy anywhere in
+// the backend (photoperiod is a fixed recipe timing property, not a
+// controller strategy), so it's never offered as one here either.
+const CHOOSABLE_STRATEGIES = ["Threshold", "PID"];
+// The three variables the plant-wide Strategy panel (Controllo page) lets an
+// Amministratore actually choose a Strategy for. Kept in this fixed order
+// wherever the panel lists them.
+const GLOBAL_STRATEGY_VARIABLES = ["soil_moisture", "light", "ph"];
+
+// Demo login roles (see the "Login screen" section far below): purely a
+// local-only display identity, no real authentication — but "Amministratore"
+// is the one role value with an actual effect on what's shown (gates the
+// Controllo page/nav item, see isAdmin()). Kept to exactly these two per an
+// explicit later decision — "Grower" used to be a third option; removing it
+// here is what makes loadDemoUser() below treat a previously-saved Grower
+// user as invalid.
+const VALID_ROLES = ["Agronomo", "Amministratore"];
 
 const OP_META = {
   Nominal: { color: "#1f7a51" },
@@ -302,6 +322,40 @@ const STATE = {
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
+  // The logged-in demo identity (see "Login screen" below), mirrored into
+  // STATE so isAdmin()/nav visibility/switchView's Controllo gate can read
+  // it synchronously without touching localStorage on every check. null
+  // while the login screen is showing.
+  currentUser: null,
+
+  // Plant-wide Strategy panel (Controllo page, Amministratore-only): one
+  // Strategy choice per variable in GLOBAL_STRATEGY_VARIABLES, applied as a
+  // separate ChangeStrategy+ConfirmConfiguration command to every production
+  // zone (department 1-4) that currently has an active cultivation — see
+  // applyGlobalStrategy(). Keyed by variable key throughout:
+  //  - drafts: the <select>'s chosen-but-not-yet-applied value (defaults to
+  //    REQUIRED_DEFAULT_STRATEGY at render time when absent) — persisted
+  //    here so a background renderControl() (the 6s zones poll) doesn't
+  //    reset an in-progress selection.
+  //  - status: "sending" | "waiting" | "done" | null — "sending" while the
+  //    per-zone commands are being posted, "waiting" while polling for the
+  //    Edge Controller to confirm each one, "done" once every targeted zone
+  //    has resolved (success or timeout). Gates the Apply button so a
+  //    second click can't overlap an in-flight batch for the same variable.
+  //  - results: array of { zoneId, label, status: "waiting"|"success"|
+  //    "timeout"|"error", message } — the real per-zone outcome, shown
+  //    instead of a single generic "fatto" (see the panel's own comment).
+  //    Left in place (not cleared) after status flips to "done" so the
+  //    summary stays visible until the next apply.
+  globalStrategy: { drafts: {}, status: {}, results: {} },
+  // setInterval ids started by applyGlobalStrategy's per-variable polling —
+  // tracked separately from STATE.adhocIntervals (that one is cleared by
+  // closeModal(), but this panel lives in the page itself, not a pop-up) so
+  // switchView() can stop them when the Amministratore navigates away from
+  // Controllo mid-poll instead of leaving them running against a page no
+  // longer shown.
+  controlAdhocIntervals: [],
+
   alerts: [],
   quarantine: {},
   plantCounts: {}, // zone_id -> live plant count (current_zone_id, not origin)
@@ -326,8 +380,6 @@ const STATE = {
   modalChartVariable: "soil_moisture",
   modalChartData: [],
 
-  strategyDrafts: {},
-  strategyStatus: {},
   recipeHintVisible: false,
   phasePending: false,
 
@@ -556,6 +608,24 @@ function groupZonesByDepartment(zones) {
   return map;
 }
 
+/** Whether the logged-in demo identity is "Amministratore" — the one role
+ * value that actually gates something (the Controllo page/nav item). Purely
+ * a navigation/display gate, same as the rest of this login system: nothing
+ * here or on the backend actually authenticates the role. */
+function isAdmin() {
+  return !!STATE.currentUser && STATE.currentUser.role === "Amministratore";
+}
+
+/** Production zones (department 1-4 — never Quarantena) that currently have
+ * a running cultivation (active_cultivation_id set — the same flag the
+ * "Ferma coltivazione" block keys off elsewhere in this file). This is the
+ * exact target list the plant-wide Strategy panel sends ChangeStrategy
+ * commands to: a zone with a recipe assigned but no active cultivation, or
+ * any Quarantena zone, is never included. */
+function activeProductionZones() {
+  return STATE.zones.filter((z) => z.department_number >= 1 && z.department_number <= 4 && !!z.active_cultivation_id);
+}
+
 function setPageTitle(title, subtitle) {
   document.getElementById("page-title").textContent = title;
   document.getElementById("page-subtitle").textContent = subtitle;
@@ -697,7 +767,12 @@ async function tickZones() {
       // background poll tick — same precedent as the Control view below.
       if (!isFocusedInside("view-home")) renderHome();
     } else if (STATE.view === "control") {
-      if (!isFocusedInside("view-control")) renderControl();
+      // See renderControlIfSafe()/isFocusedInControlFilter() near
+      // renderControl() — narrower than a blanket isFocusedInside check so
+      // a focused "Applica a tutto l'impianto" button (every browser keeps
+      // DOM focus on a button after it's clicked) doesn't block this poll
+      // from ever showing that click's results.
+      renderControlIfSafe();
     } else if (STATE.view === "simulator") {
       // The grid has no inputs to protect focus on; the pop-up (if open)
       // is a separate DOM subtree (#modal-content) untouched by this.
@@ -3129,10 +3204,262 @@ function renderRecipeFormModal() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Control view: all sectors in one filterable table                  */
+/* Control view: plant-wide Strategy panel + all sectors in a table   */
+/*                                                                    */
+/* Amministratore-only page (see isAdmin()/switchView()). The panel   */
+/* below replaces what used to be a per-sector Strategy choice inside */
+/* "Controllo avanzato" (see renderZoneAdvanced): there is no "change  */
+/* everywhere at once" command on the backend, so applying a Strategy */
+/* here fans out into one ChangeStrategy(+ConfirmConfiguration)       */
+/* command per currently-active production zone (activeProductionZones)*/
+/* and reports each zone's real outcome — not a single generic "fatto",*/
+/* since a broadcast like this can (and, on a zone that isn't Running, */
+/* will) succeed for some sectors and not others.                     */
 /* ------------------------------------------------------------------ */
 
+/** Whether the one thing worth protecting from a background re-render on
+ * Controllo — a filter <select> the admin has open/mid-choosing — currently
+ * has focus. Deliberately narrower than isFocusedInside("view-control"):
+ * that blanket check also matches a just-clicked "Applica a tutto
+ * l'impianto" button, which keeps DOM focus after a click in every
+ * browser — so using it here would block renderControlIfSafe() from ever
+ * showing the per-zone results a click just kicked off, until the admin
+ * happened to click/tab somewhere else. A focused button (or a focused
+ * global-strategy <select> — its choice already survives a re-render via
+ * STATE.globalStrategy.drafts, same as the old per-zone code protected
+ * strategyDrafts) has nothing left to lose from being rebuilt underneath it. */
+function isFocusedInControlFilter() {
+  const active = document.activeElement;
+  return !!(active && active.closest && active.closest('[data-action="control-filter"]'));
+}
+
+/** Only re-renders while the Amministratore is actually on Controllo, and
+ * never while a filter <select> has focus — see isFocusedInControlFilter(). */
+function renderControlIfSafe() {
+  if (STATE.view === "control" && !isFocusedInControlFilter()) renderControl();
+}
+
+function clearGlobalStrategyPolls() {
+  STATE.controlAdhocIntervals.forEach(clearInterval);
+  STATE.controlAdhocIntervals = [];
+  // A variable batch still "sending"/"waiting" when the admin navigates
+  // away is left at whatever per-zone results it already has — marked
+  // "done" so a later revisit doesn't show a stuck spinner for a poll that
+  // isn't actually running anymore.
+  const status = STATE.globalStrategy.status;
+  Object.keys(status).forEach((k) => {
+    if (status[k] === "sending" || status[k] === "waiting") status[k] = "done";
+  });
+}
+
+/** Returns a cached full recipe (with `phases`, needed for
+ * findPhaseTarget/buildStrategyParameters) or fetches+caches it — mirrors
+ * the same STATE.recipesById cache openRecipeModal()/tickRecipes() use, so
+ * a recipe already seen on the Ricette/Simulatore pages isn't re-fetched. */
+async function ensureRecipeLoaded(recipeId) {
+  if (!recipeId) return null;
+  const cached = STATE.recipesById[recipeId];
+  if (cached) return cached;
+  const recipe = await apiGet(`/recipes/${encodeURIComponent(recipeId)}`);
+  STATE.recipesById[recipe.id] = recipe;
+  return recipe;
+}
+
+function globalStrategyResultText(r) {
+  if (r.status === "sending") return "invio…";
+  if (r.status === "waiting") return "in attesa…";
+  if (r.status === "success") return "confermata ✓";
+  if (r.status === "timeout") return "nessuna conferma (verifica che sia Running)";
+  if (r.status === "error") return `errore: ${r.message || "invio non riuscito"}`;
+  return "";
+}
+
+function onGlobalStrategyDraftChange(variableKey, value) {
+  STATE.globalStrategy.drafts[variableKey] = value;
+  renderControlIfSafe();
+}
+
+/** Sends ChangeStrategy (+ ConfirmConfiguration, same two-command sequence
+ * the old per-zone flow used — see the removed sendStrategyChange) to one
+ * zone, updating that zone's entry in STATE.globalStrategy.results[key] in
+ * place. Never throws: a failed send is recorded as this zone's result,
+ * not a rejection that would stop the other zones in the batch. */
+async function sendGlobalStrategyToZone(variableKey, strategy, zone) {
+  const entry = STATE.globalStrategy.results[variableKey]?.find((r) => r.zoneId === zone.id);
+  try {
+    const recipe = await ensureRecipeLoaded(zone.active_recipe_id);
+    const target = findPhaseTarget(recipe, zone.current_phase, variableKey);
+    const params = buildStrategyParameters(strategy, target);
+    const base = `global-strategy-${zone.id}-${variableKey}-${Date.now()}`;
+    await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
+      command_id: base,
+      command_type: "ChangeStrategy",
+      payload: { variable: variableKey, strategy, parameters: params },
+    });
+    await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
+      command_id: base + "-confirm",
+      command_type: "ConfirmConfiguration",
+      payload: { variable: variableKey },
+    });
+    if (entry) entry.status = "waiting";
+  } catch (err) {
+    if (entry) { entry.status = "error"; entry.message = err.message; }
+  }
+}
+
+function finishGlobalStrategyPoll(iv, variableKey) {
+  clearInterval(iv);
+  STATE.controlAdhocIntervals = STATE.controlAdhocIntervals.filter((x) => x !== iv);
+  STATE.globalStrategy.status[variableKey] = "done";
+  renderControlIfSafe();
+}
+
+/** Polls only STATE.globalStrategy.results[variableKey] entries still
+ * "waiting" (queued or in-flight commands resolve into this state — see
+ * sendGlobalStrategyToZone), same GET-the-zone-and-compare-current_strategies
+ * approach and COMMAND_TIMEOUT_MS timeout as the old single-zone
+ * pollForStrategyApplied — just fanned out across every targeted zone each
+ * tick instead of one. A zone that never confirms (e.g. not Running) ends
+ * up "timeout", not silently forgotten. */
+function pollGlobalStrategyResults(variableKey, strategy) {
+  const startedAt = Date.now();
+  const iv = setInterval(async () => {
+    const results = STATE.globalStrategy.results[variableKey] || [];
+    const pending = results.filter((r) => r.status === "waiting");
+    if (pending.length === 0) {
+      finishGlobalStrategyPoll(iv, variableKey);
+      return;
+    }
+    const timedOut = Date.now() - startedAt >= COMMAND_TIMEOUT_MS;
+    const fetched = await Promise.allSettled(pending.map((r) => apiGet(`/zones/${encodeURIComponent(r.zoneId)}`)));
+    fetched.forEach((res, i) => {
+      const entry = pending[i];
+      if (res.status === "fulfilled") {
+        updateZoneInState(res.value);
+        if (res.value.current_strategies[variableKey] === strategy) {
+          entry.status = "success";
+          return;
+        }
+      }
+      if (timedOut) entry.status = "timeout";
+    });
+    renderControlIfSafe();
+    if (results.every((r) => r.status !== "sending" && r.status !== "waiting")) {
+      finishGlobalStrategyPoll(iv, variableKey);
+    }
+  }, COMMAND_POLL_MS);
+  STATE.controlAdhocIntervals.push(iv);
+}
+
+async function applyGlobalStrategy(variableKey) {
+  const gs = STATE.globalStrategy;
+  if (gs.status[variableKey] === "sending" || gs.status[variableKey] === "waiting") return;
+  const strategy = gs.drafts[variableKey] || REQUIRED_DEFAULT_STRATEGY[variableKey];
+  gs.drafts[variableKey] = strategy;
+  const targets = activeProductionZones();
+  if (targets.length === 0) {
+    showToast("Nessun settore produttivo ha una coltivazione attiva al momento.", "warn");
+    return;
+  }
+  gs.status[variableKey] = "sending";
+  gs.results[variableKey] = targets.map((z) => ({ zoneId: z.id, label: zoneLabel(z), status: "sending", message: null }));
+  renderControlIfSafe();
+
+  await Promise.all(targets.map((zone) => sendGlobalStrategyToZone(variableKey, strategy, zone)));
+
+  gs.status[variableKey] = "waiting";
+  renderControlIfSafe();
+  pollGlobalStrategyResults(variableKey, strategy);
+}
+
+function renderGlobalStrategyPanel() {
+  const targets = activeProductionZones();
+  const gs = STATE.globalStrategy;
+
+  const editableRows = GLOBAL_STRATEGY_VARIABLES.map((key) => {
+    const v = VARIABLES_BY_KEY[key];
+    const draft = gs.drafts[key] || REQUIRED_DEFAULT_STRATEGY[key];
+    const status = gs.status[key];
+    const busy = status === "sending" || status === "waiting";
+    const results = gs.results[key] || [];
+
+    let buttonLabel = "Applica a tutto l'impianto";
+    if (status === "sending") buttonLabel = "Invio…";
+    else if (status === "waiting") buttonLabel = "In attesa di conferma…";
+
+    const successCount = results.filter((r) => r.status === "success").length;
+    const failCount = results.filter((r) => r.status === "timeout" || r.status === "error").length;
+
+    const resultsHtml = results.length ? `
+      <div class="global-strategy-results">
+        <div class="global-strategy-summary">
+          ${busy
+            ? `Applicazione in corso su ${results.length} settor${results.length === 1 ? "e" : "i"}…`
+            : `${successCount} di ${results.length} settor${results.length === 1 ? "e confermato" : "i confermati"}${failCount ? ` · ${failCount} senza conferma` : ""}`}
+        </div>
+        ${results.map((r) => `
+          <div class="global-strategy-result-row">
+            <span class="label mono">${escapeHtml(r.label)}</span>
+            <span class="strategy-status ${r.status === "success" ? "applied" : (r.status === "sending" || r.status === "waiting") ? "pending" : "failed"}">${globalStrategyResultText(r)}</span>
+          </div>
+        `).join("")}
+      </div>
+    ` : "";
+
+    return `
+      <div class="data-table-row cols-global-strategy">
+        <div><div class="var-name">${v.label}</div><div class="var-unit">${v.unit}</div></div>
+        <div class="strategy-cell">
+          <select data-action="global-strategy-select" data-variable="${key}" ${busy ? "disabled" : ""}>
+            ${CHOOSABLE_STRATEGIES.map((s) => `<option value="${s}" ${draft === s ? "selected" : ""}>${s}</option>`).join("")}
+          </select>
+          <button type="button" class="btn btn-warn" data-action="apply-global-strategy" data-variable="${key}" ${busy || targets.length === 0 ? "disabled" : ""}>${buttonLabel}</button>
+        </div>
+        <div class="global-strategy-scope">${targets.length} settor${targets.length === 1 ? "e attivo" : "i attivi"}</div>
+      </div>
+      ${resultsHtml}
+    `;
+  }).join("");
+
+  const fixedRows = NUTRIENT_VARIABLES.map((key) => {
+    const v = VARIABLES_BY_KEY[key];
+    return `
+      <div class="data-table-row cols-global-strategy">
+        <div><div class="var-name">${v.label}</div><div class="var-unit">${v.unit}</div></div>
+        <div class="readonly-cell" title="Richiesta dal backend per l'adozione della ricetta — non è una scelta disponibile">Predictive</div>
+        <div></div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="zone-section" style="margin-bottom:22px">
+      <div class="zone-section-title">Strategia di controllo — a livello di impianto</div>
+      <div class="empty-note" style="margin-bottom:16px">
+        Scegli una Strategy per variabile: si applica subito a ogni settore produttivo (reparti 1-4) con una coltivazione attiva
+        ${targets.length ? ` — <b>${targets.length}</b> al momento (${targets.map(zoneLabel).join(", ")})` : ", ma nessun settore ne ha una al momento"}.
+        Azoto, Fosforo e Potassio non sono scelte disponibili: restano sempre Predictive.
+      </div>
+      <div class="data-table">
+        <div class="data-table-head cols-global-strategy"><span>VARIABILE</span><span>STRATEGIA</span><span>SETTORI COINVOLTI</span></div>
+        ${editableRows}
+        ${fixedRows}
+      </div>
+      <div class="recipe-hint-box" style="margin-top:16px">
+        <span>Questa scelta si applica ora ai settori attivi. Un nuovo settore o un cambio di ricetta futuro riprenderanno la Strategy definita dalla ricetta assegnata, non questa impostazione — andrà riapplicata se necessario.</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderControl() {
+  if (!isAdmin()) {
+    // Defensive only — switchView() is the real gate and never leaves
+    // STATE.view as "control" for a non-Amministratore, so this path
+    // shouldn't be reachable in practice.
+    document.getElementById("view-control").innerHTML = '<div class="empty-note">Sezione riservata agli amministratori.</div>';
+    return;
+  }
   const zones = STATE.zones;
   // Department order everywhere is DEPT_ORDER (plain numeric, 1-5) — not
   // alphabetical by name (which uniqueSorted would give). Only departments
@@ -3154,7 +3481,7 @@ function renderControl() {
     return true;
   }).sort((a, b) => (deptRank[a.department_number] - deptRank[b.department_number]) || (a.sector_number - b.sector_number));
 
-  setPageTitle("Controllo settori", `Accesso diretto al controllo avanzato di ogni settore · ${zones.length} settori registrati (massimo 9)`);
+  setPageTitle("Controllo", `Strategia a livello di impianto · accesso diretto al controllo avanzato di ogni settore · ${zones.length} settori registrati (massimo 9) · solo Amministratore`);
 
   const rowsHtml = rows.map((z) => {
     const strategies = uniqueSorted(Object.values(z.current_strategies));
@@ -3172,6 +3499,8 @@ function renderControl() {
   }).join("");
 
   document.getElementById("view-control").innerHTML = `
+    ${renderGlobalStrategyPanel()}
+    <div class="zone-section-title" style="margin-bottom:14px">Tutti i settori</div>
     <div class="toolbar">
       <span class="mono" style="font:500 10.5px var(--mono);letter-spacing:.07em;color:var(--ink-faint)">FILTRI</span>
       <select data-action="control-filter" data-filter="dept">
@@ -3213,8 +3542,6 @@ async function openZoneModal(zoneId, entry) {
   STATE.modalActuators = null;
   STATE.modalRecipe = null;
   STATE.modalRecipeId = null;
-  STATE.strategyDrafts = {};
-  STATE.strategyStatus = {};
   STATE.recipeHintVisible = false;
   STATE.phasePending = false;
   STATE.modalChartVariable = "soil_moisture";
@@ -3934,16 +4261,6 @@ function renderZoneAdvanced(zone) {
   const rows = VARIABLES.map((v) => {
     const target = findPhaseTarget(recipe, zone.current_phase, v.key);
     const live = zone.current_strategies[v.key];
-    const draft = Object.prototype.hasOwnProperty.call(STATE.strategyDrafts, v.key) ? STATE.strategyDrafts[v.key] : live;
-    const status = STATE.strategyStatus[v.key];
-    const dirty = draft !== live && status !== "sending" && status !== "waiting";
-    const locked = status === "sending" || status === "waiting";
-
-    let statusHtml = "";
-    if (status === "sending") statusHtml = '<span class="strategy-status pending">invio…</span>';
-    else if (status === "waiting") statusHtml = '<span class="strategy-status pending">in attesa…</span>';
-    else if (status === "applied") statusHtml = '<span class="strategy-status applied">applicata ✓</span>';
-    else if (dirty) statusHtml = `<button type="button" class="btn btn-warn" data-action="confirm-strategy" data-variable="${v.key}">Conferma</button>`;
 
     return `
       <div class="data-table-row cols-advanced">
@@ -3951,12 +4268,7 @@ function renderZoneAdvanced(zone) {
         <div class="readonly-cell" data-action="show-recipe-hint" title="Valore dalla ricetta attiva">${target ? fmtNum(target.setpoint, v.decimals) : "—"}</div>
         <div class="readonly-cell" data-action="show-recipe-hint" title="Valore dalla ricetta attiva">${target ? fmtNum(target.allowed_range.minimum, v.decimals) : "—"}</div>
         <div class="readonly-cell" data-action="show-recipe-hint" title="Valore dalla ricetta attiva">${target ? fmtNum(target.allowed_range.maximum, v.decimals) : "—"}</div>
-        <div class="strategy-cell">
-          <select data-action="strategy-select" data-variable="${v.key}" ${locked ? "disabled" : ""}>
-            ${STRATEGIES.map((s) => `<option value="${s}" ${draft === s ? "selected" : ""}>${s}</option>`).join("")}
-          </select>
-          ${statusHtml}
-        </div>
+        <div class="readonly-cell" title="La Strategia si imposta a livello di impianto dalla pagina Controllo, non per singolo settore">${escapeHtml(live || "—")}</div>
       </div>
     `;
   }).join("");
@@ -3974,7 +4286,7 @@ function renderZoneAdvanced(zone) {
         <button type="button" class="btn" data-action="advanced-back">← Indietro</button>
         <div style="font-size:15.5px;font-weight:600">Controllo avanzato</div>
         <div class="spacer"></div>
-        <span class="hint">Setpoint / Min / Max sono di sola lettura · solo la Strategia è modificabile</span>
+        <span class="hint">Setpoint / Min / Max / Strategia sono di sola lettura qui — la Strategia si imposta a livello di impianto dalla pagina Controllo</span>
       </div>
       <div class="data-table">
         <div class="data-table-head cols-advanced"><span>VARIABILE</span><span>SETPOINT</span><span>MIN</span><span>MAX</span><span>STRATEGIA</span></div>
@@ -4072,79 +4384,13 @@ function pollForPhaseChange(zoneId, previousPhase) {
   STATE.adhocIntervals.push(iv);
 }
 
-/* ---- strategy change --------------------------------------------------- */
-
-function onStrategyDraftChange(variableKey, value) {
-  STATE.strategyDrafts[variableKey] = value;
-  STATE.strategyStatus[variableKey] = null;
-  renderModal();
-}
-
-async function sendStrategyChange(variableKey) {
-  const zone = STATE.modalZone;
-  if (!zone) return;
-  const draft = STATE.strategyDrafts[variableKey];
-  if (!draft || draft === zone.current_strategies[variableKey]) return;
-  const target = findPhaseTarget(STATE.modalRecipe, zone.current_phase, variableKey);
-
-  STATE.strategyStatus[variableKey] = "sending";
-  renderModal();
-  try {
-    const params = buildStrategyParameters(draft, target);
-    const base = `strategy-${zone.id}-${variableKey}-${Date.now()}`;
-    await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
-      command_id: base,
-      command_type: "ChangeStrategy",
-      payload: { variable: variableKey, strategy: draft, parameters: params },
-    });
-    await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
-      command_id: base + "-confirm",
-      command_type: "ConfirmConfiguration",
-      payload: { variable: variableKey },
-    });
-    STATE.strategyStatus[variableKey] = "waiting";
-    renderModal();
-    showToast("Comando inviato: in attesa che l'Edge Controller applichi la nuova strategia.");
-    pollForStrategyApplied(zone.id, variableKey, draft);
-  } catch (err) {
-    STATE.strategyStatus[variableKey] = null;
-    renderModal();
-    showToast("Invio del comando non riuscito: " + err.message, "error");
-  }
-}
-
-function pollForStrategyApplied(zoneId, variableKey, target) {
-  let elapsed = 0;
-  const iv = setInterval(async () => {
-    elapsed += COMMAND_POLL_MS;
-    try {
-      const zone = await apiGet(`/zones/${encodeURIComponent(zoneId)}`);
-      updateZoneInState(zone);
-      if (zone.current_strategies[variableKey] === target) {
-        clearInterval(iv);
-        STATE.strategyStatus[variableKey] = "applied";
-        delete STATE.strategyDrafts[variableKey];
-        renderModalIfSafe();
-        setTimeout(() => {
-          if (STATE.strategyStatus[variableKey] === "applied") {
-            STATE.strategyStatus[variableKey] = null;
-            renderModalIfSafe();
-          }
-        }, 4000);
-        return;
-      }
-    } catch (e) { /* transient error, keep polling */ }
-    if (elapsed >= COMMAND_TIMEOUT_MS) {
-      clearInterval(iv);
-      if (STATE.strategyStatus[variableKey] === "waiting") {
-        STATE.strategyStatus[variableKey] = null;
-        renderModalIfSafe();
-        showToast("Nessuna conferma dall'Edge Controller entro il timeout (verifica che sia in esecuzione).", "warn");
-      }
-    }
-  }, COMMAND_POLL_MS);
-  STATE.adhocIntervals.push(iv);
-}
+/* Per-zone Strategy editing used to live here (onStrategyDraftChange/       */
+/* sendStrategyChange/pollForStrategyApplied) — removed when Strategy became */
+/* a plant-wide choice made from the Controllo page instead (see             */
+/* applyGlobalStrategy/sendGlobalStrategyToZone/pollGlobalStrategyResults    */
+/* near renderControl). buildStrategyParameters/findPhaseTarget are shared   */
+/* by both eras and still live in the "Strategy-change command payloads"    */
+/* section near the top of this file.                                       */
 
 /* ---- stop cultivation --------------------------------------------------- */
 
@@ -4460,6 +4706,21 @@ function paintViewImmediately(view) {
 }
 
 function switchView(view) {
+  // Controllo is Amministratore-only. This is the single choke point every
+  // view switch goes through (the nav click handler, and anything else that
+  // might ever call switchView programmatically — there's no separate
+  // per-view URL/routing in this app, so there's nowhere else a direct
+  // "reach this view another way" attempt could enter), so gating here
+  // covers it regardless of how "control" was requested — not just hiding
+  // the nav item in updateNavForRole(). A visual/navigation gate only, like
+  // the rest of this login system: nothing real is being protected.
+  if (view === "control" && !isAdmin()) {
+    showToast("Sezione riservata agli amministratori.", "warn");
+    view = "home";
+  }
+  if (STATE.view === "control" && view !== "control") {
+    clearGlobalStrategyPolls();
+  }
   if (STATE.view === "simulator" && view !== "simulator") {
     // Leaving the Simulatore page entirely: free the system's single
     // global batch-simulation slot right away if a job is still
@@ -4678,8 +4939,8 @@ function initEventDelegation() {
     const advanceBtn = e.target.closest('[data-action="advance-phase"]');
     if (advanceBtn && !advanceBtn.disabled) { advancePhase(); return; }
 
-    const confirmBtn = e.target.closest('[data-action="confirm-strategy"]');
-    if (confirmBtn) { sendStrategyChange(confirmBtn.dataset.variable); return; }
+    const applyGlobalBtn = e.target.closest('[data-action="apply-global-strategy"]');
+    if (applyGlobalBtn && !applyGlobalBtn.disabled) { applyGlobalStrategy(applyGlobalBtn.dataset.variable); return; }
 
     const hintCell = e.target.closest('[data-action="show-recipe-hint"]');
     if (hintCell) { STATE.recipeHintVisible = true; renderModal(); return; }
@@ -4748,8 +5009,8 @@ function initEventDelegation() {
   });
 
   document.addEventListener("change", (e) => {
-    const strategySelect = e.target.closest('[data-action="strategy-select"]');
-    if (strategySelect) { onStrategyDraftChange(strategySelect.dataset.variable, strategySelect.value); return; }
+    const globalStrategySelect = e.target.closest('[data-action="global-strategy-select"]');
+    if (globalStrategySelect) { onGlobalStrategyDraftChange(globalStrategySelect.dataset.variable, globalStrategySelect.value); return; }
 
     const filterSelect = e.target.closest('[data-action="control-filter"]');
     if (filterSelect) { STATE.controlFilters[filterSelect.dataset.filter] = filterSelect.value; renderControl(); return; }
@@ -4837,7 +5098,16 @@ function loadDemoUser() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed.name === "string" && parsed.name.trim()) {
-      return { name: parsed.name, role: parsed.role || "Grower" };
+      // A user saved before "Grower" was removed as a role option (or any
+      // other role value that isn't one of the two current choices) is
+      // treated as logged out rather than silently let in with a role that
+      // no longer exists: clear the stale entry so init() falls through to
+      // the login screen instead of enterApp().
+      if (!VALID_ROLES.includes(parsed.role)) {
+        clearDemoUser();
+        return null;
+      }
+      return { name: parsed.name, role: parsed.role };
     }
   } catch (e) { /* malformed or inaccessible storage — treat as logged out */ }
   return null;
@@ -4857,6 +5127,16 @@ function applySidebarUser(user) {
   document.getElementById("sidebar-user-role").textContent = String(user.role).toUpperCase();
 }
 
+/** Shows/hides the "Controllo" sidebar item for the current role. Purely a
+ * navigation gate, same principle as the rest of this login system (see
+ * isAdmin()) — a non-Amministratore never sees the nav item at all, and
+ * switchView() below independently refuses to enter that view even if it
+ * were reached some other way, so the two checks don't rely on each other. */
+function updateNavForRole(role) {
+  const navItem = document.querySelector('.nav-item[data-view="control"]');
+  if (navItem) navItem.classList.toggle("hidden", role !== "Amministratore");
+}
+
 /** Shows the login screen. `prefill` (the just-cleared user, on "cambia
  * utente") pre-fills the form so switching identity is a quick edit
  * rather than starting from a blank form. */
@@ -4868,7 +5148,7 @@ function showLoginScreen(prefill) {
   errorEl.textContent = "";
   const nameInput = document.getElementById("login-name");
   nameInput.value = (prefill && prefill.name) || "";
-  document.getElementById("login-role").value = (prefill && prefill.role) || "Grower";
+  document.getElementById("login-role").value = (prefill && prefill.role) || "Agronomo";
   nameInput.focus();
 }
 
@@ -4877,7 +5157,9 @@ function showLoginScreen(prefill) {
  * first visit (user just submitted the form) or a re-entry after
  * switching identity. */
 function enterApp(user) {
+  STATE.currentUser = user;
   applySidebarUser(user);
+  updateNavForRole(user.role);
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
   switchView("home");
@@ -4907,11 +5189,14 @@ function submitLogin() {
 function switchDemoUser() {
   const previous = loadDemoUser();
   clearDemoUser();
+  STATE.currentUser = null;
   clearPoll("zones");
   clearPoll("recipes-poll");
   clearPoll("alerts-view");
   discardActiveSimulationIfAny();
   STATE.simulation = null;
+  clearGlobalStrategyPolls();
+  STATE.globalStrategy = { drafts: {}, status: {}, results: {} };
   showLoginScreen(previous);
 }
 
