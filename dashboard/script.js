@@ -38,7 +38,7 @@ const COMMAND_POLL_MS = 1500;
 const COMMAND_TIMEOUT_MS = 20000;
 // Simulatore page: batch preview job polling — isolated from every
 // operational poll above, see the dedicated section near
-// openSimulatorModal().
+// openGreenhouseSimulatorModal().
 const SIMULATION_POLL_MS = 1500;
 
 // Frontend-only rule (not enforced by the backend): "Fai uscire" stays
@@ -301,23 +301,30 @@ const STATE = {
   // overlay as the zone/recipe modals via STATE.modalKind = "recipe-form".
   recipeForm: null,
 
-  // Simulatore (STATE.view = "simulator"): an isolated batch preview of the
-  // recipe REALLY assigned to one REAL, currently-registered sector — never
-  // a free pick from the full catalog (see POST /simulations — never
-  // touches the zone itself, only reads its active_recipe_id once when the
-  // pop-up is opened). Shape:
-  // { zoneId, recipeId, durationDays, starting, job, result, error,
-  //   chartVariable, playback } — zoneId is the sector this scenario was
-  // opened for (header context + the "which sector's recipe is this"
-  // banner inside the pop-up); recipeId is that sector's active_recipe_id
-  // at open time. job is the polled SimulationJob (queued/running/
-  // succeeded/failed/cancelled); result is the SimulationPreview, fetched
-  // once job succeeds. null whenever the simulation pop-up (STATE.modalKind
-  // = "simulator", see openSimulatorModal) is not open. Reset to null
-  // (after discarding any still-active job — see
-  // discardActiveSimulationIfAny) both when the pop-up is closed and when
-  // navigating away from the Simulatore page (switchView), so a job never
-  // outlives its pop-up occupying the system's single global batch slot.
+  // Simulatore (STATE.view = "simulator"): one "Simula l'intera serra"
+  // batch preview covering every REAL, currently-registered production
+  // sector that has a recipe REALLY assigned — never a free pick from the
+  // full catalog, and never a single isolated sector (see POST
+  // /simulations — never touches any zone itself, only reads
+  // active_recipe_id for each once when the run starts). Shape:
+  // { greenhouse: true, durationDays, starting, job, result, activeZoneId,
+  //   error, chartVariable, chartView, playback } — job is the polled
+  // SimulationJob (queued/running/succeeded/failed/cancelled); result is
+  // an ARRAY of SimulationPreview, one per zone, fetched once job
+  // succeeds (see activeSimulationPreview); activeZoneId picks which one
+  // the charts currently show — set on open (clicking a sector row, see
+  // renderSimulatorSectorRow) or via the "Settore mostrato" <select>
+  // inside the pop-up (renderSimulationResult).
+  //
+  // null whenever no simulation has been started yet this visit to the
+  // Simulatore page. Unlike every other pop-up, closing this one
+  // (closeModal) does NOT reset it to null — the job keeps polling and any
+  // result stays around, so reopening (another sector row, or the page
+  // button) shows the very same run. Only starting a genuinely new run
+  // (restartSimulationSetup, "Nuova simulazione") or leaving the
+  // Simulatore page entirely (switchView, which also frees the system's
+  // single global batch slot via discardActiveSimulationIfAny if a job is
+  // still queued/running) resets it.
   simulation: null,
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
@@ -1645,11 +1652,10 @@ async function tickAlertsView() {
 /* Recipes view                                                       */
 /* ------------------------------------------------------------------ */
 
-// Backs BOTH the Ricette page and the Simulatore page's simulation pop-up
-// (renderSimulatorModal reads recipe details from STATE.recipesById) — both
-// consume the exact same unfiltered GET /recipes catalog (no department
-// scoping on either), so a single poll/cache serves both rather than
-// fetching the same list twice.
+// Backs the Ricette page; also re-renders the Simulatore page and its
+// pop-up on every tick (the sector grid itself reads only STATE.zones, no
+// recipe fields — kept in sync anyway since both pages share this one
+// poll/cache instead of fetching GET /recipes twice).
 async function tickRecipes() {
   try {
     const recipes = await apiGet("/recipes");
@@ -1869,20 +1875,23 @@ function renderRecipeModal() {
 /* via renderSimulatorSectorRow/renderSimulatorDeptCard rather than a   */
 /* catalog-wide recipe picker — restricted to departments 1-4 (no       */
 /* Quarantena: department 5 never has an active_recipe_id) and, within  */
-/* those, only real registered sectors. A sector tile opens the         */
-/* simulation pop-up (openSimulatorModal, STATE.modalKind = "simulator")*/
-/* on THAT sector's own active_recipe_id — a separate pop-up from the   */
-/* real zone-detail one (openZoneModal/"zone"): the two must never      */
-/* converge into the same component/handler, since one is read-only     */
-/* live data and the other starts a batch job.                          */
+/* those, only real registered sectors. A sector tile opens/focuses the */
+/* one shared "Simula l'intera serra" pop-up (openGreenhouseSimulator   */
+/* Modal, STATE.modalKind = "simulator") on that sector — a separate    */
+/* pop-up from the real zone-detail one (openZoneModal/"zone"): the two */
+/* must never converge into the same component/handler, since one is   */
+/* read-only live data and the other starts/reads a batch job.          */
 /* ------------------------------------------------------------------ */
 
 /** Frees the global batch-simulation slot if the current job is still
- * queued/running when the user stops watching it (pop-up closed, or the
- * Simulatore page left entirely) — fire-and-forget, since there's nothing
- * more to show regardless of whether the DELETE itself succeeds. A no-op
- * if there is no job, or the job already reached a final state (nothing
- * to free). */
+ * queued/running when the user leaves the Simulatore page entirely
+ * (switchView) or starts a genuinely new run (restartSimulationSetup) —
+ * fire-and-forget, since there's nothing more to show regardless of
+ * whether the DELETE itself succeeds. Closing the pop-up alone does NOT
+ * call this (see closeModal): the job is meant to keep running/polling in
+ * the background while the user is still just browsing sectors on this
+ * same page. A no-op if there is no job, or the job already reached a
+ * final state (nothing to free). */
 function discardActiveSimulationIfAny() {
   const sim = STATE.simulation;
   clearPoll("simulation-job");
@@ -1899,17 +1908,28 @@ function restartSimulationSetup() {
   clearPoll("simulation-job");
   cancelSimulationPlayback();
   STATE.simulation = {
-    zoneId: sim.zoneId,
-    recipeId: sim.recipeId,
+    greenhouse: true,
     durationDays: sim.durationDays || 7,
     starting: false,
     job: null,
     result: null,
+    activeZoneId: null,
     error: null,
     chartVariable: sim.chartVariable || "soil_moisture",
+    chartView: sim.chartView || "single",
     playback: null,
   };
   renderModal();
+}
+
+/** True when `a` and `b` are still "the same" simulation session as far as
+ * a late async response is concerned — there is only the one-of-a-kind
+ * "Simula l'intera serra" session now, so this only ever needs to check
+ * that both actually exist. Used by startSimulation to ignore a
+ * POST/error that resolves after the pop-up moved on (closed and a
+ * genuinely new run started via "Nuova simulazione" in the meantime). */
+function isSameSimulationSession(a, b) {
+  return !!a && !!b;
 }
 
 async function startSimulation() {
@@ -1920,21 +1940,25 @@ async function startSimulation() {
   sim.error = null;
   renderModal();
   try {
-    const job = await apiPost("/simulations", { recipe_id: sim.recipeId, duration_seconds: durationSeconds });
-    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId || STATE.modalKind !== "simulator") return; // pop-up closed/changed meanwhile
+    const job = await apiPost("/simulations", { duration_seconds: durationSeconds });
+    if (!isSameSimulationSession(STATE.simulation, sim) || STATE.modalKind !== "simulator") return; // pop-up closed/changed meanwhile
     STATE.simulation.starting = false;
     STATE.simulation.job = job;
     STATE.simulation.result = null;
     renderModal();
     pollSimulationJob();
   } catch (err) {
-    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId || STATE.modalKind !== "simulator") return;
+    if (!isSameSimulationSession(STATE.simulation, sim) || STATE.modalKind !== "simulator") return;
     STATE.simulation.starting = false;
-    // 409 here means "the system's one global batch slot is already
-    // taken" — a normal, expected condition, not a fault. Never show the
-    // raw backend detail for it.
+    // 409 here means one of two normal, expected conditions — never the
+    // raw backend detail: either the system's one global batch slot is
+    // already taken (SimulationBusy), or no zone has a recipe assigned at
+    // all (SimulationInvalid, routes.py) — distinguished by the backend's
+    // own detail text, since both map to the same HTTP status.
     STATE.simulation.error = err.status === 409
-      ? "È già in corso un'altra simulazione nel sistema, riprova tra poco."
+      ? ((err.message || "").includes("nothing to simulate")
+          ? "Nessun settore ha una ricetta assegnata: non c'è nulla da simulare."
+          : "È già in corso un'altra simulazione nel sistema, riprova tra poco.")
       : err.message;
     renderModal();
   }
@@ -2013,11 +2037,17 @@ function renderSimulatorView() {
     <div class="simulator-intro simulator-intro-prominent">
       <div class="simulator-intro-title">Ambiente di simulazione</div>
       <div class="simulator-intro-text">
-        Questa griglia rispecchia i settori reali della serra — stessa specie, stessa fase, stesso stato — ma cliccarne
-        uno avvia solo uno scenario batch isolato sulla ricetta che quel settore ha davvero assegnata:
-        <strong>non tocca mai la telemetria, i comandi o la coltivazione reale di quel settore</strong>.
-        Ogni risultato è marcato esplicitamente <strong>«Scenario simulato — non operativo»</strong>.
+        Questa griglia rispecchia i settori reali della serra — stessa specie, stessa fase, stesso stato — ma "Simula
+        l'intera serra" avvia un unico scenario batch isolato che copre ogni settore con una ricetta assegnata, tutti
+        sullo stesso arco temporale: <strong>non tocca mai la telemetria, i comandi o le coltivazioni reali</strong>.
+        Cliccando un settore vedi il suo grafico dentro quella simulazione. Ogni risultato è marcato esplicitamente
+        <strong>«Scenario simulato — non operativo»</strong>.
       </div>
+      ${simulable.length > 0 ? `
+      <div class="simulator-intro-action">
+        <button type="button" class="btn btn-primary" data-action="open-greenhouse-simulator">Simula l'intera serra</button>
+        <span class="hint">un'unica simulazione per tutti i ${simulable.length} settor${simulable.length === 1 ? "e" : "i"} con ricetta assegnata — stesso arco temporale per tutti</span>
+      </div>` : ""}
     </div>
     <div class="dept-grid">${deptCards}</div>
     ${simulable.length === 0 && STATE.zonesLoaded
@@ -2052,12 +2082,15 @@ function renderSimulatorDeptCard(n, zones) {
 
 /** A single sector tile on the Simulatore grid — same inner content as
  * Home's own sector row (species/phase/state/plant-count, via the shared
- * renderSectorRowInner), but clicking it opens the SIMULATION pop-up on
- * data-action="open-simulator-sector", never "open-zone". A production
- * sector without an active_recipe_id (should not happen with the current
- * creation flow, which always assigns one — but defensively handled
- * anyway) renders as a plain, non-clickable tile instead of one that would
- * fail on click: no data-action, muted styling, no arrow. */
+ * renderSectorRowInner), but clicking it opens/focuses that settore inside
+ * the shared "Simula l'intera serra" pop-up (data-action=
+ * "open-greenhouse-simulator", same action as the page-level button, just
+ * with a data-zone-id — see openGreenhouseSimulatorModal). There is no
+ * per-sector isolated simulation anymore: a settore's own chart only ever
+ * comes from the one greenhouse-wide run. A production sector without an
+ * active_recipe_id renders as a plain, non-clickable tile instead of one
+ * that would show nothing useful on click: no data-action, muted styling,
+ * no arrow. */
 function renderSimulatorSectorRow(z) {
   const inner = renderSectorRowInner(z);
   if (!z.active_recipe_id) {
@@ -2069,7 +2102,7 @@ function renderSimulatorSectorRow(z) {
     `;
   }
   return `
-    <div class="sector-row" data-action="open-simulator-sector" data-zone-id="${escapeAttr(z.id)}">
+    <div class="sector-row" data-action="open-greenhouse-simulator" data-zone-id="${escapeAttr(z.id)}">
       ${inner}
       <span class="sector-row-arrow">→</span>
     </div>
@@ -2077,54 +2110,39 @@ function renderSimulatorSectorRow(z) {
 }
 
 /**
- * Opens the simulation pop-up for one real sector's active_recipe_id.
- * Reuses #modal-overlay/#modal-content (STATE.modalKind = "simulator") —
- * the same overlay mechanism as the real zone pop-up, but its own kind, so
- * renderModal()/closeModal() never confuse the two. A no-op (defensive
- * only — the grid never renders a data-action for this case) if the zone
- * has no active_recipe_id.
+ * Opens (or brings back to front) the single, shared "Simula l'intera
+ * serra" pop-up — the only way to run or view a simulation now, no
+ * per-sector isolated run left (see renderSimulatorSectorRow). Called both
+ * by the page-level "Simula l'intera serra" button (no preferredZoneId)
+ * and by clicking a sector row (preferredZoneId set), so a sector's own
+ * chart is only ever reached through this one greenhouse-wide run.
+ *
+ * Reopening an already queued/running/completed simulation does NOT reset
+ * it — closing the pop-up alone never discards STATE.simulation either
+ * (see closeModal); only leaving the Simulatore page entirely (switchView)
+ * or starting a genuinely new run does. preferredZoneId just refocuses
+ * which settore's chart is shown once a result exists.
  */
-function openSimulatorModal(zoneId) {
-  const zone = STATE.zones.find((z) => z.id === zoneId);
-  if (!zone || !zone.active_recipe_id) return;
-
-  // A job for a *different* sector is still occupying the system's single
-  // batch slot (shouldn't normally happen — the grid is hidden behind the
-  // overlay while a pop-up is open — but defensive all the same): free it
-  // before starting this one.
-  if (STATE.simulation && STATE.simulation.zoneId !== zoneId) {
-    discardActiveSimulationIfAny();
-    STATE.simulation = null;
-  }
+function openGreenhouseSimulatorModal(preferredZoneId) {
   if (!STATE.simulation) {
     STATE.simulation = {
-      zoneId,
-      recipeId: zone.active_recipe_id,
+      greenhouse: true,
       durationDays: 7,
       starting: false,
       job: null,
       result: null,
+      activeZoneId: preferredZoneId || null,
       error: null,
       chartVariable: "soil_moisture",
+      chartView: "single",
       playback: null,
     };
+  } else if (preferredZoneId) {
+    STATE.simulation.activeZoneId = preferredZoneId;
   }
-
   STATE.modalKind = "simulator";
   document.getElementById("modal-overlay").classList.remove("hidden");
   renderModal();
-
-  if (!STATE.recipesById[zone.active_recipe_id]) {
-    apiGet(`/recipes/${encodeURIComponent(zone.active_recipe_id)}`).then((r) => {
-      STATE.recipesById[r.id] = r;
-      if (STATE.modalKind === "simulator" && STATE.simulation && STATE.simulation.recipeId === r.id) renderModal();
-    }).catch(() => {
-      if (STATE.modalKind === "simulator" && STATE.simulation) {
-        STATE.simulation.error = "Impossibile caricare la ricetta assegnata a questo settore.";
-        renderModal();
-      }
-    });
-  }
 }
 
 /** Pop-up body: setup / progress / result, exactly the same three-state
@@ -2134,30 +2152,18 @@ function openSimulatorModal(zoneId) {
  * NEW LAYOUT note 3 this was written against: the grid looks enough like
  * the real one that the warning belongs inside the pop-up too, not only
  * above the grid). */
+/** "Simula l'intera serra" pop-up body: setup / progress / result — the
+ * only simulation pop-up now (see openGreenhouseSimulatorModal), so no
+ * recipe/zone to fetch first: the header names the greenhouse-wide run,
+ * not a single settore/ricetta, and setup/progress/result render
+ * immediately without an async load step. */
 function renderSimulatorModal() {
   const wrap = document.getElementById("modal-content");
   const sim = STATE.simulation;
   if (!sim) { wrap.innerHTML = '<div class="empty-note">Nessuna simulazione selezionata.</div>'; return; }
 
-  const zone = STATE.zones.find((z) => z.id === sim.zoneId) || null;
-  const recipe = STATE.recipesById[sim.recipeId];
-  if (!recipe) {
-    wrap.innerHTML = `
-      <div class="zone-header" style="--zone-tint:var(--sim-soft)">
-        <div style="min-width:0">
-          <div class="zone-header-code"><span class="code">${zone ? zoneLabel(zone) : "—"}</span></div>
-          <h2>Simulazione</h2>
-        </div>
-        <button type="button" class="zone-close" data-action="close-modal">✕</button>
-      </div>
-      <div style="padding:20px 28px 28px">
-        ${sim.error
-          ? `<div class="zone-danger-error">${escapeHtml(sim.error)}</div>`
-          : '<div class="empty-note">Caricamento ricetta…</div>'}
-      </div>
-    `;
-    return;
-  }
+  const zoneCount = (sim.job && sim.job.zone_ids && sim.job.zone_ids.length)
+    || (Array.isArray(sim.result) ? sim.result.length : STATE.zones.filter((z) => z.department_number !== 5 && !!z.active_recipe_id).length);
 
   let body;
   if (sim.result) {
@@ -2171,15 +2177,10 @@ function renderSimulatorModal() {
   wrap.innerHTML = `
     <div class="zone-header" style="--zone-tint:var(--sim-soft)">
       <div style="min-width:0">
-        <div class="zone-header-code">
-          <span class="code">${zone ? zoneLabel(zone) : "settore rimosso"} · ${escapeHtml(recipe.id)}</span>
-          <span class="recipe-badge">Versione ${recipe.version}</span>
-        </div>
-        <h2>${escapeHtml(recipe.plant_type)}</h2>
+        <div class="zone-header-code"><span class="code">Intera serra</span></div>
+        <h2>Simulazione dell'intera serra</h2>
         <div class="zone-header-meta">
-          <span>${zone ? `Ricetta assegnata a Reparto ${zone.department_number} — Settore ${zone.sector_number}` : "Questo settore non è più registrato"}</span>
-          <span class="sep"></span>
-          <span>${escapeHtml(recipe.department_name || "Reparto non catalogato")}</span>
+          <span>${zoneCount} settor${zoneCount === 1 ? "e" : "i"} con ricetta assegnata, ognuno con la propria ricetta</span>
         </div>
       </div>
       <button type="button" class="zone-close" data-action="close-modal">✕</button>
@@ -2188,8 +2189,9 @@ function renderSimulatorModal() {
       <div class="simulator-intro simulator-intro-compact">
         <div class="simulator-intro-title">Ambiente di simulazione</div>
         <div class="simulator-intro-text">
-          Questo scenario usa la ricetta assegnata a ${zone ? zoneLabel(zone) : "questo settore"}, ma resta un'anteprima
-          batch isolata: <strong>non tocca mai la telemetria, i comandi o la coltivazione reale del settore</strong>.
+          Ogni settore produttivo con una ricetta assegnata avanza sullo stesso arco temporale, ciascuno con la propria
+          ricetta — resta comunque un'anteprima batch isolata: <strong>non tocca mai la telemetria, i comandi o le
+          coltivazioni reali</strong>.
         </div>
       </div>
       ${body}
@@ -2251,12 +2253,49 @@ function varLegendLabel(v) {
   return `${v.label} · ${v.unit}`;
 }
 
+/** The SimulationPreview currently on screen. For "Simula un settore" (the
+ * original mode) sim.result is a single preview object, straight from
+ * GET /simulations/{id}/result. For "Simula l'intera serra" (STATE.
+ * simulation.greenhouse) that same endpoint returns an ARRAY instead — one
+ * preview per zone with an assigned recipe — and sim.activeZoneId (see the
+ * zone <select> in renderSimulationResult) picks which one every chart and
+ * summary below reads from; everything downstream stays written against a
+ * single preview object either way. */
+function activeSimulationPreview(sim) {
+  if (!sim || !sim.result) return null;
+  if (!Array.isArray(sim.result)) return sim.result;
+  return sim.result.find((p) => p.zone_id === sim.activeZoneId) || sim.result[0] || null;
+}
+
+/** Label for one entry of the "Simula l'intera serra" zone <select> — the
+ * preview only carries zone_id (see SimulationPreview.zone_id server-side),
+ * everything human-readable is resolved locally from STATE.zones, same as
+ * the rest of the app (zoneLabel). Falls back to the bare id for a zone
+ * removed mid-simulation (defensive only — a batch preview never mutates
+ * zones, so this should not normally happen). */
+function simZoneOptionLabel(preview) {
+  const zone = STATE.zones.find((z) => z.id === preview.zone_id);
+  return zone ? `${zoneLabel(zone)} · ${preview.recipe.plant_type}` : preview.zone_id;
+}
+
 function renderSimulationResult(sim) {
-  const result = sim.result;
+  const greenhouse = Array.isArray(sim.result);
+  const result = activeSimulationPreview(sim);
   const playing = !!(sim.playback && sim.playback.active);
+  const gridView = sim.chartView === "grid";
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
+    ${greenhouse ? `
+    <div class="zone-section" style="margin-top:16px">
+      <div class="chart-head" style="margin-bottom:0">
+        <span class="title">Settore mostrato</span>
+        <select id="sim-zone-select">
+          ${sim.result.map((p) => `<option value="${escapeAttr(p.zone_id)}" ${p.zone_id === result.zone_id ? "selected" : ""}>${escapeHtml(simZoneOptionLabel(p))}</option>`).join("")}
+        </select>
+        <span class="hint">${sim.result.length} settori simulati sullo stesso arco temporale</span>
+      </div>
+    </div>` : ""}
     <div class="sim-result-toolbar">
       ${playing
         ? `<span class="sim-playback-hint">Riproduzione in accelerato in corso…</span>
@@ -2267,16 +2306,30 @@ function renderSimulationResult(sim) {
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
         <span class="title">Andamento simulato</span>
+        ${gridView ? "" : `
         <select id="sim-chart-variable-select">
           ${VARIABLES.map((v) => `<option value="${v.key}" ${sim.chartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
-        </select>
+        </select>`}
+        <button type="button" class="chart-view-toggle" data-action="sim-chart-view-toggle">
+          ${gridView ? "◧ Un grafico alla volta" : "▦ Vedi tutti i grafici"}
+        </button>
         <span class="hint">durata simulata: ${fmtSimDuration(result.duration_seconds)}</span>
       </div>
       <div class="chart-legend">
-        <span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>
+        ${gridView
+          ? `<span class="legend-item"><span class="legend-line"></span>Valore simulato</span>`
+          : `<span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>`}
         <span class="legend-item"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>
       </div>
-      <div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
+      ${gridView
+        ? `<div class="sim-chart-grid">
+            ${VARIABLES.map((v) => `
+              <div class="sim-chart-grid-cell">
+                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}</div>
+                <canvas id="simulation-chart-${v.key}" style="width:100%;height:100%;display:block"></canvas>
+              </div>`).join("")}
+          </div>`
+        : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>`}
     </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
@@ -2342,7 +2395,7 @@ function startSimulationPlayback() {
   const sim = STATE.simulation;
   if (!sim || !sim.result) return;
   cancelSimulationPlayback();
-  const series = sim.result.series || [];
+  const series = (activeSimulationPreview(sim) || {}).series || [];
   const minT = series.length ? series[0].start_seconds : 0;
   const maxT = series.length ? series[series.length - 1].end_seconds : 0;
   sim.playback = {
@@ -2450,21 +2503,36 @@ function fmtDurationHM(totalSeconds) {
   return `${minutes}m`;
 }
 
+/** Draws either the single selected-variable canvas, or (chartView ===
+ * "grid", see the "Vedi tutti i grafici" toggle) every VARIABLES entry into
+ * its own small canvas at once — same underlying drawSimulationSeriesChart
+ * either way, just once per variable in grid mode. Playback (revealT) is
+ * shared across all of them so the whole grid animates in lockstep. */
 function drawSimulationChart() {
-  const canvas = document.getElementById("simulation-chart");
   const sim = STATE.simulation;
-  if (!canvas || !sim || !sim.result) return;
-  const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
+  const preview = activeSimulationPreview(sim);
+  if (!preview) return;
   const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
-  drawSimulationSeriesChart(canvas, sim.result.series, sim.result.phases, varMeta, revealT);
+  if (sim.chartView === "grid") {
+    VARIABLES.forEach((v) => {
+      const canvas = document.getElementById(`simulation-chart-${v.key}`);
+      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v, revealT);
+    });
+    return;
+  }
+  const canvas = document.getElementById("simulation-chart");
+  if (!canvas) return;
+  const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
+  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta, revealT);
 }
 
 function drawActuatorTimelineChart() {
   const canvas = document.getElementById("simulation-actuator-chart");
   const sim = STATE.simulation;
-  if (!canvas || !sim || !sim.result) return;
+  const preview = activeSimulationPreview(sim);
+  if (!canvas || !preview) return;
   const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
-  drawActuatorTimeline(canvas, sim.result.actuator_intervals || [], sim.result.series, sim.result.phases, revealT);
+  drawActuatorTimeline(canvas, preview.actuator_intervals || [], preview.series, preview.phases, revealT);
 }
 
 /**
@@ -2524,7 +2592,17 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
 
   let minV = Math.min(...points.map((p) => p.min));
   let maxV = Math.max(...points.map((p) => p.max));
+  // Solo le fasi che ricadono davvero nell'intervallo simulato [minT, maxT]
+  // contano per la scala dell'asse — esattamente lo stesso controllo di
+  // sovrapposizione usato sotto per decidere se disegnare la banda di una
+  // fase. Senza questo filtro, una simulazione breve che resta sempre nella
+  // prima fase vedrebbe comunque l'asse allungato fino ai target (spesso
+  // molto più ampi) delle fasi successive mai raggiunte, schiacciando la
+  // curva vicino al fondo pur essendo perfettamente in banda.
   phases.forEach((ph) => {
+    const segStart = Math.max(ph.start_seconds, minT);
+    const segEnd = Math.min(ph.end_seconds, maxT);
+    if (segEnd <= segStart) return;
     const t = ph.targets[varMeta.key];
     if (t) { minV = Math.min(minV, t.allowed_minimum); maxV = Math.max(maxV, t.allowed_maximum); }
   });
@@ -3584,16 +3662,14 @@ async function openZoneModal(zoneId, entry) {
 }
 
 function closeModal() {
-  // Closing the simulation pop-up specifically: free the system's single
-  // global batch-simulation slot right away if a job is still
-  // queued/running, instead of leaving it occupied until it expires on its
-  // own — a second user shouldn't be blocked for no reason just because
-  // this tab stopped watching. Every other modal kind has nothing
-  // equivalent to free.
-  if (STATE.modalKind === "simulator") {
-    discardActiveSimulationIfAny();
-    STATE.simulation = null;
-  }
+  // Closing the simulation pop-up specifically does NOT discard
+  // STATE.simulation (unlike every other modal kind, which has nothing
+  // equivalent to keep): the job keeps running/polling and any result
+  // stays in memory, so clicking a different sector on the grid (see
+  // renderSimulatorSectorRow -> openGreenhouseSimulatorModal) reopens the
+  // very same simulation instead of losing it. It's discarded only by
+  // starting a genuinely new run (restartSimulationSetup) or by leaving
+  // the Simulatore page entirely (switchView).
   document.getElementById("modal-overlay").classList.add("hidden");
   clearPoll("modal");
   clearPoll("modal-chart");
@@ -4982,8 +5058,8 @@ function initEventDelegation() {
     const confirmPlantRemoveBtn = e.target.closest('[data-action="confirm-plant-remove"]');
     if (confirmPlantRemoveBtn && !confirmPlantRemoveBtn.disabled) { confirmPlantRemove(confirmPlantRemoveBtn.dataset.plantId); return; }
 
-    const openSimulatorSector = e.target.closest('[data-action="open-simulator-sector"]');
-    if (openSimulatorSector) { openSimulatorModal(openSimulatorSector.dataset.zoneId); return; }
+    const openGreenhouseSimulator = e.target.closest('[data-action="open-greenhouse-simulator"]');
+    if (openGreenhouseSimulator) { openGreenhouseSimulatorModal(openGreenhouseSimulator.dataset.zoneId); return; }
 
     const simSelectDuration = e.target.closest('[data-action="sim-select-duration"]');
     if (simSelectDuration && !simSelectDuration.disabled && STATE.simulation) {
@@ -5006,6 +5082,16 @@ function initEventDelegation() {
 
     const simPlaybackSkipBtn = e.target.closest('[data-action="sim-playback-skip"]');
     if (simPlaybackSkipBtn) { skipSimulationPlayback(); return; }
+
+    const simChartViewToggle = e.target.closest('[data-action="sim-chart-view-toggle"]');
+    if (simChartViewToggle && STATE.simulation) {
+      // Swaps the DOM (single canvas <-> one per VARIABLES entry), so this
+      // needs the full renderModal() — unlike the variable <select> above,
+      // which only ever redraws the one canvas that's already there.
+      STATE.simulation.chartView = STATE.simulation.chartView === "grid" ? "single" : "grid";
+      renderModal();
+      return;
+    }
   });
 
   document.addEventListener("change", (e) => {
@@ -5016,6 +5102,15 @@ function initEventDelegation() {
     if (filterSelect) { STATE.controlFilters[filterSelect.dataset.filter] = filterSelect.value; renderControl(); return; }
 
     if (e.target.id === "chart-variable-select") { onChartVariableChange(e.target.value); return; }
+
+    if (e.target.id === "sim-zone-select" && STATE.simulation) {
+      // Unlike the variable <select> below, switching zones changes almost
+      // everything on screen (recipe id/version, phase bands, summary
+      // totals) — a full renderModal() is simpler and cheap enough here.
+      STATE.simulation.activeZoneId = e.target.value;
+      renderModal();
+      return;
+    }
 
     if (e.target.id === "sim-chart-variable-select" && STATE.simulation) {
       // The simulation's series/phases are already in memory (no re-fetch

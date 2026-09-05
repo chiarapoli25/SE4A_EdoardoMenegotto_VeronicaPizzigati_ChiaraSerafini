@@ -833,6 +833,13 @@ a:hover { color: var(--accent-dark); }
 }
 .simulator-intro-text strong { color: var(--sim-dark); }
 
+/* "Simula l'intera serra" entry point, inside the page-level banner only
+   (renderSimulatorView) — the per-sector click-through below stays the
+   default way in, this is the alternative "il tempo passa per tutti allo
+   stesso modo" action, not a replacement. */
+.simulator-intro-action { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.simulator-intro-action .hint { font-size: 11.5px; color: var(--ink-faint); }
+
 /* A production sector with no active_recipe_id (shouldn't happen with the
    current creation flow, but handled defensively — see
    renderSimulatorSectorRow): shown, not hidden, so the grid still mirrors
@@ -997,6 +1004,12 @@ a:hover { color: var(--accent-dark); }
 .chart-head .hint { font: 400 10.5px var(--mono); color: #9aada4; margin-left: auto; }
 .chart-head select { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 11.5px; }
 
+/* "Vedi tutti i grafici" toggle next to the Simulatore chart's variable
+   <select> — same visual weight as the select it sits beside, deliberately
+   smaller than the ordinary .btn used for the playback controls below. */
+.chart-view-toggle { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 5px 10px; font: 500 11.5px var(--sans); color: var(--accent); cursor: pointer; }
+.chart-view-toggle:hover { background: #f2f8f4; }
+
 /* Legend row for the Simulatore result charts — explicit text + swatch for
    what each visual encoding means (simulated value line vs. target band on
    the sensor chart; active vs. inactive on the actuator timeline), since
@@ -1017,6 +1030,17 @@ a:hover { color: var(--accent-dark); }
 .legend-glyph.inactive { color: #c3d1c8; }
 
 .chart-canvas-wrap { height: 196px; border-radius: 14px; background: #f9fbfa; position: relative; }
+
+/* "Vedi tutti i grafici" grid — every VARIABLES entry at once (2 columns,
+   see the 860px breakpoint below for the 1-column fallback) instead of the
+   single canvas + <select> above. Each cell repeats the same
+   drawSimulationSeriesChart canvas, just shorter, with its own small title
+   since there is no shared per-cell legend space (the one legend row above
+   the grid already explains line/band for all of them identically). */
+.sim-chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.sim-chart-grid-cell { background: #f9fbfa; border-radius: 14px; padding: 10px 10px 6px; }
+.sim-chart-grid-title { font: 500 11px var(--sans); color: var(--ink-soft); margin-bottom: 6px; }
+.sim-chart-grid-cell canvas { width: 100%; height: 128px; display: block; }
 
 /* Actuator Gantt-style timeline under the Simulatore result chart — same
    canvas-wrap treatment as .chart-canvas-wrap, just taller to fit 7
@@ -1245,6 +1269,7 @@ a:hover { color: var(--accent-dark); }
   .zone-section.span2 { grid-column: span 1; }
   .controls-grid { grid-template-columns: 1fr 1fr; }
   .chart-actuators-grid { grid-template-columns: 1fr; }
+  .sim-chart-grid { grid-template-columns: 1fr; }
   .data-table-head, .data-table-row { overflow-x: auto; }
   .alerts-grid { grid-template-columns: 1fr; }
   .event-row { flex-wrap: wrap; }
