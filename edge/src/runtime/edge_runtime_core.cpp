@@ -2,6 +2,7 @@
 
 #include <array>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -18,13 +19,67 @@ constexpr ControlledValues<ControlledVariable> kControlledVariables{{
     ControlledVariable::POTASSIUM,
 }};
 
+/**
+ * @brief Applica il substrato della ricetta e avvicina lo stato iniziale
+ * dell'ambiente al setpoint della prima fase, senza farlo coincidere.
+ *
+ * @details Il terriccio e preparato a mano prima dell'avvio (substrati
+ * diversi, dosaggio manuale impreciso...): partire esattamente al setpoint
+ * sarebbe irrealistico quanto ignorarlo del tutto. Si campiona quindi un
+ * punto uniforme nell'allowed_range della prima fase per ciascuna variabile
+ * "a riserva" (pH, N, P, K) — vicino al target ma non identico — con un
+ * generatore seedato separatamente da quello dell'ambiente (stesso
+ * environment_seed, offset diverso) cosi' il punto di partenza resta
+ * riproducibile a parita di ricetta e seed, come il resto della
+ * simulazione.
+ *
+ * Un valore gia' esplicitamente diverso dal default di EnvironmentConfig
+ * (impostato a mano dal chiamante, tipico nei test) non viene toccato: solo
+ * il fallback implicito usato dal runtime reale e dal simulatore batch
+ * beneficia di questo aggancio alla ricetta.
+ */
 EnvironmentConfig environment_for_recipe(
     EnvironmentConfig config,
-    const Recipe& recipe) {
+    const Recipe& recipe,
+    std::uint32_t environment_seed) {
     if (!recipe.substrate.has_value()) {
         throw std::invalid_argument("runtime recipe has no substrate");
     }
     config.soil_type = *recipe.substrate;
+
+    if (!recipe.phases.empty()) {
+        const EnvironmentConfig defaults{};
+        const auto& targets = recipe.phases.front().targets;
+        std::mt19937 initial_state_rng(environment_seed ^ 0x494E4954U);  // "INIT"
+        auto near_setpoint = [&](ControlledVariable variable,
+                                  double current,
+                                  double default_value) {
+            if (current != default_value) {
+                return current;  // override esplicito del chiamante: intatto.
+            }
+            const auto& range =
+                targets[controlled_variable_index(variable)].allowed_range;
+            if (!(range.minimum < range.maximum)) {
+                return current;  // fase senza banda utile per questa variabile.
+            }
+            return std::uniform_real_distribution<double>(
+                range.minimum, range.maximum)(initial_state_rng);
+        };
+        config.initial_ph = near_setpoint(
+            ControlledVariable::PH, config.initial_ph, defaults.initial_ph);
+        config.initial_nitrogen_mg_per_liter = near_setpoint(
+            ControlledVariable::NITROGEN,
+            config.initial_nitrogen_mg_per_liter,
+            defaults.initial_nitrogen_mg_per_liter);
+        config.initial_phosphorus_mg_per_liter = near_setpoint(
+            ControlledVariable::PHOSPHORUS,
+            config.initial_phosphorus_mg_per_liter,
+            defaults.initial_phosphorus_mg_per_liter);
+        config.initial_potassium_mg_per_liter = near_setpoint(
+            ControlledVariable::POTASSIUM,
+            config.initial_potassium_mg_per_liter,
+            defaults.initial_potassium_mg_per_liter);
+    }
     return config;
 }
 
@@ -129,7 +184,8 @@ EdgeRuntime::EdgeRuntime(
       environment_(std::make_unique<EnvironmentSimulatorAdapter>(
           environment_for_recipe(
               std::move(environment_config),
-              control_system_.recipe()),
+              control_system_.recipe(),
+              environment_seed),
           environment_seed)),
       soil_probe_model_(sensor_config.soil_probe_model),
       sensors_(make_simulated_sensor_adapters(
