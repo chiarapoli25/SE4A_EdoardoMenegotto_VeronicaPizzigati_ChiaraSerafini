@@ -36,6 +36,11 @@ class SimulationBusy(Exception):
     """Un altro scenario sta gia usando l'unico worker batch."""
 
 
+class SimulationInvalid(Exception):
+    """La richiesta non individua nulla di simulabile (es. serra intera
+    senza alcun settore con una ricetta assegnata)."""
+
+
 class SimulationMissing(Exception):
     """Il job non esiste o la sua anteprima e scaduta."""
 
@@ -44,13 +49,31 @@ class SimulationNotReady(Exception):
     """Il risultato non e ancora disponibile."""
 
 
+@dataclass(frozen=True)
+class _Target:
+    """Una singola ricetta da simulare — un settore reale in modalita' serra
+    intera (zone_id valorizzato), oppure l'unica ricetta scelta a mano nella
+    modalita' storica per singolo settore (zone_id None)."""
+
+    recipe: Recipe
+    zone_id: str | None = None
+
+
 @dataclass
 class _Record:
     job: SimulationJob
-    recipe: Recipe
+    targets: list[_Target]
     cancel: threading.Event = field(default_factory=threading.Event)
-    result: SimulationPreview | None = None
+    # Un esito per target, nello stesso ordine di `targets`. La modalita'
+    # storica per singolo settore ha sempre esattamente un target: result()
+    # la spacchetta in un oggetto singolo per non cambiare il contratto HTTP
+    # esistente (vedi SimulationManager.result).
+    results: list[SimulationPreview] | None = None
     process: subprocess.Popen[str] | None = None
+
+    @property
+    def is_greenhouse(self) -> bool:
+        return len(self.targets) != 1 or self.targets[0].zone_id is not None
 
 
 def _now() -> datetime:
@@ -231,6 +254,35 @@ class SimulationManager:
             self._records.pop(run_id, None)
 
     def create(self, request: SimulationCreate, recipe: Recipe) -> SimulationJob:
+        """Anteprima isolata di una singola ricetta, mai legata a un settore
+        reale — il percorso storico, invariato. Vedi create_greenhouse per
+        l'intera serra."""
+        return self._create([_Target(recipe=recipe)], request)
+
+    def create_greenhouse(
+        self,
+        request: SimulationCreate,
+        targets: list[tuple[str, Recipe]],
+    ) -> SimulationJob:
+        """Un'unica simulazione che copre ogni settore produttivo con una
+        ricetta assegnata, tutti sullo stesso arco temporale — "il tempo
+        passa per tutti allo stesso modo". Ogni settore resta comunque un
+        run dell'Edge indipendente (nessuna interazione fisica fra settori
+        nel modello attuale, vedi GreenhouseManager lato Edge): eseguirli in
+        sequenza con lo stesso step_seconds/duration_seconds produce lo
+        stesso risultato di un'unica esecuzione multi-zona, senza dover
+        toccare il formato di output del simulatore batch C++.
+        """
+        if not targets:
+            raise SimulationInvalid(
+                "no zone has an assigned recipe: nothing to simulate"
+            )
+        return self._create(
+            [_Target(recipe=recipe, zone_id=zone_id) for zone_id, recipe in targets],
+            request,
+        )
+
+    def _create(self, targets: list[_Target], request: SimulationCreate) -> SimulationJob:
         with self._lock:
             self._cleanup()
             if any(
@@ -239,18 +291,20 @@ class SimulationManager:
             ):
                 raise SimulationBusy("another batch simulation is already running")
             run_id = f"simulation-{uuid4().hex}"
-            total_steps = request.duration_seconds // STEP_SECONDS
+            steps_per_target = request.duration_seconds // STEP_SECONDS
+            is_greenhouse = len(targets) != 1 or targets[0].zone_id is not None
             job = SimulationJob(
                 id=run_id,
-                recipe_id=recipe.id,
+                recipe_id=None if is_greenhouse else targets[0].recipe.id,
+                zone_ids=[t.zone_id for t in targets] if is_greenhouse else None,
                 duration_seconds=request.duration_seconds,
-                total_steps=total_steps,
+                total_steps=steps_per_target * len(targets),
                 completed_steps=0,
                 progress_percent=0.0,
                 status=SimulationStatus.QUEUED,
                 created_at=_now(),
             )
-            record = _Record(job=job, recipe=recipe)
+            record = _Record(job=job, targets=targets)
             self._records[run_id] = record
             self._executor.submit(self._execute, run_id)
             return job.model_copy(deep=True)
@@ -263,15 +317,20 @@ class SimulationManager:
                 raise SimulationMissing("simulation preview not found or expired")
             return record.job.model_copy(deep=True)
 
-    def result(self, run_id: str) -> SimulationPreview:
+    def result(self, run_id: str) -> SimulationPreview | list[SimulationPreview]:
+        """Un oggetto singolo per la modalita' storica per singolo settore
+        (contratto HTTP invariato), una lista — un elemento per settore,
+        stesso ordine di creazione — per la modalita' serra intera."""
         with self._lock:
             self._cleanup()
             record = self._records.get(run_id)
             if record is None:
                 raise SimulationMissing("simulation preview not found or expired")
-            if record.job.status is not SimulationStatus.SUCCEEDED or record.result is None:
+            if record.job.status is not SimulationStatus.SUCCEEDED or record.results is None:
                 raise SimulationNotReady("simulation result is not ready")
-            return record.result.model_copy(deep=True)
+            if record.is_greenhouse:
+                return [preview.model_copy(deep=True) for preview in record.results]
+            return record.results[0].model_copy(deep=True)
 
     def cancel_or_discard(self, run_id: str) -> None:
         with self._lock:
@@ -292,6 +351,113 @@ class SimulationManager:
             1,
         )
 
+    def _run_target(
+        self,
+        run_id: str,
+        record: _Record,
+        target: _Target,
+        *,
+        steps_per_target: int,
+        step_offset: int,
+    ) -> SimulationPreview:
+        """Un'esecuzione Edge per un singolo target (settore o ricetta
+        isolata). step_offset e' quanti step di ALTRI target precedenti sono
+        gia' stati completati in questa stessa esecuzione — serve solo a far
+        avanzare il progresso complessivo del job, non incide sul contenuto
+        del risultato di questo target.
+        """
+        executable = configured_edge_executable()
+        if not edge_is_ready(executable):
+            raise RuntimeError(f"Edge simulator is not available at {executable}")
+        with tempfile.TemporaryDirectory(prefix="smarthydro-simulation-") as directory:
+            recipe_path = Path(directory) / "recipe.json"
+            output_path = Path(directory) / "result.json"
+            recipe_path.write_text(
+                target.recipe.model_dump_json(by_alias=True),
+                encoding="utf-8",
+            )
+            command = [
+                str(executable),
+                "--recipe", str(recipe_path),
+                "--steps", str(steps_per_target),
+                "--step-seconds", str(STEP_SECONDS),
+                "--output", "json",
+                "--progress",
+            ]
+            with output_path.open("w", encoding="utf-8") as output:
+                deadline = time.monotonic() + BATCH_TIMEOUT_SECONDS
+                process = subprocess.Popen(
+                    command,
+                    stdout=output,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                with self._lock:
+                    record.process = process
+                assert process.stderr is not None
+                errors: list[str] = []
+                stderr_lines: queue.Queue[str | None] = queue.Queue()
+
+                def read_stderr() -> None:
+                    for stderr_line in process.stderr:
+                        stderr_lines.put(stderr_line)
+                    stderr_lines.put(None)
+
+                threading.Thread(
+                    target=read_stderr,
+                    name=f"{run_id}-progress",
+                    daemon=True,
+                ).start()
+                while True:
+                    if record.cancel.is_set():
+                        process.terminate()
+                        process.wait(timeout=10)
+                        raise InterruptedError("simulation cancelled")
+                    if time.monotonic() > deadline:
+                        process.terminate()
+                        process.wait(timeout=10)
+                        raise TimeoutError(
+                            f"batch simulation exceeded {BATCH_TIMEOUT_SECONDS:.0f} seconds"
+                        )
+                    try:
+                        line = stderr_lines.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if line is None:
+                        break
+                    stripped = line.strip()
+                    if stripped.startswith("PROGRESS "):
+                        completed_text = stripped.removeprefix("PROGRESS ").split("/", 1)[0]
+                        with self._lock:
+                            self._update_progress(record, step_offset + int(completed_text))
+                    elif stripped:
+                        errors.append(stripped)
+                return_code = process.wait(timeout=10)
+            if record.cancel.is_set():
+                raise InterruptedError("simulation cancelled")
+            if return_code != 0:
+                raise RuntimeError(" · ".join(errors) or "Edge simulation failed")
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        steps = payload.get("steps")
+        if not isinstance(steps, list) or len(steps) != steps_per_target:
+            raise RuntimeError("Edge returned an incomplete simulation")
+        intervals = _actuator_intervals(steps)
+        return SimulationPreview(
+            job_id=run_id,
+            zone_id=target.zone_id,
+            recipe={
+                "id": target.recipe.id,
+                "plant_type": target.recipe.plant_type,
+                "version": target.recipe.version,
+            },
+            duration_seconds=record.job.duration_seconds,
+            series=_reduce_series(steps),
+            actuator_intervals=intervals,
+            summary=_summary(steps, intervals),
+            phases=_phase_targets(target.recipe),
+        )
+
     def _execute(self, run_id: str) -> None:
         with self._lock:
             record = self._records.get(run_id)
@@ -307,99 +473,20 @@ class SimulationManager:
             record.job.status = SimulationStatus.RUNNING
             record.job.started_at = _now()
 
-        executable = configured_edge_executable()
         try:
-            if not edge_is_ready(executable):
-                raise RuntimeError(f"Edge simulator is not available at {executable}")
-            with tempfile.TemporaryDirectory(prefix="smarthydro-simulation-") as directory:
-                recipe_path = Path(directory) / "recipe.json"
-                output_path = Path(directory) / "result.json"
-                recipe_path.write_text(
-                    record.recipe.model_dump_json(by_alias=True),
-                    encoding="utf-8",
+            steps_per_target = record.job.total_steps // len(record.targets)
+            previews = [
+                self._run_target(
+                    run_id,
+                    record,
+                    target,
+                    steps_per_target=steps_per_target,
+                    step_offset=index * steps_per_target,
                 )
-                command = [
-                    str(executable),
-                    "--recipe", str(recipe_path),
-                    "--steps", str(record.job.total_steps),
-                    "--step-seconds", str(STEP_SECONDS),
-                    "--output", "json",
-                    "--progress",
-                ]
-                with output_path.open("w", encoding="utf-8") as output:
-                    deadline = time.monotonic() + BATCH_TIMEOUT_SECONDS
-                    process = subprocess.Popen(
-                        command,
-                        stdout=output,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    )
-                    with self._lock:
-                        record.process = process
-                    assert process.stderr is not None
-                    errors: list[str] = []
-                    stderr_lines: queue.Queue[str | None] = queue.Queue()
-
-                    def read_stderr() -> None:
-                        for stderr_line in process.stderr:
-                            stderr_lines.put(stderr_line)
-                        stderr_lines.put(None)
-
-                    threading.Thread(
-                        target=read_stderr,
-                        name=f"{run_id}-progress",
-                        daemon=True,
-                    ).start()
-                    while True:
-                        if record.cancel.is_set():
-                            process.terminate()
-                            process.wait(timeout=10)
-                            raise InterruptedError("simulation cancelled")
-                        if time.monotonic() > deadline:
-                            process.terminate()
-                            process.wait(timeout=10)
-                            raise TimeoutError(
-                                f"batch simulation exceeded {BATCH_TIMEOUT_SECONDS:.0f} seconds"
-                            )
-                        try:
-                            line = stderr_lines.get(timeout=0.1)
-                        except queue.Empty:
-                            continue
-                        if line is None:
-                            break
-                        stripped = line.strip()
-                        if stripped.startswith("PROGRESS "):
-                            completed_text = stripped.removeprefix("PROGRESS ").split("/", 1)[0]
-                            with self._lock:
-                                self._update_progress(record, int(completed_text))
-                        elif stripped:
-                            errors.append(stripped)
-                    return_code = process.wait(timeout=10)
-                if record.cancel.is_set():
-                    raise InterruptedError("simulation cancelled")
-                if return_code != 0:
-                    raise RuntimeError(" · ".join(errors) or "Edge simulation failed")
-                payload = json.loads(output_path.read_text(encoding="utf-8"))
-
-            steps = payload.get("steps")
-            if not isinstance(steps, list) or len(steps) != record.job.total_steps:
-                raise RuntimeError("Edge returned an incomplete simulation")
-            intervals = _actuator_intervals(steps)
-            preview = SimulationPreview(
-                job_id=run_id,
-                recipe={
-                    "id": record.recipe.id,
-                    "plant_type": record.recipe.plant_type,
-                    "version": record.recipe.version,
-                },
-                duration_seconds=record.job.duration_seconds,
-                series=_reduce_series(steps),
-                actuator_intervals=intervals,
-                summary=_summary(steps, intervals),
-                phases=_phase_targets(record.recipe),
-            )
+                for index, target in enumerate(record.targets)
+            ]
             with self._lock:
-                record.result = preview
+                record.results = previews
                 self._update_progress(record, record.job.total_steps)
                 record.job.status = SimulationStatus.SUCCEEDED
                 record.job.completed_at = _now()
