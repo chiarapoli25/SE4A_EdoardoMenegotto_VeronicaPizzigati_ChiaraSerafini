@@ -1,5 +1,7 @@
 #include <smarthydro/runtime/edge_runtime.hpp>
 
+#include <smarthydro/simulation/sensor_simulator.hpp>
+
 #include <array>
 #include <limits>
 #include <random>
@@ -79,6 +81,27 @@ EnvironmentConfig environment_for_recipe(
             ControlledVariable::POTASSIUM,
             config.initial_potassium_mg_per_liter,
             defaults.initial_potassium_mg_per_liter);
+
+        // initial_ec_ms_cm resta un default fisso (1.8) tarato sul vecchio
+        // totale N+P+K fisso di 400 mg/L (150+50+200): sostituendo quel
+        // totale con lo starting point specifico della ricetta sopra, senza
+        // aggiornare anche l'EC iniziale, la sonda resistiva della zona
+        // partirebbe da un EC che non corrisponde alla composizione reale
+        // dell'ambiente. update_soil_probe_estimates() (sensor_simulator.cpp)
+        // inverte proprio questa stessa relazione per stimare N/P/K dalla EC
+        // misurata: usare qui gli stessi coefficienti la mantiene coerente,
+        // cosi' la stima iniziale del sensore parte vicina al vero valore
+        // simulato invece che sistematicamente troppo alta o troppo bassa.
+        if (config.initial_ec_ms_cm == defaults.initial_ec_ms_cm) {
+            const SoilProbeModelConfig probe{};
+            const double initial_total_fertilizer =
+                config.initial_nitrogen_mg_per_liter +
+                config.initial_phosphorus_mg_per_liter +
+                config.initial_potassium_mg_per_liter;
+            config.initial_ec_ms_cm = probe.background_ec_ms_cm +
+                initial_total_fertilizer /
+                    probe.fertilizer_mg_per_liter_per_ms_cm;
+        }
     }
     return config;
 }

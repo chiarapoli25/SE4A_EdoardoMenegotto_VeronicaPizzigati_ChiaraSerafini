@@ -213,15 +213,27 @@ void EdgeRuntime::apply_decisions(
 void EdgeRuntime::advance_physics(
     double delta_time_seconds,
     EdgeStepResult& result) {
+    // ActuatorSimulator::step() puo' completare la richiesta corrente
+    // (acqua o fertilizzante) esattamente entro questo passo e, in tal
+    // caso, azzera lei stessa command().fertilizer_valves_open non appena
+    // finisce di erogare (vedi close_fertilizer_valves_preserving_last_step
+    // in actuator_simulator.cpp). Se leggessimo command() DOPO step(), un
+    // comando perfettamente soddisfatto in un solo ciclo sembrerebbe "mai
+    // richiesto" mentre l'uscita mostra comunque il volume erogato: il
+    // fault detector lo scambierebbe per un attuatore attivo senza comando
+    // (active_without_command, CRITICO) e porterebbe il runtime in
+    // EmergencyLockdown, bloccando irrigazione e fertilizzanti per il
+    // resto della simulazione. Va quindi catturato PRIMA di step().
+    const ActuatorCommand command_before_step = actuators_->command();
     actuators_->step(delta_time_seconds);
     effective_actuator_output_ = fault_injector_.alter_output(
-        actuators_->command(),
+        command_before_step,
         actuators_->output(),
         actuators_->config(),
         delta_time_seconds,
         environment_->state().simulation_time_seconds);
     record_actuator_observation(
-        actuators_->command(), effective_actuator_output_);
+        command_before_step, effective_actuator_output_);
     const auto& output = effective_actuator_output_;
     result.delivered_water_liters +=
         output.irrigation_volume_liters_last_step;

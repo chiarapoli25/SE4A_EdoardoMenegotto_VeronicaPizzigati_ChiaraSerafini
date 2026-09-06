@@ -45,8 +45,6 @@ struct FertilizerProfile {
     double phosphorus_milligrams_per_milliliter = 0.0;
     /** Massa di potassio aggiunta da un millilitro di prodotto. */
     double potassium_milligrams_per_milliliter = 0.0;
-    /** Incremento didattico di EC, in mS/cm per mL. */
-    double ec_increase_ms_cm_per_milliliter = 0.0;
     /** Variazione di pH per mL; negativa acidifica, positiva alcalinizza. */
     double ph_change_per_milliliter = 0.0;
 };
@@ -142,11 +140,11 @@ struct EnvironmentConfig {
     double lamp_heating_c_per_watt = 0.015;
     /** Un profilo configurabile per ciascuno dei cinque contenitori. */
     FertilizerValues<FertilizerProfile> fertilizer_profiles{{
-        {FertilizerType::NITROGEN, 50.0, 0.0, 0.0, 0.040, -0.001},
-        {FertilizerType::PHOSPHORUS, 0.0, 20.0, 0.0, 0.030, -0.002},
-        {FertilizerType::POTASSIUM, 0.0, 0.0, 50.0, 0.035, 0.0},
-        {FertilizerType::PH_UP, 0.0, 0.0, 0.0, 0.010, 0.020},
-        {FertilizerType::PH_DOWN, 0.0, 0.0, 0.0, 0.010, -0.020},
+        {FertilizerType::NITROGEN, 50.0, 0.0, 0.0, -0.001},
+        {FertilizerType::PHOSPHORUS, 0.0, 20.0, 0.0, -0.002},
+        {FertilizerType::POTASSIUM, 0.0, 0.0, 50.0, 0.0},
+        {FertilizerType::PH_UP, 0.0, 0.0, 0.0, 0.020},
+        {FertilizerType::PH_DOWN, 0.0, 0.0, 0.0, -0.020},
     }};
 };
 

@@ -759,9 +759,86 @@ conferme; il passaggio automatico tra fasi della stessa versione le mantiene.
 
 N/P/K non espongono sensori selettivi inesistenti: usano la concentrazione
 totale stimata dalla EC, la composizione del modello, il target della fase, il
-substrato, l'acqua erogata e la dose
-cumulativa. Threshold e PID vengono quindi rifiutati per N/P/K come
-incompatibili con la sorgente disponibile.
+substrato, l'acqua erogata e la dose cumulativa. Nessuna Strategy e pero
+davvero incompatibile con questa sorgente: `process_value()`/`source_value()`
+risolvono una stima di modello in modo identico a una lettura di sensore per
+qualunque controllore (si veda `control_system.cpp`). Predictive resta il
+default di N/P/K perche le valvole di concentrato si aprono solo mentre la
+pompa dell'acqua sta irrigando (non a ogni ciclo di controllo): conviene
+proiettare un trend e dosare in vista della prossima occasione utile, invece
+di reagire al solo valore istantaneo come farebbe Threshold. Il guadagno di
+risposta (`response_gain`) non e una costante fissa uguale per ogni pianta: e
+calcolato dal catalogo in base al margine della fascia consentita della
+ricetta (`_predictive_parameters` in
+`backend/app/features/recipes/catalog.py`), cosi un deficit grande quanto
+quel margine spinge gia il comando vicino al massimo consentito — una singola
+occasione di dosaggio, anche rara, corregge davvero invece di limitarsi a
+scalfire il divario. Threshold e PID restano comunque selezionabili per chi
+li preferisce.
+
+Quattro difetti del simulatore Edge, non del tuning delle Strategy, causavano
+un andamento di N/P/K a "dente di sega" crescente che non si stabilizzava mai
+sul target in alcune combinazioni ricetta/substrato:
+
+1. **Falso allarme che bloccava tutti gli attuatori.** Quando una dose
+   (acqua o fertilizzante) terminava esattamente entro un ciclo di
+   controllo — un caso tutt'altro che raro, dato come `apply_decisions()`
+   dimensiona l'apertura delle valvole — `ActuatorSimulator::step()` chiude
+   da solo il comando non appena la richiesta e soddisfatta. Il runtime
+   leggeva pero quel comando ormai azzerato DOPO `step()`, cosi il volume
+   appena erogato sembrava "un attuatore attivo senza comando": un guasto
+   CRITICO che porta a `EmergencyLockdown` permanente (nessun reset
+   automatico nel simulatore batch). Con tutti gli attuatori fermi il
+   terreno si asciugava senza limiti e la concentrazione (massa raccolta
+   diviso il volume d'acqua residuo, che tendeva a zero) saliva senza alcun
+   freno. Corretto campionando il comando PRIMA di `step()`
+   (`EdgeRuntime::advance_physics`, `edge_runtime_actuation.cpp`).
+2. **La EC "vera" non seguiva la stessa fisica di N/P/K.** Il modello
+   ambientale calcolava `nitrogen_mg_per_liter` (e P, K) come massa disciolta
+   diviso il volume d'acqua radicale corrente — cala giustamente quando il
+   terreno si asciuga — ma aggiornava `ec_ms_cm` con una formula scollegata
+   (incremento fisso per mL dosato, lieve correzione in essiccamento,
+   diluizione verso l'EC dell'acqua d'irrigazione). Il sensore resistivo
+   legge pero solo `ec_ms_cm`, e da li ricava la stima di N/P/K che il
+   controllore usa davvero: su substrati con forti escursioni di umidita
+   (es. "draining") le due grandezze divergevano nel tempo, la stima restava
+   bassa mentre il valore vero saliva di 5-10 volte, e il controllore
+   continuava percio a dosare. Corretto derivando `ec_ms_cm` direttamente
+   dalla stessa massa totale di N+P+K con la formula che il sensore inverte
+   (`EnvironmentSimulator::integrate_substep`, `environment_simulator.cpp`);
+   il campo `ec_increase_ms_cm_per_milliliter`, ridondante con questa
+   correzione, e stato rimosso da `FertilizerProfile`.
+3. **Il trend Predictive amplificava il rumore del sensore.** La stima
+   N/P/K nasce da una EC corretta per l'umidita con esponente ~1.3
+   (`update_soil_probe_estimates`): un piccolo rumore sulla lettura di
+   umidita produce oscillazioni ampie da un ciclo di controllo al
+   successivo. `PredictiveController::compute()` calcolava pero il trend
+   come differenza grezza a un solo passo (`misura(t) - misura(t-1)`):
+   bastava un singolo campione insolitamente basso, proprio mentre
+   l'intervallo minimo tra dosaggi si riapriva, per proiettare `predicted`
+   ben sotto — a volte anche sotto zero — il valore vero, e far scattare una
+   dose piena mentre la concentrazione reale era gia sopra il target.
+   Corretto filtrando la misura con una media mobile esponenziale
+   (`kSmoothingAlpha = 0.3`, costante di tempo ~3 cicli) prima di derivarne
+   il trend (`controllers.cpp`); non tocca `update()`, l'API piu semplice
+   usata solo dai test.
+4. **Il comando della pompa restava "appeso" dopo un'erogazione esatta.**
+   Come il difetto 1 ma sul lato opposto: quando l'irrigazione richiesta
+   finiva esattamente in un ciclo, `ActuatorSimulator::step()` spegneva la
+   pompa ma non azzerava `command_.requested_irrigation_volume_liters`. Al
+   ciclo successivo, con la pompa gia spenta e nessuna nuova richiesta
+   d'acqua, il fault detector leggeva ancora "comandata" quella richiesta
+   ormai obsoleta e isolava il settore per `commanded_without_response` — un
+   guasto mai avvenuto. Isolamento prolungato, niente irrigazione, terreno
+   che si asciuga fino allo 0% e la stessa esplosione della concentrazione
+   del difetto 1, questa volta senza un solo dosaggio di fertilizzante di
+   mezzo. Corretto azzerando anche quel campo non appena la richiesta e
+   soddisfatta (`ActuatorSimulator::step`, `actuator_simulator.cpp`).
+
+Con tutte e quattro le correzioni, le 20 ricette del catalogo simulate per 7
+giorni non attivano piu alcun `EmergencyLockdown` e la stima del sensore
+resta consistente col valore vero di N/P/K in ogni caso (differenza entro il
+rumore di misura).
 
 Il JSON canonico usa `input_source`. Il precedente campo `sensor` viene ancora
 accettato in lettura per compatibilita, ma ogni nuova serializzazione usa il
@@ -1028,6 +1105,35 @@ python -m pytest backend/tests
 Aprire direttamente il file `dashboard/index.html` con un browser. Non e
 necessario avviare un server web. Il pulsante **Check local status** aggiorna
 lo stato visualizzato a `Dashboard ready`.
+
+### Account e ruoli
+
+L'accesso alla dashboard richiede un account reale, verificato dal backend:
+non e piu una semplice etichetta locale. `init_db()` crea automaticamente,
+alla prima esecuzione, due account dimostrativi con password `pass123`:
+
+| Utente | Ruolo | Password |
+| --- | --- | --- |
+| `admin` | Amministratore | `pass123` |
+| `agronomo` | Agronomo | `pass123` |
+
+Il login (`POST /auth/login`) verifica username e password (hash PBKDF2-HMAC-
+SHA256 con salt, libreria standard) e restituisce un token di sessione opaco,
+valido di default 12 ore (`SMARTHYDRO_SESSION_TTL_SECONDS`). La dashboard
+allega il token alle richieste successive con `Authorization: Bearer <token>`
+e lo riverifica a ogni avvio con `GET /auth/me`, cosi un token scaduto o
+revocato riporta sempre alla schermata di accesso invece di fidarsi di un
+valore ormai stantio salvato nel browser. `POST /auth/logout` invalida la
+sessione anche lato backend.
+
+Il ruolo `Amministratore` sblocca la pagina **Controllo**, dove si trova il
+pannello **Gestione utenti**: da li un amministratore crea nuovi account,
+sia amministratori sia agronomi, indicando utente, password, ruolo e un nome
+visualizzato opzionale (`POST /users`). L'elenco degli account esistenti
+(`GET /users`) e la creazione sono entrambi riservati a chi ha gia un account
+amministratore; il backend applica lo stesso vincolo indipendentemente dalla
+dashboard tramite `require_admin`, quindi non e soltanto un limite
+dell'interfaccia.
 
 ## Ricetta JSON
 

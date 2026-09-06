@@ -364,6 +364,16 @@ public:
 private:
     PredictiveConfig config_;
     std::optional<double> previous_measurement_;
+    // Usato solo da compute(), non da update(): la stima N/P/K arriva da una
+    // EC corretta per l'umidita (esponente ~1.3), quindi un piccolo rumore
+    // sulla lettura di umidita si amplifica in grandi oscillazioni sulla
+    // concentrazione stimata da un ciclo di controllo al successivo. Una
+    // differenza grezza a un solo passo (misura(t) - misura(t-1)) scambia
+    // quel rumore per un trend reale e lo proietta in avanti, spingendo
+    // predicted ben sotto (a volte anche sotto zero) il valore vero appena
+    // prima di una finestra di dosaggio valida: vedi PredictiveController::
+    // compute() in controllers.cpp per la spiegazione completa.
+    std::optional<double> smoothed_measurement_;
 };
 
 /** @brief Parametri associati alla strategia selezionata. */

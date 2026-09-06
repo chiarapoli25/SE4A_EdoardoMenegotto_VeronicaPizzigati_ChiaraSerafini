@@ -277,11 +277,30 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
             "predictive context must not contain negative quantities"};
     }
 
-    const double trend = previous_measurement_.has_value()
-                             ? *value - *previous_measurement_
+    // Filtra la misura con una media mobile esponenziale prima di derivare
+    // il trend: la stima N/P/K nasce da una EC corretta per l'umidita con un
+    // esponente ~1.3 (vedi update_soil_probe_estimates()), quindi un rumore
+    // anche piccolo sulla lettura di umidita si amplifica in oscillazioni
+    // grandi da un ciclo al successivo. Una differenza grezza a un solo
+    // passo scambierebbe quel rumore per un trend reale: bastava un singolo
+    // campione basso, subito prima che l'intervallo minimo tra dosaggi si
+    // riaprisse, per proiettare "predicted" ben sotto (a volte sotto zero)
+    // il valore vero e far scattare una dose piena mentre la concentrazione
+    // reale era gia' sopra il target (osservato in simulazione su substrati
+    // con forti escursioni di umidita, es. "draining"). kSmoothingAlpha=0.3
+    // da una costante di tempo di circa 3 cicli di controllo: abbastanza
+    // per assorbire un campione rumoroso, abbastanza reattivo da inseguire
+    // un cambiamento vero entro un paio d'ore.
+    constexpr double kSmoothingAlpha = 0.3;
+    const double filtered_value = smoothed_measurement_.has_value()
+        ? *smoothed_measurement_ +
+              kSmoothingAlpha * (*value - *smoothed_measurement_)
+        : *value;
+    const double trend = smoothed_measurement_.has_value()
+                             ? filtered_value - *smoothed_measurement_
                              : 0.0;
     const double predicted =
-        *value + trend * config_.prediction_horizon_steps -
+        filtered_value + trend * config_.prediction_horizon_steps -
         config_.water_dilution_gain * input.water_delivered_liters +
         config_.substrate_gain * (input.substrate_factor - 1.0);
     const double remaining_phase_dose = std::max(
@@ -295,12 +314,13 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
             config_.cumulative_dose_gain * remaining_phase_dose,
         config_.command_limits.minimum,
         config_.command_limits.maximum);
-    previous_measurement_ = *value;
+    smoothed_measurement_ = filtered_value;
     return {true, command, predicted, {}};
 }
 
 void PredictiveController::reset() noexcept {
     previous_measurement_.reset();
+    smoothed_measurement_.reset();
 }
 
 std::unique_ptr<IController> ControllerFactory::create(
