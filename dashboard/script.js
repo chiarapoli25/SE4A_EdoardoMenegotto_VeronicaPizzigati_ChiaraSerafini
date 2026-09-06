@@ -791,6 +791,30 @@ async function tickZones() {
   }
 }
 
+/** Wraps already-rendered department cards (one per DEPT_ORDER entry, each
+ * carrying data-dept="N" — see renderDeptCard/renderSimulatorDeptCard) in
+ * the "piantina della serra" chrome: an outer wall, two decorative
+ * entrance tabs, and a "Corridoio centrale" bar between the two rows the
+ * grid naturally falls into (1-2-3 on top, 4-5 below — see the named
+ * grid-template-areas on .dept-grid in styles.css, which is what actually
+ * places d1..d5/corridor/dgap; this function only ever supplies the HTML,
+ * never the layout math). Shared by Home (renderHome/renderDeptGridOnly)
+ * and Simulatore (renderSimulatorView) — same building, two different
+ * pages looking at it. */
+function renderGreenhousePlan(deptCardsHtml) {
+  return `
+    <div class="greenhouse-plan">
+      <span class="greenhouse-entrance greenhouse-entrance-top">Ingresso principale</span>
+      <div class="dept-grid">
+        ${deptCardsHtml}
+        <div class="greenhouse-corridor">Corridoio centrale</div>
+        <div class="greenhouse-gap"><span>Attrezzi</span></div>
+      </div>
+      <span class="greenhouse-entrance greenhouse-entrance-bottom">Ingresso di servizio</span>
+    </div>
+  `;
+}
+
 function renderHome() {
   const zones = STATE.zones;
   const byDept = groupZonesByDepartment(zones);
@@ -799,13 +823,13 @@ function renderHome() {
   const degraded = zones.filter((z) => z.operational_state === "Degraded").length;
   const emergency = zones.filter((z) => z.operational_state === "EmergencyLockdown").length;
 
-  setPageTitle("Reparti della serra", `${total} settori registrati (massimo 9: 4 reparti produttivi × 2 settori + quarantena × 1) · ${online} online`);
+  setPageTitle("Serra", `${total} settori registrati (massimo 9: 4 reparti produttivi × 2 settori + quarantena × 1) · ${online} online`);
 
   const deptCards = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
 
   document.getElementById("view-home").innerHTML = `
     <div class="home-layout">
-      <div class="dept-grid">${deptCards}</div>
+      ${renderGreenhousePlan(deptCards)}
       <aside class="home-summary">
         <div class="side-card">
           <div class="side-card-title">Stato impianto</div>
@@ -847,7 +871,7 @@ function renderDeptCard(n, zones) {
     // of species/phase/operational state), and it's this inner box that's
     // clickable, exactly like a production sector row.
     return `
-      <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card" data-dept="${n}" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
         <div class="dept-card-head">
           <span class="dept-code">REPARTO ${n}</span>
         </div>
@@ -882,7 +906,7 @@ function renderDeptCard(n, zones) {
     return `<button type="button" class="sector-slot-add" data-action="open-add-sector" data-dept="${n}" data-sector="${sn}" ${noRecipes ? `disabled title="Nessuna ricetta disponibile per questo reparto: aggiungine una dalla pagina Ricette prima di creare un nuovo settore."` : ""}>+ Aggiungi settore</button>`;
   }).join("");
   return `
-    <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+    <div class="dept-card" data-dept="${n}" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
       <div class="dept-card-head">
         <span class="dept-code">REPARTO ${n}</span>
         <span class="dept-count">${zones.length} settor${zones.length === 1 ? "e" : "i"}</span>
@@ -1112,7 +1136,16 @@ function renderDeptGridOnly() {
   const grid = document.querySelector("#view-home .dept-grid");
   if (!grid) return;
   const byDept = groupZonesByDepartment(STATE.zones);
-  grid.innerHTML = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
+  const deptCards = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
+  // Rebuilding just the cards would also wipe the corridor/gap filler
+  // (renderGreenhousePlan) since they live inside this same .dept-grid —
+  // put them back rather than only ever rendering them via a full
+  // renderHome().
+  grid.innerHTML = `
+    ${deptCards}
+    <div class="greenhouse-corridor">Corridoio centrale</div>
+    <div class="greenhouse-gap"></div>
+  `;
 }
 
 async function loadAlerts(zones) {
@@ -1870,7 +1903,7 @@ function renderRecipeModal() {
 /* from switchView() (navigating away from the Simulatore page          */
 /* entirely, pop-up open or not).                                       */
 /*                                                                       */
-/* Page layout: the SAME department-card grid as "Reparti della serra"  */
+/* Page layout: the SAME department-card grid as "Serra"                */
 /* (renderDeptCard/renderSectorRow in the Home section above), reused    */
 /* via renderSimulatorSectorRow/renderSimulatorDeptCard rather than a   */
 /* catalog-wide recipe picker — restricted to departments 1-4 (no       */
@@ -2031,7 +2064,13 @@ function renderSimulatorView() {
     `${simulable.length} settor${simulable.length === 1 ? "e" : "i"} disponibil${simulable.length === 1 ? "e" : "i"} per la simulazione · nessun dato reale coinvolto`
   );
 
-  const deptCards = [1, 2, 3, 4].map((n) => renderSimulatorDeptCard(n, byDept[n] || [])).join("");
+  // Reparto 5 (quarantena) never has an active_recipe_id (see
+  // ZoneCreate._validate_department_role backend-side) and so is never
+  // simulable — shown as a muted, non-interactive room all the same
+  // rather than leaving a hole in the floor plan (renderGreenhousePlan
+  // always expects all 5).
+  const deptCards = [1, 2, 3, 4].map((n) => renderSimulatorDeptCard(n, byDept[n] || [])).join("")
+    + renderSimulatorQuarantineCard();
 
   document.getElementById("view-simulator").innerHTML = `
     <div class="simulator-intro simulator-intro-prominent">
@@ -2049,12 +2088,27 @@ function renderSimulatorView() {
         <span class="hint">un'unica simulazione per tutti i ${simulable.length} settor${simulable.length === 1 ? "e" : "i"} con ricetta assegnata — stesso arco temporale per tutti</span>
       </div>` : ""}
     </div>
-    <div class="dept-grid">${deptCards}</div>
+    ${renderGreenhousePlan(deptCards)}
     ${simulable.length === 0 && STATE.zonesLoaded
       ? '<div class="simulator-empty" style="margin-top:20px">Nessun settore produttivo ha ancora una ricetta assegnata: non c\'è ancora nulla da simulare.</div>'
       : ""}
   `;
   maybeFetchHomeExtras(); // plant counts shown on each tile — same throttled fetch Home uses
+}
+
+/** Reparto 5's room in the Simulatore floor plan — never clickable (see
+ * the comment above its call site): quarantena has no recipe and nothing
+ * to simulate, so it's rendered muted instead of omitted, keeping all 5
+ * reparti visible as rooms on both pages. */
+function renderSimulatorQuarantineCard() {
+  const meta = DEPT_META[5];
+  return `
+    <div class="dept-card dept-card-muted" data-dept="5" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card-head"><span class="dept-code">REPARTO 5</span></div>
+      <div class="dept-title">${escapeHtml(DEPT_FALLBACK_NAMES[5])}</div>
+      <div class="simulator-empty" style="margin:auto 0">Zona di quarantena: non coltivabile, quindi non simulabile.</div>
+    </div>
+  `;
 }
 
 /** One department card for the Simulatore grid — same visual shell as
@@ -2069,7 +2123,7 @@ function renderSimulatorDeptCard(n, zones) {
     ? zones.map((z) => renderSimulatorSectorRow(z)).join("")
     : '<div class="sector-slot-empty">Nessun settore registrato in questo reparto.</div>';
   return `
-    <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+    <div class="dept-card" data-dept="${n}" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
       <div class="dept-card-head">
         <span class="dept-code">REPARTO ${n}</span>
         <span class="dept-count">${zones.length} settor${zones.length === 1 ? "e" : "i"}</span>
