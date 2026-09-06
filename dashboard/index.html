@@ -15,7 +15,7 @@
         <div class="login-brand-panel">
           <div class="login-brand">Smart<span class="brand-accent">Hydro</span></div>
           <div class="login-tag">CONTROL ROOM</div>
-          <p class="login-brand-text">Indica come vuoi essere identificato nella dashboard. Il nome e il ruolo restano su questo dispositivo.</p>
+          <p class="login-brand-text">Accedi con l'account creato da un amministratore per entrare nella control room.</p>
           <div class="sidebar-footer login-status">
             <span class="status-dot"></span>
             <div>
@@ -27,19 +27,15 @@
         <div class="login-form-panel">
           <div>
             <h1 class="login-title">Accesso alla dashboard</h1>
-            <p class="login-subtitle">Nessuna password: scegli un nome e un ruolo da mostrare accanto alle azioni sull'impianto.</p>
+            <p class="login-subtitle">Le credenziali sono verificate dal backend SmartHydro.</p>
           </div>
           <div class="login-field">
-            <label for="login-name" class="login-label">NOME</label>
-            <input type="text" id="login-name" class="login-input" placeholder="es. Chiara Belotti" autocomplete="off">
+            <label for="login-username" class="login-label">UTENTE</label>
+            <input type="text" id="login-username" class="login-input" placeholder="es. agronomo" autocomplete="username">
           </div>
           <div class="login-field">
-            <label for="login-role" class="login-label">RUOLO</label>
-            <select id="login-role" class="login-input login-select">
-              <option value="Agronomo">Agronomo</option>
-              <option value="Amministratore">Amministratore</option>
-            </select>
-            <div class="login-role-hint">mostrato accanto al tuo nome; "Amministratore" sblocca anche la pagina Controllo — per il resto è solo un'etichetta, non una vera autenticazione</div>
+            <label for="login-password" class="login-label">PASSWORD</label>
+            <input type="password" id="login-password" class="login-input" placeholder="••••••••" autocomplete="current-password">
           </div>
           <div id="login-error" class="login-error hidden"></div>
           <button type="button" id="login-submit" class="btn btn-primary login-submit">Accedi</button>
@@ -47,7 +43,7 @@
       </div>
       <div class="login-disclaimer">
         <span class="login-disclaimer-dot"></span>
-        <span>Accesso dimostrativo — nessun dato di login viene verificato.</span>
+        <span>Account dimostrativi: admin / agronomo — password pass123 per entrambi.</span>
       </div>
     </div>
 
@@ -62,7 +58,7 @@
               <div class="sidebar-user-role" id="sidebar-user-role"></div>
             </div>
           </div>
-          <button type="button" class="sidebar-user-switch" id="sidebar-user-switch">CAMBIA UTENTE</button>
+          <button type="button" class="sidebar-user-switch" id="sidebar-logout">ESCI</button>
         </div>
         <nav class="nav" id="main-nav">
           <button type="button" class="nav-item" data-view="home">

@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 5,
   "phase_sequences": {
     "foliage": [
       {"key": "establishment", "name": "Avvio e attecchimento", "duration_hours": 336, "start_hour": 7, "photoperiod_offset_hours": -2, "light_factor": 0.75, "water_offset_percent": 4, "nitrogen_factor": 0.55, "phosphorus_factor": 0.65, "potassium_factor": 0.65, "dose_factor": 0.5, "ph_offset": 0.1},

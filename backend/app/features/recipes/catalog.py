@@ -120,7 +120,16 @@ class _RecipeSeed(_CatalogModel):
 
 
 class _CatalogProfiles(_CatalogModel):
-    schema_version: int = Field(ge=2, le=2)
+    # v2 e' il vecchio catalogo multifase; v3 aveva provato Threshold come
+    # default N/P/K al posto di Predictive (poi tornato indietro); v4 aveva
+    # ricalcolato response_gain dalla banda della ricetta ma senza azzerare
+    # cumulative_dose_gain, causando una fuga in avanti della stima una volta
+    # raggiunto il setpoint (vedi _predictive_parameters); v5 e' l'unica
+    # accettata ora. Il limite superiore va spostato a ogni nuovo bump: e'
+    # quello che fa scattare seed_recipe_catalog() a rimigrare le ricette
+    # gia' importate a una versione precedente (vedi la colonna
+    # recipe_catalog_imports.catalog_version).
+    schema_version: int = Field(ge=2, le=5)
     phase_sequences: dict[str, list[_PhaseProfile]] = Field(min_length=1)
     light_profiles: dict[str, _LightProfile] = Field(min_length=1)
     water_profiles: dict[str, _WaterProfile] = Field(min_length=1)
@@ -285,26 +294,64 @@ def _controller(
 
 
 def _predictive_parameters(
-    setpoint: float,
-    variable: str,
+    target: dict,
     command_max: float,
 ) -> dict:
+    """@brief Parametri Predictive di bootstrap per un controllore N/P/K.
+
+    @details Le valvole di concentrato si aprono solo mentre la pompa
+    dell'acqua sta irrigando (si veda `apply_decisions` in
+    `edge_runtime_actuation.cpp`), non a ogni ciclo di controllo: le
+    occasioni per dosare sono percio' rare (in pratica una manciata al
+    giorno, secondo la frequenza di irrigazione della ricetta), quindi ogni
+    dose deve valere per l'attesa fino alla prossima, non solo per il ciclo
+    corrente. `response_gain` viene percio' calcolato dalla banda della
+    fase (`allowed_range`) invece che da una costante fissa uguale per ogni
+    pianta: un errore grande quanto il margine della banda spinge gia' il
+    comando vicino a `command_max`, cosi' un vero deficit viene corretto in
+    una sola occasione utile invece di richiedere molti piccoli dosaggi che
+    quasi mai coincidono con un'irrigazione. `prediction_horizon_steps` resta
+    basso (il trend e' calcolato ogni singolo ciclo di controllo, 15 minuti
+    di norma: proiettarlo troppo in avanti amplificherebbe il rumore della
+    stima invece di anticipare un bisogno reale).
+
+    `cumulative_dose_gain` e' azzerato, a differenza della vecchia taratura:
+    in PredictiveController::compute() (controllers.cpp) si somma al termine
+    di errore SENZA che quest'ultimo possa scendere sotto zero
+    (`command_minimum = 0`, una valvola puo' solo aggiungere fertilizzante,
+    mai ritirarlo). Con un `response_gain` piccolo il termine restava
+    trascurabile e il problema passava inosservato, ma e' comunque un
+    guadagno positivo incondizionato: appena la stima raggiunge il setpoint
+    il termine d'errore si annulla e resta solo questo, che continua a
+    spingere il comando verso l'alto finche' rimane dose di fase da erogare
+    — una fuga in avanti, verificata fino a piu' di 3 volte il setpoint in
+    30 giorni di simulazione. Il preventivo di dose per fase resta comunque
+    tracciato (si veda `suggested_phase_dose_milliliters`) per finalita'
+    informative, ma non deve mai forzare un dosaggio indipendente dal reale
+    bisogno.
+    """
+    setpoint = target["setpoint"]
+    margin = max(
+        target["allowed_range"]["maximum"] - setpoint,
+        setpoint - target["allowed_range"]["minimum"],
+        1e-6,
+    )
     gains = {
-        "nitrogen": (0.03, 2.0, 0.04, 4.0),
-        "phosphorus": (0.05, 0.8, 0.03, 2.0),
-        "potassium": (0.025, 2.5, 0.04, 5.0),
+        "nitrogen": (2.0, 4.0),
+        "phosphorus": (0.8, 2.0),
+        "potassium": (2.5, 5.0),
     }
-    response, dilution, cumulative, substrate = gains[variable]
+    dilution, substrate = gains[target["variable"]]
     return {
         "setpoint": setpoint,
-        "prediction_horizon_steps": 4.0,
-        "response_gain": response,
+        "prediction_horizon_steps": 1.0,
+        "response_gain": command_max / margin,
         "neutral_command": 0.0,
         "command_minimum": 0.0,
         "command_maximum": command_max,
         "direction": "increases",
         "water_dilution_gain": dilution,
-        "cumulative_dose_gain": cumulative,
+        "cumulative_dose_gain": 0.0,
         "substrate_gain": substrate,
     }
 
@@ -513,8 +560,7 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
             _controller(
                 variable,
                 _predictive_parameters(
-                    first_targets[variable]["setpoint"],
-                    variable,
+                    first_targets[variable],
                     maximum_command_milliliters,
                 ),
                 "mg/L",

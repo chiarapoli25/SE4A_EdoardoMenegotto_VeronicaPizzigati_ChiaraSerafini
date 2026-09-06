@@ -82,26 +82,32 @@ const SIMULATION_DURATION_PRESETS = [
 ];
 
 const STRATEGIES = ["Threshold", "PID", "Predictive"];
-// Threshold/PID are the only two Strategy values that make sense as a real
-// per-variable choice (see StrategyName in backend/app/features/zones/
-// models.py) — Predictive is always forced for the three nutrients, never a
-// real choice, and there is no separate "photoperiod" Strategy anywhere in
-// the backend (photoperiod is a fixed recipe timing property, not a
-// controller strategy), so it's never offered as one here either.
-const CHOOSABLE_STRATEGIES = ["Threshold", "PID"];
-// The three variables the plant-wide Strategy panel (Controllo page) lets an
+// Predictive used to be forced for the three nutrients (the only source
+// available for N/P/K is a model estimate, not a direct sensor) and was
+// therefore excluded here as "never a real choice". That lock was a policy
+// choice, not a technical one — process_value()/source_value() on the Edge
+// resolve a model estimate identically for any Strategy (see
+// control_system.cpp's required_default_strategy()) — and has been lifted:
+// an Amministratore can now pick all three, from this same bulk panel, for
+// every variable including N/P/K. There is still no separate "photoperiod"
+// Strategy anywhere in the backend (photoperiod is a fixed recipe timing
+// property, not a controller strategy), so it's never offered as one here.
+const CHOOSABLE_STRATEGIES = ["Threshold", "PID", "Predictive"];
+// The variables the plant-wide Strategy panel (Controllo page) lets an
 // Amministratore actually choose a Strategy for. Kept in this fixed order
-// wherever the panel lists them.
-const GLOBAL_STRATEGY_VARIABLES = ["soil_moisture", "light", "ph"];
+// wherever the panel lists them. Nitrogen/phosphorus/potassium joined this
+// list once Threshold/PID became valid choices for them too (see the
+// CHOOSABLE_STRATEGIES comment above).
+const GLOBAL_STRATEGY_VARIABLES = [
+  "soil_moisture", "light", "ph", "nitrogen", "phosphorus", "potassium",
+];
 
-// Demo login roles (see the "Login screen" section far below): purely a
-// local-only display identity, no real authentication — but "Amministratore"
-// is the one role value with an actual effect on what's shown (gates the
-// Controllo page/nav item, see isAdmin()). Kept to exactly these two per an
-// explicit later decision — "Grower" used to be a third option; removing it
-// here is what makes loadDemoUser() below treat a previously-saved Grower
-// user as invalid.
-const VALID_ROLES = ["Agronomo", "Amministratore"];
+// Account roles (see the "Login screen" section far below), verified by the
+// backend on every login — "admin" is the one role value with an actual
+// effect on what's shown (gates the Controllo page/nav item and the "Gestione
+// utenti" panel inside it, see isAdmin()) and on what the backend itself
+// accepts (POST/GET /users, see backend/app/features/users/dependencies.py).
+const VALID_ROLES = ["agronomo", "admin"];
 
 const OP_META = {
   Nominal: { color: "#1f7a51" },
@@ -142,18 +148,18 @@ const SUBSTRATE_LABELS = {
 /* ------------------------------------------------------------------ */
 /* Recipe form (create/edit) constants                                */
 /*                                                                    */
-/* Mirrors the fixed variable <-> input_source/actuator/default_strategy */
-/* associations enforced server-side in                               */
-/* backend/app/features/recipes/models.py                             */
-/* (_REQUIRED_INPUT_SOURCE / _REQUIRED_ACTUATOR /                     */
-/* _required_default_strategy) and validated again, more strictly, by */
-/* smarthydro::RecipeControlSystem::confirm_configuration() on the    */
-/* Edge — a recipe whose N/P/K selected_strategy isn't Predictive     */
-/* fails that confirmation and, since recipe adoption now confirms    */
-/* synchronously (see control_system.cpp's confirm_all_from_recipe),  */
-/* would reject the whole ActivateCultivation/LoadRecipe command.     */
-/* Locking the form's Strategy choice for N/P/K prevents ever          */
-/* constructing a payload that could trigger that at adoption time.   */
+/* Mirrors the fixed variable <-> input_source/actuator associations  */
+/* enforced server-side in backend/app/features/recipes/models.py     */
+/* (_REQUIRED_INPUT_SOURCE / _REQUIRED_ACTUATOR). default_strategy is  */
+/* also enforced there (_required_default_strategy) and, redundantly, */
+/* by smarthydro::RecipeControlSystem::validate_recipe() on the Edge — */
+/* REQUIRED_DEFAULT_STRATEGY below must keep matching both, or a       */
+/* submitted recipe comes back as a 422 (it's sent unconditionally,   */
+/* see buildRecipePayload). selected_strategy is a free choice among   */
+/* STRATEGIES for every variable, N/P/K included: Threshold, PID and   */
+/* Predictive are all valid regardless of input_source (see the        */
+/* CHOOSABLE_STRATEGIES comment above for why N/P/K used to be locked  */
+/* to Predictive and no longer are).                                   */
 /* ------------------------------------------------------------------ */
 
 const NUTRIENT_VARIABLES = ["nitrogen", "phosphorus", "potassium"];
@@ -308,7 +314,7 @@ const STATE = {
   // /simulations — never touches any zone itself, only reads
   // active_recipe_id for each once when the run starts). Shape:
   // { greenhouse: true, durationDays, starting, job, result, activeZoneId,
-  //   error, chartVariable, chartView, playback } — job is the polled
+  //   error, chartVariable, chartView } — job is the polled
   // SimulationJob (queued/running/succeeded/failed/cancelled); result is
   // an ARRAY of SimulationPreview, one per zone, fetched once job
   // succeeds (see activeSimulationPreview); activeZoneId picks which one
@@ -329,11 +335,26 @@ const STATE = {
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
-  // The logged-in demo identity (see "Login screen" below), mirrored into
-  // STATE so isAdmin()/nav visibility/switchView's Controllo gate can read
-  // it synchronously without touching localStorage on every check. null
-  // while the login screen is showing.
+  // The account returned by POST /auth/login (or re-verified by GET
+  // /auth/me on boot — see the "Login screen" section below): { token,
+  // username, display_name, role }. Mirrored into STATE so isAdmin()/nav
+  // visibility/switchView's Controllo gate and apiRequest()'s Authorization
+  // header can read it synchronously. null while the login screen is
+  // showing.
   currentUser: null,
+
+  // "Gestione utenti" panel (Controllo page, admin-only): the account list
+  // and the create-account form — see ensureUsersLoaded()/
+  // renderUserManagementPanel()/submitCreateUser().
+  users: {
+    list: [],
+    loaded: false,
+    loading: false,
+    error: null,
+    form: { username: "", password: "", displayName: "", role: "agronomo" },
+    // null | { kind: "sending" } | { kind: "success"|"error", message }
+    status: null,
+  },
 
   // Plant-wide Strategy panel (Controllo page, Amministratore-only): one
   // Strategy choice per variable in GLOBAL_STRATEGY_VARIABLES, applied as a
@@ -472,6 +493,13 @@ async function apiRequest(method, path, { params, body } = {}) {
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
+  }
+  // Attaches the session token once one exists. Harmless on every endpoint
+  // that doesn't require an account (the vast majority — see main.py: only
+  // /users and /auth/me are gated) and required for the admin-only /users
+  // endpoints the "Gestione utenti" panel calls.
+  if (STATE.currentUser && STATE.currentUser.token) {
+    opts.headers["Authorization"] = `Bearer ${STATE.currentUser.token}`;
   }
   const res = await fetch(url, opts);
   const text = await res.text();
@@ -615,12 +643,13 @@ function groupZonesByDepartment(zones) {
   return map;
 }
 
-/** Whether the logged-in demo identity is "Amministratore" — the one role
- * value that actually gates something (the Controllo page/nav item). Purely
- * a navigation/display gate, same as the rest of this login system: nothing
- * here or on the backend actually authenticates the role. */
+/** Whether the logged-in account has the "admin" role — the one role value
+ * that actually gates something client-side (the Controllo page/nav item and
+ * the "Gestione utenti" panel). The backend enforces the same rule
+ * independently on POST/GET /users (require_admin), so this is a UI
+ * convenience, not the only line of defense. */
 function isAdmin() {
-  return !!STATE.currentUser && STATE.currentUser.role === "Amministratore";
+  return !!STATE.currentUser && STATE.currentUser.role === "admin";
 }
 
 /** Production zones (department 1-4 — never Quarantena) that currently have
@@ -715,19 +744,40 @@ function bandCalc(value, min, max) {
 /* with. Fine-tuning individual gains is out of scope for this UI.    */
 /* ------------------------------------------------------------------ */
 
-function buildStrategyParameters(strategy, target) {
+/**
+ * `variableKey` matters for N/P/K: unlike soil_moisture/light/ph (which can
+ * push the controlled variable in either direction, or at least sit at a
+ * true zero), a fertilizer valve can only add — it can never "un-dose" — so
+ * a Threshold/PID/Predictive command for a nutrient must never be allowed
+ * to go negative, and its command scale is a dose in mL (a handful of mL,
+ * see output_limits.maximum_dose_per_command_milliliters), not the
+ * L/W-scale magic numbers used for the other three.
+ */
+function buildStrategyParameters(strategy, target, variableKey) {
   const setpoint = target ? target.setpoint : 0;
   const min = target ? target.allowed_range.minimum : 0;
   const max = target ? target.allowed_range.maximum : Math.max(setpoint + 1, 1);
+  const doseOnly = NUTRIENT_VARIABLES.includes(variableKey);
   if (strategy === "Threshold") {
-    return { lower_threshold: min, upper_threshold: max, direction: "increases", active_command: 1.0, inactive_command: 0.0, bidirectional: false };
+    return {
+      lower_threshold: min, upper_threshold: max, direction: "increases",
+      active_command: doseOnly ? 2.0 : 1.0,
+      inactive_command: 0.0, bidirectional: false,
+    };
   }
   if (strategy === "PID") {
-    return { setpoint, proportional_gain: 1.0, integral_gain: 0.00001, derivative_gain: 0.0, command_minimum: -0.5, command_maximum: 0.5, direction: "increases" };
+    return doseOnly
+      ? { setpoint, proportional_gain: 0.05, integral_gain: 0.0001, derivative_gain: 0.0, command_minimum: 0.0, command_maximum: 3.0, direction: "increases" }
+      : { setpoint, proportional_gain: 1.0, integral_gain: 0.00001, derivative_gain: 0.0, command_minimum: -0.5, command_maximum: 0.5, direction: "increases" };
   }
+  // command_maximum e' una scala di comando (litri/watt/mL a seconda
+  // dell'attuatore), non va confusa con `max` sopra — quella e' la banda
+  // della VARIABILE controllata (es. 170 mg/L), un'unita' completamente
+  // diversa: usarla qui produrrebbe comandi enormi e privi di senso fisico.
   return {
-    setpoint, prediction_horizon_steps: 4.0, response_gain: 0.05, neutral_command: 0.0,
-    command_minimum: 0.0, command_maximum: Math.max(1.0, max), direction: "increases",
+    setpoint, prediction_horizon_steps: 1.0, response_gain: 0.02, neutral_command: 0.0,
+    command_minimum: 0.0, command_maximum: doseOnly ? 3.0 : 1.0,
+    direction: "increases",
     water_dilution_gain: 1.0, cumulative_dose_gain: 0.02, substrate_gain: 2.0,
   };
 }
@@ -1928,7 +1978,6 @@ function renderRecipeModal() {
 function discardActiveSimulationIfAny() {
   const sim = STATE.simulation;
   clearPoll("simulation-job");
-  cancelSimulationPlayback();
   if (!sim || !sim.job) return;
   if (sim.job.status === "queued" || sim.job.status === "running") {
     apiDelete(`/simulations/${encodeURIComponent(sim.job.id)}`).catch(() => {});
@@ -1939,7 +1988,6 @@ function restartSimulationSetup() {
   const sim = STATE.simulation;
   if (!sim) return;
   clearPoll("simulation-job");
-  cancelSimulationPlayback();
   STATE.simulation = {
     greenhouse: true,
     durationDays: sim.durationDays || 7,
@@ -1950,7 +1998,6 @@ function restartSimulationSetup() {
     error: null,
     chartVariable: sim.chartVariable || "soil_moisture",
     chartView: sim.chartView || "single",
-    playback: null,
   };
   renderModal();
 }
@@ -2189,7 +2236,6 @@ function openGreenhouseSimulatorModal(preferredZoneId) {
       error: null,
       chartVariable: "soil_moisture",
       chartView: "single",
-      playback: null,
     };
   } else if (preferredZoneId) {
     STATE.simulation.activeZoneId = preferredZoneId;
@@ -2335,7 +2381,6 @@ function simZoneOptionLabel(preview) {
 function renderSimulationResult(sim) {
   const greenhouse = Array.isArray(sim.result);
   const result = activeSimulationPreview(sim);
-  const playing = !!(sim.playback && sim.playback.active);
   const gridView = sim.chartView === "grid";
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   return `
@@ -2350,13 +2395,6 @@ function renderSimulationResult(sim) {
         <span class="hint">${sim.result.length} settori simulati sullo stesso arco temporale</span>
       </div>
     </div>` : ""}
-    <div class="sim-result-toolbar">
-      ${playing
-        ? `<span class="sim-playback-hint">Riproduzione in accelerato in corso…</span>
-           <button type="button" class="btn" data-action="sim-playback-skip">Salta al risultato completo →</button>`
-        : `<span class="sim-playback-hint">Il risultato completo è già mostrato qui sotto.</span>
-           <button type="button" class="btn" data-action="sim-playback-start">▶ Riproduci in accelerato</button>`}
-    </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
         <span class="title">Andamento simulato</span>
@@ -2431,80 +2469,6 @@ const SIM_ACTUATOR_ROWS = [
   { key: "valve_ph-down", short: "pH−" },
 ];
 
-/* -------------------------------------------------------------------- */
-/* "Riproduci in accelerato" — client-side animated replay of an        */
-/* already-complete simulation result. GET /simulations/{id}/result     */
-/* only ever returns once the job is "succeeded" (409 otherwise), so     */
-/* there is no such thing as live-streaming an in-progress computation — */
-/* this instead reveals an already-fetched, already-complete result     */
-/* progressively over a few real seconds. Both charts are redrawn with   */
-/* the same full data either way; only how much of it is clipped by      */
-/* revealT differs, which is what guarantees the animation's end state   */
-/* is pixel-identical to the static "risultato completo" view.           */
-/* -------------------------------------------------------------------- */
-
-const SIMULATION_PLAYBACK_DURATION_MS = 5000;
-
-function startSimulationPlayback() {
-  const sim = STATE.simulation;
-  if (!sim || !sim.result) return;
-  cancelSimulationPlayback();
-  const series = (activeSimulationPreview(sim) || {}).series || [];
-  const minT = series.length ? series[0].start_seconds : 0;
-  const maxT = series.length ? series[series.length - 1].end_seconds : 0;
-  sim.playback = {
-    active: true,
-    minT,
-    maxT,
-    revealT: minT,
-    startedAt: null,
-    durationMs: SIMULATION_PLAYBACK_DURATION_MS,
-    rafId: null,
-  };
-  renderModal();
-  sim.playback.rafId = requestAnimationFrame(tickSimulationPlayback);
-}
-
-function tickSimulationPlayback(ts) {
-  const sim = STATE.simulation;
-  if (!sim || !sim.playback || !sim.playback.active) return;
-  const pb = sim.playback;
-  if (pb.startedAt === null) pb.startedAt = ts;
-  const frac = pb.durationMs > 0 ? Math.min(1, (ts - pb.startedAt) / pb.durationMs) : 1;
-  pb.revealT = pb.minT + (pb.maxT - pb.minT) * frac;
-  drawSimulationChart();
-  drawActuatorTimelineChart();
-  if (frac >= 1) {
-    finishSimulationPlayback();
-  } else {
-    pb.rafId = requestAnimationFrame(tickSimulationPlayback);
-  }
-}
-
-/** Ends the animation and falls back to the ordinary static render — the
- * same code path "Mostra risultato completo" always used, so there is no
- * separate "final frame" to keep in sync with it. */
-function finishSimulationPlayback() {
-  const sim = STATE.simulation;
-  if (!sim) return;
-  sim.playback = null;
-  renderModal();
-}
-
-function skipSimulationPlayback() {
-  finishSimulationPlayback();
-}
-
-/** Pure cleanup — cancels any pending animation frame without redrawing.
- * Called before STATE.simulation is replaced or torn down (new recipe,
- * restart, navigating away) so a stray rAF never fires against a
- * detached/replaced canvas. */
-function cancelSimulationPlayback() {
-  const sim = STATE.simulation;
-  if (sim && sim.playback && sim.playback.rafId) cancelAnimationFrame(sim.playback.rafId);
-  if (sim) sim.playback = null;
-}
-
 function renderSimulationSummary(summary) {
   const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
     .map(([k, v]) => `<div class="kv-row"><span class="k">${escapeHtml(SIM_FERTILIZER_LABELS[k] || k)}</span><b class="v">${fmtNum(v, 0)} mL</b></div>`)
@@ -2560,24 +2524,22 @@ function fmtDurationHM(totalSeconds) {
 /** Draws either the single selected-variable canvas, or (chartView ===
  * "grid", see the "Vedi tutti i grafici" toggle) every VARIABLES entry into
  * its own small canvas at once — same underlying drawSimulationSeriesChart
- * either way, just once per variable in grid mode. Playback (revealT) is
- * shared across all of them so the whole grid animates in lockstep. */
+ * either way, just once per variable in grid mode. */
 function drawSimulationChart() {
   const sim = STATE.simulation;
   const preview = activeSimulationPreview(sim);
   if (!preview) return;
-  const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
   if (sim.chartView === "grid") {
     VARIABLES.forEach((v) => {
       const canvas = document.getElementById(`simulation-chart-${v.key}`);
-      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v, revealT);
+      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v);
     });
     return;
   }
   const canvas = document.getElementById("simulation-chart");
   if (!canvas) return;
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
-  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta, revealT);
+  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta);
 }
 
 function drawActuatorTimelineChart() {
@@ -2585,8 +2547,7 @@ function drawActuatorTimelineChart() {
   const sim = STATE.simulation;
   const preview = activeSimulationPreview(sim);
   if (!canvas || !preview) return;
-  const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
-  drawActuatorTimeline(canvas, preview.actuator_intervals || [], preview.series, preview.phases, revealT);
+  drawActuatorTimeline(canvas, preview.actuator_intervals || [], preview.series, preview.phases);
 }
 
 /**
@@ -2598,15 +2559,8 @@ function drawActuatorTimelineChart() {
  * own total duration don't exist (a finished recipe just holds on its
  * last phase), so the last phase's band is extended to the end of the
  * simulated span rather than leaving a gap.
- *
- * revealT (optional): when set, clips everything drawn to t <= revealT —
- * used by the "Riproduci in accelerato" playback to reveal the (already
- * fully computed) result progressively. Axis domains (minV/maxV/minT/maxT)
- * are always computed from the FULL dataset regardless, so the axes never
- * jitter mid-animation and the end state is pixel-identical to passing no
- * revealT at all (the static "risultato completo" view).
  */
-function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
+function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -2642,7 +2596,6 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
   const minT = series[0].start_seconds;
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
-  const revealCap = revealT != null ? Math.min(Math.max(revealT, minT), maxT) : maxT;
 
   let minV = Math.min(...points.map((p) => p.min));
   let maxV = Math.max(...points.map((p) => p.max));
@@ -2684,7 +2637,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
     const target = ph.targets[varMeta.key];
     if (!target) return;
     const segStart = Math.max(ph.start_seconds, minT);
-    const segEnd = Math.min(i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT), revealCap);
+    const segEnd = i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT);
     const bx0 = x(segStart);
     const bx1 = x(segEnd);
     if (bx1 <= bx0) return;
@@ -2708,24 +2661,19 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
     }
   });
 
-  // Progressively revealed subset for the playback animation — point by
-  // point, as the user's own spec asked for ("punto per punto"). Unset
-  // revealT (the ordinary static render) keeps every point.
-  const drawPoints = revealT != null ? points.filter((p) => (p.t0 + p.t1) / 2 <= revealCap) : points;
-
   // Observed min/max spread per bucket (visible mainly on aggregated,
   // long-duration simulations where each point covers many raw steps).
-  if (drawPoints.length) {
+  if (points.length) {
     ctx.fillStyle = "rgba(31,122,81,0.14)";
     ctx.beginPath();
-    drawPoints.forEach((p, i) => {
+    points.forEach((p, i) => {
       const px = x((p.t0 + p.t1) / 2);
       const py = y(p.max);
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     });
-    for (let i = drawPoints.length - 1; i >= 0; i--) {
-      const px = x((drawPoints[i].t0 + drawPoints[i].t1) / 2);
-      ctx.lineTo(px, y(drawPoints[i].min));
+    for (let i = points.length - 1; i >= 0; i--) {
+      const px = x((points[i].t0 + points[i].t1) / 2);
+      ctx.lineTo(px, y(points[i].min));
     }
     ctx.closePath();
     ctx.fill();
@@ -2734,7 +2682,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
     ctx.strokeStyle = "#1f7a51";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    drawPoints.forEach((p, i) => {
+    points.forEach((p, i) => {
       const px = x((p.t0 + p.t1) / 2);
       const py = y(p.avg);
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
@@ -2759,13 +2707,8 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
  * drawSimulationSeriesChart above, so this canvas's plot area lines up
  * pixel-for-pixel under the sensor chart's and a valve opening visibly
  * lines up with whatever sensor reading triggered it.
- *
- * revealT (optional): same contract as drawSimulationSeriesChart — clips
- * each interval's drawn end to revealT (bars visibly "grow" during
- * playback) while every other computed value (minT/maxT, row layout,
- * phase-boundary positions) stays derived from the full dataset.
  */
-function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
+function drawActuatorTimeline(canvas, intervals, series, phases) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -2791,7 +2734,6 @@ function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
   const minT = series[0].start_seconds;
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
-  const revealCap = revealT != null ? Math.min(Math.max(revealT, minT), maxT) : maxT;
 
   const x = (t) => pad.l + ((t - minT) / spanT) * w;
 
@@ -2816,12 +2758,11 @@ function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
 
   // Phase boundary lines — same source/positions as the sensor chart
   // above, so a phase change lines up visually between the two stacked
-  // canvases; hidden past revealCap so a future phase change doesn't leak
-  // through before its data has been revealed.
+  // canvases.
   ctx.strokeStyle = "#d8e2da";
   ctx.lineWidth = 1;
   phases.forEach((ph, i) => {
-    if (i === 0 || ph.start_seconds > revealCap) return;
+    if (i === 0 || ph.start_seconds > maxT) return;
     const bx = x(Math.min(Math.max(ph.start_seconds, minT), maxT));
     ctx.beginPath();
     ctx.moveTo(bx, pad.t);
@@ -2829,16 +2770,16 @@ function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
     ctx.stroke();
   });
 
-  // One bar per active interval, clipped to revealCap.
+  // One bar per active interval.
   ctx.fillStyle = "rgba(31,122,81,0.55)";
   const inset = rowH * 0.28;
   SIM_ACTUATOR_ROWS.forEach((row, i) => {
     const ry = pad.t + rowH * i;
     const barH = Math.max(rowH - inset * 2, 2);
     intervals
-      .filter((iv) => iv.actuator === row.key && iv.start_seconds <= revealCap)
+      .filter((iv) => iv.actuator === row.key && iv.start_seconds <= maxT)
       .forEach((iv) => {
-        const end = Math.min(iv.end_seconds, revealCap);
+        const end = Math.min(iv.end_seconds, maxT);
         if (end <= iv.start_seconds) return;
         const bx0 = x(iv.start_seconds);
         const bx1 = x(end);
@@ -2976,12 +2917,9 @@ function removeRecipeFormPhase(idx) {
 
 /**
  * Client-side mirror of backend/app/features/recipes/models.py's
- * PhaseVariableTarget._check_range_chain (and the N/P/K -> Predictive
- * lock enforced at the Edge by RecipeControlSystem::confirm_configuration,
- * see the NUTRIENT_VARIABLES comment above): every rule checked here is
+ * PhaseVariableTarget._check_range_chain: every rule checked here is
  * checked again server-side, so this exists purely to turn a would-be 422
- * (or, for the N/P/K case, a would-be rejected recipe adoption at the
- * Edge) into a clear Italian message before the request is ever sent.
+ * into a clear Italian message before the request is ever sent.
  */
 function validateRecipeForm(draft) {
   const errors = [];
@@ -3038,9 +2976,6 @@ function validateRecipeForm(draft) {
 
   VARIABLES.forEach((v) => {
     const c = draft.controllers[v.key];
-    if (NUTRIENT_VARIABLES.includes(v.key) && c.selected_strategy !== "Predictive") {
-      errors.push(`${v.label}: la strategia deve essere Predictive per le variabili nutritive (azoto, fosforo, potassio).`);
-    }
     OUTPUT_LIMIT_FIELDS.forEach((f) => {
       const val = Number(c.output_limits[f.key]);
       if (!isFinite(val) || val < 0) errors.push(`${v.label}: il limite di sicurezza "${f.label}" deve essere un numero non negativo.`);
@@ -3080,10 +3015,10 @@ function buildRecipePayload(draft) {
     const c = draft.controllers[v.key];
     // "selected_strategy vuoto -> default_strategy" fallback from the task
     // spec: structurally the form always has a value here (every draft is
-    // initialized with one, and the select for the 3 non-NPK variables
-    // always has a selection), but this keeps the one place a blank UI
-    // value could theoretically reach this function defensive rather than
-    // silently sending an invalid payload.
+    // initialized with one, and every variable's select always has a
+    // selection), but this keeps the one place a blank UI value could
+    // theoretically reach this function defensive rather than silently
+    // sending an invalid payload.
     const selected = c.selected_strategy || REQUIRED_DEFAULT_STRATEGY[v.key];
     const firstTarget = phases[0].targets.find((t) => t.variable === v.key);
     return {
@@ -3092,7 +3027,7 @@ function buildRecipePayload(draft) {
       actuator: REQUIRED_ACTUATOR[v.key],
       default_strategy: REQUIRED_DEFAULT_STRATEGY[v.key],
       selected_strategy: selected,
-      parameters: buildStrategyParameters(selected, firstTarget),
+      parameters: buildStrategyParameters(selected, firstTarget, v.key),
       unit: VARIABLE_UNIT[v.key],
       output_limits: {
         maximum_water_volume_liters: Number(c.output_limits.maximum_water_volume_liters),
@@ -3197,10 +3132,7 @@ function renderRecipeFormModal() {
 
   const controllerRows = VARIABLES.map((v) => {
     const c = draft.controllers[v.key];
-    const locked = NUTRIENT_VARIABLES.includes(v.key);
-    const strategyCell = locked
-      ? `<span class="tag-phase" title="Bloccata su Predictive per le variabili nutritive">Predictive (obbligatoria)</span>`
-      : `<select class="form-select" data-action="recipe-form-select" data-path="controllers.${v.key}.selected_strategy">
+    const strategyCell = `<select class="form-select" data-action="recipe-form-select" data-path="controllers.${v.key}.selected_strategy">
           ${STRATEGIES.map((s) => `<option value="${s}" ${c.selected_strategy === s ? "selected" : ""}>${s}</option>`).join("")}
         </select>`;
     const limitCells = OUTPUT_LIMIT_FIELDS.map((f) => `
@@ -3359,10 +3291,18 @@ function renderRecipeFormModal() {
  * happened to click/tab somewhere else. A focused button (or a focused
  * global-strategy <select> — its choice already survives a re-render via
  * STATE.globalStrategy.drafts, same as the old per-zone code protected
- * strategyDrafts) has nothing left to lose from being rebuilt underneath it. */
+ * strategyDrafts) has nothing left to lose from being rebuilt underneath it.
+ * Also covers the "Gestione utenti" create-account text fields for the same
+ * reason a filter <select> needs it: onUserFormInput() already writes each
+ * keystroke into STATE.users.form without re-rendering, so nothing would be
+ * lost from a background rebuild except the admin's cursor position/focus —
+ * but losing that on every ~6s zones poll while typing a password would
+ * still be disruptive enough to avoid. */
 function isFocusedInControlFilter() {
   const active = document.activeElement;
-  return !!(active && active.closest && active.closest('[data-action="control-filter"]'));
+  return !!(active && active.closest && active.closest(
+    '[data-action="control-filter"], [data-action="user-form-input"]'
+  ));
 }
 
 /** Only re-renders while the Amministratore is actually on Controllo, and
@@ -3421,7 +3361,7 @@ async function sendGlobalStrategyToZone(variableKey, strategy, zone) {
   try {
     const recipe = await ensureRecipeLoaded(zone.active_recipe_id);
     const target = findPhaseTarget(recipe, zone.current_phase, variableKey);
-    const params = buildStrategyParameters(strategy, target);
+    const params = buildStrategyParameters(strategy, target, variableKey);
     const base = `global-strategy-${zone.id}-${variableKey}-${Date.now()}`;
     await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
       command_id: base,
@@ -3553,33 +3493,172 @@ function renderGlobalStrategyPanel() {
     `;
   }).join("");
 
-  const fixedRows = NUTRIENT_VARIABLES.map((key) => {
-    const v = VARIABLES_BY_KEY[key];
-    return `
-      <div class="data-table-row cols-global-strategy">
-        <div><div class="var-name">${v.label}</div><div class="var-unit">${v.unit}</div></div>
-        <div class="readonly-cell" title="Richiesta dal backend per l'adozione della ricetta — non è una scelta disponibile">Predictive</div>
-        <div></div>
-      </div>
-    `;
-  }).join("");
-
   return `
     <div class="zone-section" style="margin-bottom:22px">
       <div class="zone-section-title">Strategia di controllo — a livello di impianto</div>
       <div class="empty-note" style="margin-bottom:16px">
         Scegli una Strategy per variabile: si applica subito a ogni settore produttivo (reparti 1-4) con una coltivazione attiva
         ${targets.length ? ` — <b>${targets.length}</b> al momento (${targets.map(zoneLabel).join(", ")})` : ", ma nessun settore ne ha una al momento"}.
-        Azoto, Fosforo e Potassio non sono scelte disponibili: restano sempre Predictive.
+        Azoto, Fosforo e Potassio scelgono fra Threshold, PID e Predictive come le altre variabili.
       </div>
       <div class="data-table">
         <div class="data-table-head cols-global-strategy"><span>VARIABILE</span><span>STRATEGIA</span><span>SETTORI COINVOLTI</span></div>
         ${editableRows}
-        ${fixedRows}
       </div>
       <div class="recipe-hint-box" style="margin-top:16px">
         <span>Questa scelta si applica ora ai settori attivi. Un nuovo settore o un cambio di ricetta futuro riprenderanno la Strategy definita dalla ricetta assegnata, non questa impostazione — andrà riapplicata se necessario.</span>
       </div>
+    </div>
+  `;
+}
+
+/* ------------------------------------------------------------------ */
+/* "Gestione utenti" panel (Controllo page, admin-only)                */
+/*                                                                       */
+/* Lets an Amministratore create other accounts — admin or agronomo —   */
+/* and see who already has one. The backend independently enforces      */
+/* require_admin on both /users endpoints (see                          */
+/* backend/app/features/users/dependencies.py), so this panel being     */
+/* admin-only client-side is a UX convenience, not the real boundary.   */
+/* ------------------------------------------------------------------ */
+
+/** Loads the account list once per Controllo visit (see renderControl()) —
+ * re-fetched from scratch after every successful creation instead of just
+ * appending locally, so the list stays exactly what the backend has even if
+ * another admin session created an account in the meantime. */
+async function ensureUsersLoaded() {
+  const state = STATE.users;
+  if (state.loaded || state.loading) return;
+  state.loading = true;
+  try {
+    state.list = await apiGet("/users");
+    state.loaded = true;
+    state.error = null;
+  } catch (err) {
+    state.error = err.message;
+  } finally {
+    state.loading = false;
+    renderControlIfSafe();
+  }
+}
+
+/** Writes straight into STATE.users.form without a re-render — same
+ * "don't fight the caret" pattern as the recipe form's text inputs (see
+ * the "recipe-form-input" input-delegation handler). */
+function onUserFormInput(field, value) {
+  STATE.users.form[field] = value;
+}
+
+function onUserFormRoleChange(value) {
+  STATE.users.form.role = value;
+  renderControlIfSafe();
+}
+
+/** Creates a new account with the role an Amministratore picked — this is
+ * the one path through which an admin can create another admin or an
+ * agronomo (see backend POST /users). Re-fetches the account list on
+ * success rather than trusting the response alone, and never clears a
+ * failed form's fields so a typo can just be fixed in place. */
+async function submitCreateUser() {
+  const state = STATE.users;
+  if (state.status && state.status.kind === "sending") return;
+  const form = state.form;
+  const username = form.username.trim();
+  const password = form.password;
+
+  if (username.length < 3) {
+    state.status = { kind: "error", message: "L'utente deve avere almeno 3 caratteri." };
+    renderControlIfSafe();
+    return;
+  }
+  if (password.length < 4) {
+    state.status = { kind: "error", message: "La password deve avere almeno 4 caratteri." };
+    renderControlIfSafe();
+    return;
+  }
+
+  state.status = { kind: "sending" };
+  renderControlIfSafe();
+  try {
+    const created = await apiPost("/users", {
+      username,
+      password,
+      role: form.role,
+      display_name: form.displayName.trim() || undefined,
+    });
+    state.form = { username: "", password: "", displayName: "", role: "agronomo" };
+    state.status = { kind: "success", message: `Account "${created.username}" (${roleLabel(created.role)}) creato.` };
+    state.loaded = false;
+    await ensureUsersLoaded();
+  } catch (err) {
+    state.status = {
+      kind: "error",
+      message: err.status === 409 ? "Questo nome utente è già in uso." : err.message,
+    };
+    renderControlIfSafe();
+  }
+}
+
+function renderUserManagementPanel() {
+  const state = STATE.users;
+  if (!state.loaded && !state.loading) ensureUsersLoaded();
+
+  const rowsHtml = state.list.map((u) => `
+    <div class="data-table-row cols-users">
+      <div>${escapeHtml(u.display_name)}</div>
+      <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(u.username)}</div>
+      <div><span class="pill role-${u.role}">${roleLabel(u.role)}</span></div>
+      <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${fmtDateTime(u.created_at)}</div>
+    </div>
+  `).join("");
+
+  const listHtml = state.error
+    ? `<div class="empty-note">Impossibile caricare gli account: ${escapeHtml(state.error)}</div>`
+    : `
+      <div class="data-table" style="margin-bottom:18px">
+        <div class="data-table-head cols-users"><span>NOME</span><span>UTENTE</span><span>RUOLO</span><span>CREATO IL</span></div>
+        ${rowsHtml || '<div class="empty-note">Caricamento…</div>'}
+      </div>
+    `;
+
+  const form = state.form;
+  const status = state.status;
+  const busy = !!status && status.kind === "sending";
+
+  const statusHtml = status
+    ? `<div class="${status.kind === "error" ? "login-error" : "login-success"}" style="margin-top:12px">${escapeHtml(status.message)}</div>`
+    : "";
+
+  return `
+    <div class="zone-section" style="margin-top:22px">
+      <div class="zone-section-title">Gestione utenti</div>
+      <div class="empty-note" style="margin-bottom:16px">
+        Crea nuovi account amministratore o agronomo. Un amministratore può creare anche altri amministratori, oltre ad agronomi.
+      </div>
+      ${listHtml}
+      <div class="user-create-form">
+        <div class="login-field">
+          <label class="login-label">UTENTE</label>
+          <input type="text" class="login-input" data-action="user-form-input" data-field="username" value="${escapeAttr(form.username)}" placeholder="es. mario.rossi" autocomplete="off" ${busy ? "disabled" : ""}>
+        </div>
+        <div class="login-field">
+          <label class="login-label">PASSWORD</label>
+          <input type="password" class="login-input" data-action="user-form-input" data-field="password" value="${escapeAttr(form.password)}" placeholder="minimo 4 caratteri" autocomplete="new-password" ${busy ? "disabled" : ""}>
+        </div>
+        <div class="login-field">
+          <label class="login-label">NOME VISUALIZZATO</label>
+          <input type="text" class="login-input" data-action="user-form-input" data-field="displayName" value="${escapeAttr(form.displayName)}" placeholder="opzionale" autocomplete="off" ${busy ? "disabled" : ""}>
+        </div>
+        <div class="login-field">
+          <label class="login-label">RUOLO</label>
+          <select class="login-input login-select" data-action="user-form-role" ${busy ? "disabled" : ""}>
+            <option value="agronomo" ${form.role === "agronomo" ? "selected" : ""}>Agronomo</option>
+            <option value="admin" ${form.role === "admin" ? "selected" : ""}>Amministratore</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-primary" data-action="submit-create-user" ${busy ? "disabled" : ""}>${busy ? "Creazione…" : "Crea account"}</button>
+      </div>
+      ${statusHtml}
     </div>
   `;
 }
@@ -3653,6 +3732,7 @@ function renderControl() {
       <div class="data-table-head cols-control"><span>SETTORE</span><span>REPARTO</span><span>SPECIE</span><span>FASE</span><span>SICUREZZA</span><span>STRATEGIE</span><span></span></div>
       ${rowsHtml || '<div class="empty-note">Nessun settore corrisponde ai filtri selezionati.</div>'}
     </div>
+    ${renderUserManagementPanel()}
   `;
 }
 
@@ -5131,12 +5211,6 @@ function initEventDelegation() {
     const simRestartBtn = e.target.closest('[data-action="sim-restart"]');
     if (simRestartBtn) { restartSimulationSetup(); return; }
 
-    const simPlaybackStartBtn = e.target.closest('[data-action="sim-playback-start"]');
-    if (simPlaybackStartBtn) { startSimulationPlayback(); return; }
-
-    const simPlaybackSkipBtn = e.target.closest('[data-action="sim-playback-skip"]');
-    if (simPlaybackSkipBtn) { skipSimulationPlayback(); return; }
-
     const simChartViewToggle = e.target.closest('[data-action="sim-chart-view-toggle"]');
     if (simChartViewToggle && STATE.simulation) {
       // Swaps the DOM (single canvas <-> one per VARIABLES entry), so this
@@ -5146,6 +5220,9 @@ function initEventDelegation() {
       renderModal();
       return;
     }
+
+    const submitCreateUserBtn = e.target.closest('[data-action="submit-create-user"]');
+    if (submitCreateUserBtn && !submitCreateUserBtn.disabled) { submitCreateUser(); return; }
   });
 
   document.addEventListener("change", (e) => {
@@ -5154,6 +5231,9 @@ function initEventDelegation() {
 
     const filterSelect = e.target.closest('[data-action="control-filter"]');
     if (filterSelect) { STATE.controlFilters[filterSelect.dataset.filter] = filterSelect.value; renderControl(); return; }
+
+    const userFormRole = e.target.closest('[data-action="user-form-role"]');
+    if (userFormRole) { onUserFormRoleChange(userFormRole.value); return; }
 
     if (e.target.id === "chart-variable-select") { onChartVariableChange(e.target.value); return; }
 
@@ -5219,6 +5299,12 @@ function initEventDelegation() {
       STATE.plantUi[plantId] = { ...ui, quarantineReason: plantQuarantineReason.value };
     }
 
+    // "Gestione utenti" create-account form: same no-re-render pattern as
+    // the recipe form's text inputs below, so typing a password doesn't
+    // fight renderControlIfSafe()'s periodic re-render.
+    const userFormInput = e.target.closest('[data-action="user-form-input"]');
+    if (userFormInput) { onUserFormInput(userFormInput.dataset.field, userFormInput.value); }
+
     // Recipe form text/number inputs: same "write straight into STATE,
     // don't re-render" pattern, keyed by a dotted data-path so one handler
     // covers every field in the form (top-level, phase targets, controller
@@ -5231,80 +5317,83 @@ function initEventDelegation() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Login screen — local-only display identity, no real auth            */
+/* Login screen — real accounts, verified by the backend               */
 /*                                                                       */
-/* Nothing here is checked by the backend: it's a name + role the user  */
-/* picks to be shown next to their actions in the sidebar, persisted    */
-/* only in this browser's localStorage. Gates the whole app on first    */
-/* load; "CAMBIA UTENTE" clears it and returns to the login screen.     */
+/* Only the session token is persisted (in this browser's localStorage);*/
+/* the account itself (username/display_name/role) is always re-fetched*/
+/* from GET /auth/me, both right after login and again on every page    */
+/* load — so a stale/expired/revoked token never silently lets someone  */
+/* back in with out-of-date information, it just falls back to the      */
+/* login screen (see init() below). "ESCI" calls POST /auth/logout to   */
+/* invalidate the token server-side too, not just forget it locally.    */
 /* ------------------------------------------------------------------ */
 
-const DEMO_USER_KEY = "smarthydro_demo_user";
+const SESSION_TOKEN_KEY = "smarthydro_session_token";
 
-function loadDemoUser() {
+function loadSessionToken() {
   try {
-    const raw = localStorage.getItem(DEMO_USER_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.name === "string" && parsed.name.trim()) {
-      // A user saved before "Grower" was removed as a role option (or any
-      // other role value that isn't one of the two current choices) is
-      // treated as logged out rather than silently let in with a role that
-      // no longer exists: clear the stale entry so init() falls through to
-      // the login screen instead of enterApp().
-      if (!VALID_ROLES.includes(parsed.role)) {
-        clearDemoUser();
-        return null;
-      }
-      return { name: parsed.name, role: parsed.role };
-    }
-  } catch (e) { /* malformed or inaccessible storage — treat as logged out */ }
-  return null;
+    return localStorage.getItem(SESSION_TOKEN_KEY) || null;
+  } catch (e) { /* storage unavailable — treat as logged out */ return null; }
 }
 
-function saveDemoUser(user) {
-  try { localStorage.setItem(DEMO_USER_KEY, JSON.stringify(user)); } catch (e) { /* storage unavailable — session-only */ }
+function saveSessionToken(token) {
+  try { localStorage.setItem(SESSION_TOKEN_KEY, token); } catch (e) { /* session-only */ }
 }
 
-function clearDemoUser() {
-  try { localStorage.removeItem(DEMO_USER_KEY); } catch (e) {}
+function clearSessionToken() {
+  try { localStorage.removeItem(SESSION_TOKEN_KEY); } catch (e) {}
+}
+
+/** Italian display label for a backend role value — the value itself
+ * ("admin"/"agronomo", see VALID_ROLES) stays the wire/comparison format
+ * used by isAdmin()/updateNavForRole(); this only affects what's shown. */
+function roleLabel(role) {
+  return role === "admin" ? "Amministratore" : "Agronomo";
 }
 
 function applySidebarUser(user) {
-  document.getElementById("sidebar-user-avatar").textContent = user.name.trim().charAt(0).toUpperCase() || "?";
-  document.getElementById("sidebar-user-name").textContent = user.name;
-  document.getElementById("sidebar-user-role").textContent = String(user.role).toUpperCase();
+  const name = user.display_name || user.username;
+  document.getElementById("sidebar-user-avatar").textContent = name.trim().charAt(0).toUpperCase() || "?";
+  document.getElementById("sidebar-user-name").textContent = name;
+  document.getElementById("sidebar-user-role").textContent = roleLabel(user.role).toUpperCase();
 }
 
 /** Shows/hides the "Controllo" sidebar item for the current role. Purely a
- * navigation gate, same principle as the rest of this login system (see
- * isAdmin()) — a non-Amministratore never sees the nav item at all, and
- * switchView() below independently refuses to enter that view even if it
- * were reached some other way, so the two checks don't rely on each other. */
+ * client-side navigation gate — switchView() below independently refuses to
+ * enter that view even if it were reached some other way, and the backend
+ * enforces the real restriction on /users itself (require_admin) — so the
+ * two checks don't rely on each other and neither is the only thing
+ * protecting the account-management endpoints. */
 function updateNavForRole(role) {
   const navItem = document.querySelector('.nav-item[data-view="control"]');
-  if (navItem) navItem.classList.toggle("hidden", role !== "Amministratore");
+  if (navItem) navItem.classList.toggle("hidden", role !== "admin");
 }
 
-/** Shows the login screen. `prefill` (the just-cleared user, on "cambia
- * utente") pre-fills the form so switching identity is a quick edit
- * rather than starting from a blank form. */
-function showLoginScreen(prefill) {
+/** Shows the login screen, clearing any previous input and — unlike the
+ * old demo login — never prefilling credentials. `message` (e.g. after a
+ * session expires or "ESCI") is shown as an inline notice instead of the
+ * blank error area. */
+function showLoginScreen(message) {
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("login-screen").classList.remove("hidden");
   const errorEl = document.getElementById("login-error");
-  errorEl.classList.add("hidden");
-  errorEl.textContent = "";
-  const nameInput = document.getElementById("login-name");
-  nameInput.value = (prefill && prefill.name) || "";
-  document.getElementById("login-role").value = (prefill && prefill.role) || "Agronomo";
-  nameInput.focus();
+  if (message) {
+    errorEl.textContent = message;
+    errorEl.classList.remove("hidden");
+  } else {
+    errorEl.classList.add("hidden");
+    errorEl.textContent = "";
+  }
+  const usernameInput = document.getElementById("login-username");
+  usernameInput.value = "";
+  document.getElementById("login-password").value = "";
+  usernameInput.focus();
 }
 
 /** Reveals the already-built app behind the login gate and (re)starts it
  * fresh on Home — mirrors a normal first load, whether this is the very
- * first visit (user just submitted the form) or a re-entry after
- * switching identity. */
+ * first visit (user just submitted the form) or a re-entry after a
+ * previous session was verified on boot. */
 function enterApp(user) {
   STATE.currentUser = user;
   applySidebarUser(user);
@@ -5314,30 +5403,49 @@ function enterApp(user) {
   switchView("home");
 }
 
-function submitLogin() {
-  const nameInput = document.getElementById("login-name");
-  const name = nameInput.value.trim();
+async function submitLogin() {
+  const usernameInput = document.getElementById("login-username");
+  const passwordInput = document.getElementById("login-password");
+  const submitBtn = document.getElementById("login-submit");
   const errorEl = document.getElementById("login-error");
-  if (!name) {
-    errorEl.textContent = "Inserisci un nome per continuare.";
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+  if (!username || !password) {
+    errorEl.textContent = "Inserisci utente e password per continuare.";
     errorEl.classList.remove("hidden");
-    nameInput.focus();
+    (username ? passwordInput : usernameInput).focus();
     return;
   }
-  const role = document.getElementById("login-role").value;
-  const user = { name, role };
-  saveDemoUser(user);
-  enterApp(user);
+  errorEl.classList.add("hidden");
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Accesso…";
+  try {
+    const { token, user } = await apiPost("/auth/login", { username, password });
+    saveSessionToken(token);
+    enterApp({ ...user, token });
+  } catch (err) {
+    errorEl.textContent = err.status === 401
+      ? "Utente o password non validi."
+      : `Accesso non riuscito: ${err.message}`;
+    errorEl.classList.remove("hidden");
+    passwordInput.value = "";
+    passwordInput.focus();
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Accedi";
+  }
 }
 
-/** "CAMBIA UTENTE": drops the stored identity and whatever view state is
- * mid-flight (view polls, an in-progress batch simulation) before
- * returning to the login screen — the same discipline switchView()
- * already applies when navigating away from any single view, just for
- * the whole app at once. */
-function switchDemoUser() {
-  const previous = loadDemoUser();
-  clearDemoUser();
+/** "ESCI": invalidates the session on the backend (best-effort — an
+ * already-expired token 404/401ing here is not a reason to keep the user
+ * stuck on a page they've decided to leave), then drops the local token and
+ * whatever view state is mid-flight (view polls, an in-progress batch
+ * simulation, the "Gestione utenti" form) before returning to the login
+ * screen — the same discipline switchView() already applies when navigating
+ * away from any single view, just for the whole app at once. */
+async function logout() {
+  try { await apiPost("/auth/logout"); } catch (e) { /* token already invalid — fine, we're logging out anyway */ }
+  clearSessionToken();
   STATE.currentUser = null;
   clearPoll("zones");
   clearPoll("recipes-poll");
@@ -5346,31 +5454,49 @@ function switchDemoUser() {
   STATE.simulation = null;
   clearGlobalStrategyPolls();
   STATE.globalStrategy = { drafts: {}, status: {}, results: {} };
-  showLoginScreen(previous);
+  STATE.users = {
+    list: [], loaded: false, loading: false, error: null,
+    form: { username: "", password: "", displayName: "", role: "agronomo" },
+    status: null,
+  };
+  showLoginScreen(null);
 }
 
 function initLoginScreen() {
   document.getElementById("login-submit").addEventListener("click", submitLogin);
-  document.getElementById("login-name").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submitLogin();
+  ["login-username", "login-password"].forEach((id) => {
+    document.getElementById(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitLogin();
+    });
   });
-  document.getElementById("sidebar-user-switch").addEventListener("click", switchDemoUser);
+  document.getElementById("sidebar-logout").addEventListener("click", logout);
 }
 
 /* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
-function init() {
+async function init() {
   initLoginScreen();
   initEventDelegation();
   setPoll("system-status", tickSystemStatus, STATUS_POLL_MS);
 
-  const user = loadDemoUser();
-  if (user) {
-    enterApp(user);
-  } else {
+  const token = loadSessionToken();
+  if (!token) {
     showLoginScreen(null);
+    return;
+  }
+  // Tentatively set the token so apiRequest() attaches it to this very
+  // call, then verify it against the backend rather than trusting a
+  // possibly stale/expired/revoked value found in localStorage.
+  STATE.currentUser = { token };
+  try {
+    const user = await apiGet("/auth/me");
+    enterApp({ ...user, token });
+  } catch (e) {
+    STATE.currentUser = null;
+    clearSessionToken();
+    showLoginScreen("Sessione scaduta: accedi di nuovo.");
   }
 }
 

@@ -252,7 +252,13 @@ TEST(RecipeControlSystemTest, StrategyChangeInvalidatesPreviousConfirmation) {
     EXPECT_GT(decision.command, 0.0);
 }
 
-TEST(RecipeControlSystemTest, RejectsInputSourceIncompatibleNutrientStrategy) {
+TEST(RecipeControlSystemTest, AcceptsThresholdStrategyForNutrientModelSource) {
+    // N/P/K leggono da una sorgente di modello (is_model_source), non da un
+    // sensore diretto, ma process_value()/source_value() risolvono il
+    // valore in modo identico per qualunque Strategy — Threshold e PID sono
+    // quindi ammesse quanto Predictive (che resta il default storico, non
+    // l'unica scelta valida: vedi required_default_strategy() in
+    // control_system.cpp).
     smarthydro::RecipeControlSystem system(load_demo_recipe());
     system.select_strategy(
         smarthydro::ControlledVariable::NITROGEN,
@@ -267,15 +273,24 @@ TEST(RecipeControlSystemTest, RejectsInputSourceIncompatibleNutrientStrategy) {
 
     const auto result =
         system.confirm_configuration(smarthydro::ControlledVariable::NITROGEN);
-
-    EXPECT_FALSE(result.success);
-    EXPECT_NE(result.error.find("Predictive"), std::string::npos);
+    ASSERT_TRUE(result.success) << result.error;
     EXPECT_EQ(
         system.recipe()
             .controllers[smarthydro::controlled_variable_index(
                 smarthydro::ControlledVariable::NITROGEN)]
             .confirmation_state,
-        smarthydro::ConfirmationState::INVALID);
+        smarthydro::ConfirmationState::CONFIRMED);
+
+    smarthydro::ControlRequest request;
+    // Sotto la soglia bassa di fase (130, presa da allowed_range — vedi
+    // parameters_for_phase()): il Threshold deve attivarsi esattamente come
+    // per qualunque altra variabile.
+    request.controller_input.model_estimate = 100.0;
+    const auto decision =
+        system.execute(smarthydro::ControlledVariable::NITROGEN, request);
+
+    EXPECT_NE(decision.status, smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_DOUBLE_EQ(decision.command, 1.0);
 }
 
 TEST(RecipeControlSystemTest, AppliesWaterVolumeAndPumpDurationLimits) {

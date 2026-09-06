@@ -46,6 +46,14 @@ bool is_dose_variable(ControlledVariable variable) noexcept {
 }
 
 StrategyType required_default_strategy(ControlledVariable variable) {
+    // N/P/K leggono da una stima di modello (is_model_source), non da un
+    // sensore diretto: Predictive resta il default perche' e' l'unica delle
+    // tre Strategy pensata per proiettare un trend nel tempo, che qui serve
+    // a dosare in vista della prossima occasione utile (l'irrigazione, non
+    // ogni ciclo di controllo — le valvole di concentrato si aprono solo
+    // mentre la pompa e' attiva) invece di reagire al solo valore
+    // istantaneo. Threshold e PID restano comunque selezionabili (vedi
+    // ChangeStrategy) per chi preferisce quel comportamento.
     if (is_nutrient(variable)) {
         return StrategyType::PREDICTIVE;
     }
@@ -271,13 +279,11 @@ ConfirmationResult RecipeControlSystem::confirm_configuration(
         configuration.confirmation_state = ConfirmationState::INVALID;
         return {false, "parameters do not match selected strategy"};
     }
-    if (is_model_source(configuration.input_source) &&
-        configuration.selected_strategy != StrategyType::PREDICTIVE) {
-        configuration.confirmation_state = ConfirmationState::INVALID;
-        return {
-            false,
-            "model-based NPK control requires Predictive strategy"};
-    }
+    // Threshold, PID e Predictive sono tutte ammesse anche per una sorgente
+    // di modello (N/P/K): process_value()/source_value() risolvono il
+    // valore da controllare in modo identico per qualunque Strategy, quindi
+    // non c'e' nulla di specifico a Predictive che le altre due non possano
+    // gestire.
     try {
         for (const auto& phase : recipe_.phases) {
             const auto parameters = parameters_for_phase(
@@ -401,13 +407,6 @@ ControlDecision RecipeControlSystem::execute(
         decision.safety_critical = true;
         decision.fault_severity = ControlFaultSeverity::RECOVERABLE;
         decision.message = "sensor or model input is invalid";
-        return decision;
-    }
-    if (is_model_source(configuration.input_source) &&
-        configuration.selected_strategy != StrategyType::PREDICTIVE) {
-        decision.safety_critical = true;
-        decision.fault_severity = ControlFaultSeverity::CRITICAL;
-        decision.message = "selected strategy is incompatible with NPK model";
         return decision;
     }
     if (!std::isfinite(request.elapsed_recipe_hours) ||

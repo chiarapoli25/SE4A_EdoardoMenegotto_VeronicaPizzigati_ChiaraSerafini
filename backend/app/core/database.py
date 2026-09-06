@@ -655,7 +655,38 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON actuator_snapshots (cultivation_id, recorded_at DESC)
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'agronomo')),
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (username) REFERENCES users(username)
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_sessions_username
+        ON sessions (username)
+        """
+    )
+
     from ..features.recipes.catalog import seed_recipe_catalog
+    from ..features.users.repository import seed_default_users
 
     seed_recipe_catalog(connection)
+    seed_default_users(connection)
     connection.commit()
