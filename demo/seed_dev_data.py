@@ -54,9 +54,56 @@ Topologia (stessa forma delle versioni precedenti dello script):
 - Reparto 2: r2-s1 (Nominal), r2-s2 (OFFLINE: nessun assigned_edge_id)
 - Reparto 3: r3-s1 (Nominal)
 - Reparto 4: r4-s1 (dimostrazione InjectFault persistente -> Degraded ->
-  EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal)
+  EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal),
+  r4-s2 (dimostrazione CommandFailed -> EmergencyLockdown, vedi sotto)
 - Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 5 piante
   quarantenate
+
+COMANDO NON ESEGUITO (CommandFailed) su r4-s2 — a differenza di r1-s2/r4-s1
+questo NON usa InjectFault: e' scatenato da puro INPUT di ricetta (POST
+/recipes, la stessa via legittima con cui backend/data/recipes/
+tomato_recipe.json esiste), senza toccare una riga di codice dell'Edge.
+Verificato leggendo per intero edge/src/runtime/edge_runtime_cycle.cpp,
+edge_runtime_actuation.cpp e edge/src/simulation/actuator_simulator.cpp
+(non assunto):
+- L'evento "Comando non eseguito"/COMANDO KO nella pagina Allarmi e' un
+  CommandFailed pubblicato da EdgeRuntime::publish_command_failed(), MAI un
+  comando con esito "rejected": e' l'UNICO punto di pubblicazione, dentro
+  il catch(const std::exception&) che avvolge apply_decisions() in
+  edge_runtime_cycle.cpp — e quello stesso catch forza SUBITO
+  EmergencyLockdown (mai Degraded), a differenza del fault recuperabile di
+  cui sopra.
+- Le uniche eccezioni che quel catch puo' intercettare vivono in
+  actuator_simulator.cpp (volume d'irrigazione oltre il massimo
+  configurato, richiesta gia' attiva, pH su/giu' aperti insieme). Le fault
+  ufficiali (InjectFault/FaultMode) alterano solo l'output GIA' calcolato
+  dell'attuatore (fault_injector.hpp: alter_readings/alter_output), mai il
+  suo stato interno di richiesta: non possono quindi mai scatenare queste
+  eccezioni, a differenza del fault recuperabile sopra.
+- L'unica via reale e ripetibile e' "volume oltre il massimo fisico",
+  confermata dal test del progetto stesso
+  (EdgeRuntimeTest.StopsAllActuatorsWhenPhysicalCommandFails,
+  edge/tests/edge_runtime_tests.cpp): il sistema ha DUE limiti d'acqua
+  indipendenti — quello della ricetta (output_limits.
+  maximum_water_volume_liters, nessun tetto lato validazione, vedi
+  backend/app/features/recipes/models.py) e quello FISICO dell'attuatore
+  (ActuatorConfig::maximum_irrigation_volume_liters, di default 5.0 L,
+  cablato nell'Edge e mai esposto da alcun endpoint/comando/file). In
+  edge/src/control/control_system.cpp il comando calcolato viene limitato
+  al tetto della RICETTA prima di raggiungere l'attuatore: se la ricetta
+  dichiara (legittimamente: nessun limite superiore lato Pydantic) un
+  tetto piu' alto di 5.0 L, il comando supera comunque la vera capacita'
+  fisica e l'eccezione scatta, esattamente come nel test.
+- ensure_command_failed_recipe() crea quindi (POST /recipes, puro input)
+  una ricetta "male configurata di proposito": soglia Threshold
+  dell'umidita' del terriccio impostata molto in alto (attiva quasi certa
+  al primo ciclo), active_command = 6.0 L (> 5.0 L fisici) e
+  output_limits.maximum_water_volume_liters = 10.0 L (> 5.0 L, quindi il
+  clamp lato ricetta non lo ferma prima che raggiunga l'attuatore). Il
+  safety_range resta apposta ampio (0-100%) cosi' la zona non salta invece
+  dritta in EmergencyLockdown per fault CRITICAL come descritto sopra: la
+  transizione osservata deve essere Nominal -> EmergencyLockdown via
+  CommandFailed, non via un fault_severity CRITICAL sul safety_range.
 
 IMPORTANTE su cosa "genera" Degraded vs EmergencyLockdown nel codice reale
 dell'Edge (verificato leggendo edge/src/faults/fault_detector.cpp ed
@@ -88,6 +135,7 @@ dopo 3 cicli -> ResetFault + ResetEmergency -> Degraded -> Nominal.
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 import urllib.error
@@ -131,6 +179,19 @@ POLL_INTERVAL_SECONDS = 2.0
 DEGRADED_DEMO_ZONE_ID = "r1-s2"
 LOCKDOWN_DEMO_ZONE_ID = "r4-s1"
 
+# Zona dedicata alla dimostrazione CommandFailed (vedi la nota in cima al
+# file): DIVERSA da r1-s2/r4-s1, cosi' "Situazioni attive"/"Registro eventi"
+# mostrano tre scenari distinti. Sta FUORI da PRODUCTION_ZONES apposta: le
+# altre zone del Reparto 4 (qui solo r4-s1) prendono la loro ricetta dal
+# catalogo via pick_recipes()/by_department in main(), mentre questa zona
+# deve puntare esattamente a COMMAND_FAILED_DEMO_RECIPE_ID e a nessun'altra
+# — tenerla fuori da quel ciclo generico evita qualunque ambiguita' su quale
+# ricetta del reparto finisca su quale settore.
+COMMAND_FAILED_DEMO_ZONE_ID = "r4-s2"
+COMMAND_FAILED_DEMO_DEPARTMENT = 4
+COMMAND_FAILED_DEMO_SECTOR = 2
+COMMAND_FAILED_DEMO_RECIPE_ID = "recipe-command-failed-demo"
+
 # id, nome, department_number, sector_number, ha un Edge assegnato
 PRODUCTION_ZONES = [
     ("r1-s1", "Reparto 1 - Settore 1", 1, 1, True),
@@ -139,6 +200,8 @@ PRODUCTION_ZONES = [
     ("r2-s2", "Reparto 2 - Settore 2", 2, 2, False),
     ("r3-s1", "Reparto 3 - Settore 1", 3, 1, True),
     ("r4-s1", "Reparto 4 - Settore 1", 4, 1, True),
+    # r4-s2 (CommandFailed demo) non e' qui: vedi la nota su
+    # COMMAND_FAILED_DEMO_ZONE_ID sopra e ensure_command_failed_zone() sotto.
 ]
 QUARANTINE_ZONES = [
     ("r5-s1", "Quarantena - Settore 1", 5, 1),
@@ -237,6 +300,153 @@ def pick_recipes(department_number: int, how_many: int) -> list[dict]:
             f"trovate solo {len(candidates)}"
         )
     return candidates[:how_many]
+
+
+def ensure_command_failed_recipe() -> str:
+    """Crea (POST /recipes, puro input — vedi la nota IMPORTANTE in cima al
+    file) la ricetta "male configurata di proposito" che fa scattare un vero
+    CommandFailed su COMMAND_FAILED_DEMO_ZONE_ID. Restituisce il plant_type
+    usato, cosi' ensure_command_failed_zone() puo' mostrarlo come specie
+    della zona senza doverlo ricalcolare.
+
+    Copia una ricetta REALE del catalogo del reparto
+    COMMAND_FAILED_DEMO_DEPARTMENT e sovrascrive SOLO il target e il
+    controllore di soil_moisture: luce/pH/N/P/K restano quelli originali,
+    validi e "normali" — nessun bisogno di ricostruire un'intera ricetta a
+    mano per rompere un'unica variabile.
+
+    Chiamata SOLO dopo che il Passo 1 ha gia' assegnato le ricette di
+    catalogo alle zone via pick_recipes(): questa ricetta non esiste ancora
+    quando quel passo gira, quindi pick_recipes(4, ...) non puo' mai
+    sceglierla per sbaglio al posto della ricetta vera di r4-s1.
+
+    Idempotente: un 409 (RecipeVersionConflict, stessa versione gia'
+    salvata da un run precedente) viene tollerato, non e' un errore."""
+    status, catalog = request(
+        "GET", f"/recipes?department_number={COMMAND_FAILED_DEMO_DEPARTMENT}"
+    )
+    template = None
+    if status == 200 and isinstance(catalog, list):
+        template = next(
+            (r for r in catalog if r.get("id") != COMMAND_FAILED_DEMO_RECIPE_ID), None
+        )
+    if template is None:
+        raise SystemExit(
+            "[seed] impossibile trovare una ricetta di catalogo del reparto "
+            f"{COMMAND_FAILED_DEMO_DEPARTMENT} da usare come base per la "
+            "ricetta della demo CommandFailed (serve che r4-s1 sia gia' "
+            "stata registrata nel Passo 1)."
+        )
+
+    recipe = copy.deepcopy(template)
+    recipe.pop("department_name", None)  # computed field, non accettato in POST
+    recipe["id"] = COMMAND_FAILED_DEMO_RECIPE_ID
+    recipe["version"] = 1
+    plant_type = f"{template['plant_type']} (demo comando non eseguito)"
+    recipe["plant_type"] = plant_type
+
+    # Target soil_moisture: allowed_range e' cio' che conta DAVVERO per la
+    # soglia Threshold, non i lower_threshold/upper_threshold dentro
+    # "parameters" sotto (verificato in edge/src/control/control_system.cpp
+    # parameters_for_phase(): per StrategyType::THRESHOLD sovrascrive SEMPRE
+    # lower_threshold/upper_threshold con target.allowed_range.minimum/
+    # maximum, qualunque valore sia dichiarato nel controllore stesso). Per
+    # questo allowed_range e' impostato altissimo (95-99%): con quasi
+    # qualunque umidita' iniziale simulata sotto 95%, il controllo Threshold
+    # risulta "attivo" gia' al primo ciclo. safety_range resta invece
+    # volutamente AMPIO (0-100%): se fosse stretto, un valore fuori banda
+    # farebbe scattare PRIMA il fault CRITICAL/EmergencyLockdown per
+    # safety_range (vedi la nota IMPORTANTE in cima al file), mascherando il
+    # CommandFailed che questa ricetta vuole invece dimostrare.
+    broken_target = {
+        "variable": "soil_moisture",
+        "setpoint": 97.0,
+        "allowed_range": {"minimum": 95.0, "maximum": 99.0},
+        "safety_range": {"minimum": 0.0, "maximum": 100.0},
+        "suggested_phase_dose_milliliters": 0.0,
+    }
+    for phase in recipe["phases"]:
+        phase["targets"] = [
+            broken_target if t["variable"] == "soil_moisture" else t
+            for t in phase["targets"]
+        ]
+
+    # Controllore soil_moisture: lower_threshold/upper_threshold qui sotto
+    # sono ignorati a runtime (vedi la nota sopra su parameters_for_phase())
+    # ma li teniamo uguali ad allowed_range per coerenza di lettura. Il
+    # comando che conta e' active_command = 6.0 L, sopra i 5.0 L FISICI di
+    # ActuatorConfig::maximum_irrigation_volume_liters (cablati nell'Edge).
+    # output_limits.maximum_water_volume_liters = 10.0 L (> 6.0 L) fa si'
+    # che il clamp lato ricetta in control_system.cpp NON fermi il comando
+    # prima che raggiunga l'attuatore fisico.
+    broken_controller = {
+        "variable": "soil_moisture",
+        "input_source": "soil_moisture_sensor",
+        "actuator": "water_pump",
+        "default_strategy": "Threshold",
+        "selected_strategy": "Threshold",
+        "parameters": {
+            "lower_threshold": 95.0,
+            "upper_threshold": 99.0,
+            "direction": "increases",
+            "active_command": 6.0,
+            "inactive_command": 0.0,
+            "bidirectional": False,
+        },
+        "unit": "% soil moisture",
+        "output_limits": {
+            "maximum_water_volume_liters": 10.0,
+            "maximum_pump_duration_seconds": 36000.0,
+            "water_pump_flow_liters_per_hour": 20.0,
+            "maximum_dose_per_command_milliliters": 5.0,
+            "maximum_daily_dose_milliliters": 20.0,
+            "minimum_seconds_between_doses": 900.0,
+            "ph_settling_time_seconds": 1800.0,
+        },
+        "confirmation_state": "PENDING_CONFIRMATION",
+        "version": 1,
+        "confirmed_recipe_version": 0,
+    }
+    recipe["controllers"] = [
+        broken_controller if c["variable"] == "soil_moisture" else c
+        for c in recipe["controllers"]
+    ]
+
+    status, body = request("POST", "/recipes", recipe)
+    if status == 201:
+        print(
+            f"[seed] ricetta demo creata: {COMMAND_FAILED_DEMO_RECIPE_ID!r} "
+            f"(base: {template['id']!r} del reparto {COMMAND_FAILED_DEMO_DEPARTMENT}, "
+            "soil_moisture sovrascritto: active_command=6.0 L > 5.0 L fisici)"
+        )
+    elif status == 409:
+        print(
+            f"[seed] ricetta demo {COMMAND_FAILED_DEMO_RECIPE_ID!r} gia' "
+            "esistente da un run precedente, la lascio com'e'"
+        )
+    else:
+        raise SystemExit(
+            f"[seed] errore creando la ricetta demo CommandFailed: {status} {body}"
+        )
+    return plant_type
+
+
+def ensure_command_failed_zone(plant_type: str) -> None:
+    """Registra (POST /zones, puro input) la zona dedicata
+    COMMAND_FAILED_DEMO_ZONE_ID con la ricetta demo. Tenuta fuori da
+    PRODUCTION_ZONES/pick_recipes() apposta — vedi la nota su
+    COMMAND_FAILED_DEMO_ZONE_ID."""
+    ensure_zone(
+        COMMAND_FAILED_DEMO_ZONE_ID,
+        "Reparto 4 - Settore 2",
+        COMMAND_FAILED_DEMO_DEPARTMENT,
+        COMMAND_FAILED_DEMO_SECTOR,
+        {
+            "plant_species": plant_type,
+            "active_recipe_id": COMMAND_FAILED_DEMO_RECIPE_ID,
+            "assigned_edge_id": EDGE_ID,
+        },
+    )
 
 
 def ensure_zone(zone_id: str, name: str, department: int, sector: int, payload_extra: dict) -> None:
@@ -684,6 +894,88 @@ def step7_lockdown_demo(run_suffix: str) -> None:
     )
 
 
+def step_command_failed_demo(since: datetime) -> None:
+    """Attende il vero CommandFailed su COMMAND_FAILED_DEMO_ZONE_ID (vedi la
+    nota IMPORTANTE in cima al file e ensure_command_failed_recipe()): nessun
+    InjectFault qui, la ricetta demo gia' assegnata alla zona basta da sola a
+    farlo scattare al primo ciclo di controllo reale dell'Edge.
+
+    A differenza di step5_degraded_demo/step7_lockdown_demo non serve
+    accodare alcun comando: si limita a osservare cosa fa l'Edge reale non
+    appena la zona e' Running, esattamente come richiesto ("verifica dal
+    vivo... non solo che l'evento esista nel database" — qui verifichiamo
+    prima l'evento via API, la verifica nella UI della dashboard e'
+    responsabilita' di chi esegue lo script dal vivo, vedi il messaggio
+    finale stampato sotto).
+
+    `since` va catturato PRIMA di wait_for_edge_start() (non qui dentro):
+    a differenza di step5/step7, che inviano loro stessi il comando che fa
+    scattare la transizione (quindi "since=adesso" e' sempre corretto),
+    qui non c'e' alcun comando da inviare — il primo ciclo di controllo
+    dell'Edge reale potrebbe gia' avere fatto scattare CommandFailed PRIMA
+    che questa funzione venga chiamata (es. durante il polling Running del
+    Passo 4 o durante step5/step7), quindi filtrare da un "since" preso solo
+    ora rischierebbe di scartare l'evento vero e segnalare un falso
+    avviso."""
+    zone_id = COMMAND_FAILED_DEMO_ZONE_ID
+    print(
+        f"\n[seed] --- Passo 6bis: attendo il vero CommandFailed su {zone_id} "
+        "(nessun InjectFault: basta la ricetta demo gia' assegnata) ---"
+    )
+
+    failed_event = poll_events_until(
+        zone_id,
+        lambda e: e.get("event_type") == "CommandFailed",
+        "evento CommandFailed",
+        since=since,
+    )
+    if failed_event is None:
+        print(
+            f"[seed] avviso: nessun CommandFailed osservato entro il timeout su "
+            f"{zone_id} — puo' darsi che l'Edge non abbia ancora eseguito il "
+            "primo ciclo di controllo su questa zona."
+        )
+        return
+    payload = failed_event.get("payload", {})
+    diagnostic = payload.get("diagnostic", "")
+    print(
+        f"[seed] CommandFailed osservato: actuator={payload.get('actuator')!r} "
+        f"diagnostic={diagnostic!r}"
+    )
+    if "exceeds configured maximum" not in diagnostic:
+        print(
+            "[seed] avviso: il diagnostic non contiene 'exceeds configured "
+            "maximum' come atteso — il CommandFailed potrebbe essere stato "
+            "causato da qualcos'altro (verifica manuale consigliata)."
+        )
+
+    lockdown_event = poll_events_until(
+        zone_id,
+        lambda e: e.get("event_type") == "StateChanged"
+        and e.get("payload", {}).get("current_state") == "EmergencyLockdown",
+        "StateChanged -> EmergencyLockdown (dopo CommandFailed)",
+        since=since,
+    )
+    if lockdown_event is None:
+        print(
+            f"[seed] avviso: {zone_id} non risulta ancora in EmergencyLockdown "
+            "entro il timeout, anche se CommandFailed e' stato osservato."
+        )
+        return
+    print(
+        f"[seed] {zone_id} e' passata a EmergencyLockdown: "
+        f"{lockdown_event['payload'].get('previous_state')} -> "
+        f"{lockdown_event['payload'].get('current_state')} "
+        "(CommandFailed forza SEMPRE EmergencyLockdown, mai Degraded — vedi "
+        "la nota in cima al file)."
+    )
+    print(
+        f"[seed] Verifica nella UI: apri la pagina Allarmi da amministratore "
+        f"e controlla che compaia la card \"Comando non eseguito\" per {zone_id} "
+        "in Situazioni attive e nel Registro eventi."
+    )
+
+
 def verify_state_sequence(
     zone_id: str,
     *,
@@ -759,6 +1051,21 @@ def main() -> None:
                 extra["assigned_edge_id"] = EDGE_ID
                 edge_zone_ids.append(zone_id)
             ensure_zone(zone_id, name, dept, sector, extra)
+
+    # --- Zona dedicata CommandFailed (r4-s2): DOPO il ciclo per-reparto qui
+    # sopra, mai dentro — pick_recipes(4, ...) ha gia' scelto la ricetta di
+    # r4-s1 dal catalogo, quindi la ricetta demo (creata solo ora) non puo'
+    # mai finire assegnata per sbaglio alla zona sbagliata. Vedi la nota
+    # IMPORTANTE in cima al file e i docstring delle due funzioni.
+    command_failed_plant_type = ensure_command_failed_recipe()
+    ensure_command_failed_zone(command_failed_plant_type)
+    zone_species[COMMAND_FAILED_DEMO_ZONE_ID] = command_failed_plant_type
+    zone_recipe[COMMAND_FAILED_DEMO_ZONE_ID] = COMMAND_FAILED_DEMO_RECIPE_ID
+    edge_zone_ids.append(COMMAND_FAILED_DEMO_ZONE_ID)
+    # Catturato QUI, non dentro step_command_failed_demo(): vedi il
+    # docstring di quella funzione sul perche' non si puo' aspettare fino a
+    # quando viene chiamata (dopo step5/step7).
+    command_failed_since = datetime.now(timezone.utc)
 
     for zone_id, name, dept, sector in QUARANTINE_ZONES:
         ensure_zone(zone_id, name, dept, sector, {"plant_species": None})
@@ -869,6 +1176,14 @@ def main() -> None:
     else:
         print(f"\n[seed] salto il passo 7: {LOCKDOWN_DEMO_ZONE_ID} non è Running")
 
+    # --- Passo 6bis: CommandFailed reale, nessun InjectFault (obbligatorio) ---
+    if running.get(COMMAND_FAILED_DEMO_ZONE_ID):
+        step_command_failed_demo(command_failed_since)
+    else:
+        print(
+            f"\n[seed] salto il passo 6bis: {COMMAND_FAILED_DEMO_ZONE_ID} non è Running"
+        )
+
     # --- Riepilogo finale: stato REALE letto da GET /zones -----------------
     print("\n[seed] --- Riepilogo finale (stato reale riportato dal backend) ---")
     status, zones = request("GET", "/zones")
@@ -876,7 +1191,11 @@ def main() -> None:
         print(f"[seed] avviso: impossibile leggere GET /zones (status {status})")
         return
     by_id = {z["id"]: z for z in zones}
-    all_ids = [z[0] for z in PRODUCTION_ZONES] + [z[0] for z in QUARANTINE_ZONES]
+    all_ids = (
+        [z[0] for z in PRODUCTION_ZONES]
+        + [COMMAND_FAILED_DEMO_ZONE_ID]
+        + [z[0] for z in QUARANTINE_ZONES]
+    )
     for zone_id in all_ids:
         zone = by_id.get(zone_id)
         if zone is None:
