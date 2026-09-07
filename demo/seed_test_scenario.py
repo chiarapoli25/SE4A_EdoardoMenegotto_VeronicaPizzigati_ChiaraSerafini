@@ -127,6 +127,30 @@ PLACEHOLDER_SOIL_EC_MS_CM = 1.6
 PLACEHOLDER_FERTILIZER_CONCENTRATION_MG_PER_LITER = 380.0
 
 
+def _parse_json_body(text: str) -> dict:
+    """Interpreta il corpo di una risposta HTTP come JSON, senza mai
+    sollevare un'eccezione non gestita se non lo e'.
+
+    @details Gli endpoint che usiamo rispondono sempre con JSON quando tutto
+    va secondo i piani, ma un errore lato server non gestito esplicitamente
+    (es. un 500 dovuto a un'eccezione imprevista nel backend, come un errore
+    del database) fa rispondere FastAPI con un semplice "Internal Server
+    Error" in testo semplice, non JSON. Senza questa guardia, il vecchio
+    `json.loads(body)` sollevava un JSONDecodeError non catturato QUI DENTRO
+    request(), che si propagava fino a un traceback Python grezzo invece del
+    messaggio esplicito che login_as_admin()/ensure_cultivation()/
+    post_fake_telemetria() eccetera sono pensati per mostrare — mascherando
+    la vera causa dell'errore in mezzo a righe di stack trace facili da
+    perdere, specialmente se lo script è invocato da un lanciatore come
+    avvia_demo.bat."""
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"detail": text.strip() or "(risposta vuota, non JSON)"}
+
+
 def request(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Content-Type": "application/json"}
@@ -141,10 +165,10 @@ def request(method: str, path: str, payload: dict | None = None) -> tuple[int, d
     try:
         with urllib.request.urlopen(req) as response:
             body = response.read().decode("utf-8")
-            return response.status, (json.loads(body) if body else {})
+            return response.status, _parse_json_body(body)
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8")
-        return error.code, (json.loads(body) if body else {})
+        return error.code, _parse_json_body(body)
     except urllib.error.URLError as error:
         raise SystemExit(
             f"[seed] impossibile raggiungere {BASE_URL} — il backend è acceso? ({error})"
@@ -160,11 +184,20 @@ def login_as_admin() -> None:
     status, body = request(
         "POST", "/auth/login", {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
     )
+    if status == 401:
+        raise SystemExit(
+            "[seed] impossibile autenticarsi come amministratore "
+            f"({ADMIN_USERNAME!r}): credenziali rifiutate (401) {body}. Hai gia' "
+            "eseguito `python demo/seed_users.py` contro questo stesso database?"
+        )
     if status != 200:
         raise SystemExit(
             "[seed] impossibile autenticarsi come amministratore "
-            f"({ADMIN_USERNAME!r}): status {status} {body}. Hai gia' eseguito "
-            "`python demo/seed_users.py` contro questo stesso database?"
+            f"({ADMIN_USERNAME!r}): il backend ha risposto con un errore "
+            f"inatteso (status {status}) {body}. Non sembra un problema di "
+            "credenziali: puo' essere un errore lato server (controlla il log "
+            "del backend, es. un 'disk I/O error' o un altro problema di "
+            "accesso al database)."
         )
     _AUTH_TOKEN = body["token"]
     print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['user']['role']})")
