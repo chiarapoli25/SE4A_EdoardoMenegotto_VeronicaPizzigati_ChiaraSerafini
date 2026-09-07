@@ -33,8 +33,9 @@ from .models import (
 
 _INCREASES = ControlDirection.INCREASES_PROCESS_VALUE
 
-## @brief Limiti di comando del PID per le tre variabili non nutritive, nella
-## reale unita' fisica del rispettivo attuatore (edge_runtime_actuation.cpp):
+## @brief Limiti di comando (PID e Predictive) per le tre variabili non
+## nutritive, nella reale unita' fisica del rispettivo attuatore
+## (edge_runtime_actuation.cpp):
 ##  - soil_moisture: litri per singola erogazione della pompa
 ##    (water_pump_.request_volume_liters) — mai negativa, la pompa puo' solo
 ##    aggiungere acqua, mai toglierla.
@@ -51,10 +52,20 @@ _INCREASES = ControlDirection.INCREASES_PROCESS_VALUE
 ## decimo di pH): il guadagno proporzionale calcolato sotto usa questi
 ## limiti insieme alla banda della fase per restare significativo in ogni
 ## unita', invece di saturare sempre al comando massimo.
-_PID_COMMAND_LIMITS: dict[ControlledVariable, tuple[float, float]] = {
+_NON_DOSE_COMMAND_LIMITS: dict[ControlledVariable, tuple[float, float]] = {
     ControlledVariable.SOIL_MOISTURE: (0.0, 0.5),
     ControlledVariable.LIGHT: (0.0, 100.0),
     ControlledVariable.PH: (-0.5, 0.5),
+}
+
+## @brief Guadagni Predictive specifici di ciascun nutriente (water_dilution_gain,
+## substrate_gain), identici a quelli gia' tarati in catalog.py::_build_recipe
+## per il seed iniziale — non c'e' ragione per cui la Strategy globale debba
+## usare valori diversi da quelli gia' verificati per specie/nutriente.
+_NUTRIENT_PREDICTIVE_GAINS: dict[ControlledVariable, tuple[float, float]] = {
+    ControlledVariable.NITROGEN: (2.0, 4.0),
+    ControlledVariable.PHOSPHORUS: (0.8, 2.0),
+    ControlledVariable.POTASSIUM: (2.5, 5.0),
 }
 
 ## @brief Tempo di integrazione del PID, in secondi: quanto a lungo un errore
@@ -130,7 +141,7 @@ def default_parameters_for(
         )
     if strategy is StrategyType.PID:
         command_minimum, command_maximum = (
-            (0.0, 3.0) if dose_only else _PID_COMMAND_LIMITS[variable]
+            (0.0, 3.0) if dose_only else _NON_DOSE_COMMAND_LIMITS[variable]
         )
         # Guadagno proporzionale scalato sulla banda della fase: un errore
         # grande quanto la banda spinge il comando (quasi) al suo massimo,
@@ -156,15 +167,41 @@ def default_parameters_for(
             command_maximum=command_maximum,
             direction=_INCREASES,
         )
+    command_minimum, command_maximum = (
+        (0.0, 3.0) if dose_only else _NON_DOSE_COMMAND_LIMITS[variable]
+    )
+    # response_gain scalato sulla banda della fase, stessa formula e stessa
+    # ragione del proportional_gain del PID sopra — qui e' quella che
+    # catalog.py::_predictive_parameters usa gia' per il seed iniziale.
+    response_gain = command_maximum / _band_half_margin(setpoint, target)
+    # water_dilution_gain/substrate_gain hanno senso solo per un dosaggio di
+    # fertilizzante (correggono la stima N/P/K per la diluizione data
+    # dall'acqua appena irrigata e per il fattore del substrato — vedi
+    # PredictiveController::compute in controllers.cpp): per una variabile
+    # non nutritiva questi campi non descrivono nulla di fisico, quindi
+    # restano a zero invece di riusare per errore un valore tarato per i
+    # nutrienti (com'era prima di questo fix, dove /anche/ luce/umidita/pH
+    # avrebbero preso un dilution_gain pensato per l'azoto).
+    water_dilution_gain, substrate_gain = (
+        _NUTRIENT_PREDICTIVE_GAINS[variable] if dose_only else (0.0, 0.0)
+    )
     return PredictiveConfig(
         setpoint=setpoint,
         prediction_horizon_steps=1.0,
-        response_gain=0.02,
+        response_gain=response_gain,
         neutral_command=0.0,
-        command_minimum=0.0,
-        command_maximum=3.0 if dose_only else 1.0,
+        command_minimum=command_minimum,
+        command_maximum=command_maximum,
         direction=_INCREASES,
-        water_dilution_gain=1.0,
-        cumulative_dose_gain=0.02,
-        substrate_gain=2.0,
+        water_dilution_gain=water_dilution_gain,
+        # Azzerato deliberatamente: un guadagno positivo incondizionato qui
+        # continua a spingere il comando verso l'alto finche' resta dose di
+        # fase da erogare, ANCHE quando l'errore e' gia' nullo o negativo —
+        # esattamente il bug v4 di catalog.py (vedi la sua nota lunga su
+        # _predictive_parameters), che qui era stato reintrodotto usando
+        # 0.02 invece di 0.0. E' la ragione principale per cui, prima di
+        # questo fix, il valore medio di Azoto/Fosforo/Potassio restava
+        # incollato sopra il setpoint invece di convergerci.
+        cumulative_dose_gain=0.0,
+        substrate_gain=substrate_gain,
     )

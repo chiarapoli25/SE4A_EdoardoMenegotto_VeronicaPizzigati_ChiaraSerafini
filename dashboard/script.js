@@ -805,16 +805,25 @@ function bandCalc(value, min, max) {
  * see output_limits.maximum_dose_per_command_milliliters), not the
  * L/W-scale magic numbers used for the other three.
  */
-// Limiti di comando del PID per le tre variabili non nutritive, nella reale
-// unita' fisica del rispettivo attuatore — vedi lo stesso _PID_COMMAND_LIMITS
-// in backend/app/features/recipes/parameters.py, di cui questa e' la
-// controparte JS: umidita' in litri per erogazione pompa (mai negativa),
-// luce in percento di potenza (0-100, l'unica davvero bidirezionale in
-// senso pieno), pH in mL di correttore (bidirezionale pH+/pH-).
-const PID_COMMAND_LIMITS = {
+// Limiti di comando (PID e Predictive) per le tre variabili non nutritive,
+// nella reale unita' fisica del rispettivo attuatore — vedi lo stesso
+// _NON_DOSE_COMMAND_LIMITS in backend/app/features/recipes/parameters.py, di
+// cui questa e' la controparte JS: umidita' in litri per erogazione pompa
+// (mai negativa), luce in percento di potenza (0-100, l'unica davvero
+// bidirezionale in senso pieno), pH in mL di correttore (bidirezionale
+// pH+/pH-).
+const NON_DOSE_COMMAND_LIMITS = {
   soil_moisture: [0.0, 0.5],
   light: [0.0, 100.0],
   ph: [-0.5, 0.5],
+};
+// Guadagni Predictive specifici di ciascun nutriente — identici a quelli
+// gia' tarati in catalog.py::_build_recipe per il seed iniziale, vedi la
+// stessa costante _NUTRIENT_PREDICTIVE_GAINS in parameters.py.
+const NUTRIENT_PREDICTIVE_GAINS = {
+  nitrogen: [2.0, 4.0],
+  phosphorus: [0.8, 2.0],
+  potassium: [2.5, 5.0],
 };
 // Tempo di integrazione del PID in secondi — vedi la stessa costante e la
 // stessa spiegazione in parameters.py: troppo corto insegue il rumore di
@@ -845,7 +854,7 @@ function buildStrategyParameters(strategy, target, variableKey) {
     // enormemente diversa (umidita': decine di punti percentuali contro un
     // massimo di 0.5 L), restava saturato per qualunque errore non
     // trascurabile, comportandosi come un bang-bang travestito da PID.
-    const [commandMin, commandMax] = doseOnly ? [0.0, 3.0] : PID_COMMAND_LIMITS[variableKey];
+    const [commandMin, commandMax] = doseOnly ? [0.0, 3.0] : NON_DOSE_COMMAND_LIMITS[variableKey];
     const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
     const proportionalGain = commandMax / margin;
     const integralGain = proportionalGain / PID_INTEGRAL_TIME_SECONDS;
@@ -859,12 +868,36 @@ function buildStrategyParameters(strategy, target, variableKey) {
   // dell'attuatore), non va confusa con `max` sopra — quella e' la banda
   // della VARIABILE controllata (es. 170 mg/L), un'unita' completamente
   // diversa: usarla qui produrrebbe comandi enormi e privi di senso fisico.
-  return {
-    setpoint, prediction_horizon_steps: 1.0, response_gain: 0.02, neutral_command: 0.0,
-    command_minimum: 0.0, command_maximum: doseOnly ? 3.0 : 1.0,
-    direction: "increases",
-    water_dilution_gain: 1.0, cumulative_dose_gain: 0.02, substrate_gain: 2.0,
-  };
+  {
+    const [commandMin, commandMax] = doseOnly ? [0.0, 3.0] : NON_DOSE_COMMAND_LIMITS[variableKey];
+    // response_gain scalato sulla banda della fase, stessa formula e stessa
+    // ragione del proportional_gain del PID sopra.
+    const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
+    const responseGain = commandMax / margin;
+    // water_dilution_gain/substrate_gain hanno senso solo per un dosaggio
+    // di fertilizzante (correggono la stima N/P/K per la diluizione data
+    // dall'acqua appena irrigata e per il fattore del substrato — vedi
+    // PredictiveController::compute in controllers.cpp): per una variabile
+    // non nutritiva restano a zero invece di riusare per errore un valore
+    // tarato per i nutrienti.
+    const [waterDilutionGain, substrateGain] = doseOnly
+      ? NUTRIENT_PREDICTIVE_GAINS[variableKey]
+      : [0.0, 0.0];
+    return {
+      setpoint, prediction_horizon_steps: 1.0, response_gain: responseGain, neutral_command: 0.0,
+      command_minimum: commandMin, command_maximum: commandMax,
+      direction: "increases",
+      water_dilution_gain: waterDilutionGain,
+      // Azzerato deliberatamente: un guadagno positivo incondizionato qui
+      // continua a spingere il comando verso l'alto finche' resta dose di
+      // fase da erogare, anche quando l'errore e' gia' nullo o negativo —
+      // il bug v4 di catalog.py (vedi la sua nota su _predictive_parameters),
+      // per cui il valore medio di N/P/K restava incollato sopra il
+      // setpoint invece di convergerci.
+      cumulative_dose_gain: 0.0,
+      substrate_gain: substrateGain,
+    };
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2509,6 +2542,7 @@ function renderSimulationResult(sim) {
           ? `<span class="legend-item"><span class="legend-line"></span>Valore simulato</span>`
           : `<span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>`}
         <span class="legend-item"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>
+        <span class="legend-item"><span class="legend-average"></span>Media mobile 24h (confronta questa col setpoint, non il valore istantaneo)</span>
       </div>
       ${gridView
         ? `<div class="sim-chart-grid">
@@ -2647,6 +2681,50 @@ function drawActuatorTimelineChart() {
   drawActuatorTimeline(canvas, preview.actuator_intervals || [], preview.series, preview.phases);
 }
 
+// Finestra della media mobile mostrata sopra la curva grezza — un giorno
+// solare intero. Per la luce questo è indispensabile: il setpoint di fase
+// è la luce MEDIA che deve arrivare alla pianta nell'arco della giornata,
+// non un livello istantaneo, quindi confrontarlo con l'andamento grezzo
+// (che segue il ciclo giorno/notte, zero di notte e un picco di giorno) non
+// dice nulla — va confrontato con una media su un ciclo completo. Per le
+// altre variabili la stessa finestra aiuta a rispondere alla stessa
+// domanda in generale ("la media converge sul setpoint, o resta scostata
+// per via del dosaggio a impulsi mono-direzionale?"), quindi si applica a
+// ogni grafico, non solo a quello della luce.
+const SIM_ROLLING_AVERAGE_WINDOW_SECONDS = 24 * 3600;
+
+/**
+ * Media mobile "trailing" pesata sulla durata di ogni bucket: per ogni punto
+ * ricalcola la media di tutti i bucket (anche parziali, ai bordi della
+ * finestra) i cui intervalli [t0,t1] ricadono almeno in parte nelle 24 ore
+ * precedenti. I bucket non hanno tutti la stessa durata (vedi
+ * _reduce_series lato backend, che ne allarga la dimensione per le
+ * simulazioni lunghe), da cui la ponderazione per durata invece che una
+ * semplice media aritmetica degli ultimi N punti. All'inizio della
+ * simulazione la finestra è inevitabilmente più corta di 24h (si allarga
+ * mano a mano che ci sono più dati precedenti): non è un errore, converge
+ * al pieno intervallo dopo il primo giorno.
+ */
+function rollingAverage(points, windowSeconds) {
+  const result = new Array(points.length);
+  for (let i = 0; i < points.length; i++) {
+    const windowEnd = points[i].t1;
+    const windowStart = windowEnd - windowSeconds;
+    let weightedSum = 0;
+    let totalWeight = 0;
+    for (let j = i; j >= 0; j--) {
+      const p = points[j];
+      if (p.t1 <= windowStart) break;
+      const overlap = Math.min(p.t1, windowEnd) - Math.max(p.t0, windowStart);
+      if (overlap <= 0) continue;
+      weightedSum += p.avg * overlap;
+      totalWeight += overlap;
+    }
+    result[i] = totalWeight > 0 ? weightedSum / totalWeight : points[i].avg;
+  }
+  return result;
+}
+
 /**
  * Unlike drawTelemetryChart (a single flat setpoint line, since live data
  * only ever has ONE current setpoint), a simulation spans potentially many
@@ -2782,6 +2860,19 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     points.forEach((p, i) => {
       const px = x((p.t0 + p.t1) / 2);
       const py = y(p.avg);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+
+    // Media mobile 24h — quella da confrontare col setpoint tratteggiato,
+    // non la linea grezza sopra (vedi SIM_ROLLING_AVERAGE_WINDOW_SECONDS).
+    const rolling = rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
+    ctx.strokeStyle = "#3d6ea5";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const px = x((p.t0 + p.t1) / 2);
+      const py = y(rolling[i]);
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     });
     ctx.stroke();
