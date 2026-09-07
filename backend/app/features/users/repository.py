@@ -14,6 +14,15 @@ class UsernameConflict(Exception):
     """@brief Segnala un username gia' registrato."""
 
 
+class SetupAlreadyComplete(Exception):
+    """@brief Segnala che la tabella users non e' piu' vuota.
+
+    @details Sollevata da `bootstrap_admin` quando esiste gia' almeno un
+    account: da quel momento in poi l'endpoint di primo avvio deve restare
+    permanentemente inutilizzabile.
+    """
+
+
 @dataclass
 class StoredUser:
     """@brief Riga `users` completa, incluso l'hash: non lasciare la feature."""
@@ -87,6 +96,55 @@ def create_user(
         )
     except sqlite3.IntegrityError as error:
         raise UsernameConflict(f"username {username!r} already exists") from error
+    connection.commit()
+    stored = get_stored_user(connection, username)
+    assert stored is not None
+    return stored.to_public()
+
+
+def is_setup_required(connection: sqlite3.Connection) -> bool:
+    """@brief Vero se la tabella `users` non contiene ancora nessun account."""
+    (count,) = connection.execute("SELECT COUNT(*) FROM users").fetchone()
+    return count == 0
+
+
+def bootstrap_admin(
+    connection: sqlite3.Connection,
+    username: str,
+    password: str,
+) -> User:
+    """@brief Crea il primissimo account, sempre amministratore.
+
+    @details L'inserimento e' un'unica istruzione `INSERT ... SELECT ...
+    WHERE NOT EXISTS`: il controllo "la tabella e' vuota" e la scrittura
+    avvengono all'interno della stessa istruzione SQL. SQLite serializza le
+    scritture fra connessioni diverse (anche da processi diversi sullo
+    stesso file), quindi non esiste una finestra in cui due richieste
+    concorrenti possano superare entrambe il controllo: la seconda vede
+    sempre la riga inserita dalla prima. E' cosi' impossibile creare un
+    secondo amministratore chiamando questa funzione una seconda volta,
+    indipendentemente da username o password inviati.
+
+    @throws SetupAlreadyComplete Se esiste gia' almeno un account.
+    """
+    now = datetime.now(timezone.utc)
+    cursor = connection.execute(
+        """
+        INSERT INTO users (username, display_name, role, password_hash, created_at)
+        SELECT ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM users)
+        """,
+        (
+            username,
+            username,
+            UserRole.ADMIN.value,
+            hash_password(password),
+            now.isoformat(),
+        ),
+    )
+    if cursor.rowcount == 0:
+        connection.rollback()
+        raise SetupAlreadyComplete("an account already exists")
     connection.commit()
     stored = get_stored_user(connection, username)
     assert stored is not None

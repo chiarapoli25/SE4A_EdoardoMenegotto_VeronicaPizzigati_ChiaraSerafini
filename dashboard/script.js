@@ -343,9 +343,9 @@ const STATE = {
   // showing.
   currentUser: null,
 
-  // "Gestione utenti" panel (Controllo page, admin-only): the account list
-  // and the create-account form — see ensureUsersLoaded()/
-  // renderUserManagementPanel()/submitCreateUser().
+  // Pagina "Utenti" (nav item dedicato, admin-only): the account list and
+  // the create-account form — see ensureUsersLoaded()/
+  // renderUserManagementPanel()/renderUsersView()/submitCreateUser().
   users: {
     list: [],
     loaded: false,
@@ -3292,17 +3292,12 @@ function renderRecipeFormModal() {
  * global-strategy <select> — its choice already survives a re-render via
  * STATE.globalStrategy.drafts, same as the old per-zone code protected
  * strategyDrafts) has nothing left to lose from being rebuilt underneath it.
- * Also covers the "Gestione utenti" create-account text fields for the same
- * reason a filter <select> needs it: onUserFormInput() already writes each
- * keystroke into STATE.users.form without re-rendering, so nothing would be
- * lost from a background rebuild except the admin's cursor position/focus —
- * but losing that on every ~6s zones poll while typing a password would
- * still be disruptive enough to avoid. */
+ * (The "Gestione utenti" create-account fields used to need the same
+ * protection here too, back when that panel was embedded in this page —
+ * now that it's its own "Utenti" view, see isFocusedInUserForm() instead.) */
 function isFocusedInControlFilter() {
   const active = document.activeElement;
-  return !!(active && active.closest && active.closest(
-    '[data-action="control-filter"], [data-action="user-form-input"]'
-  ));
+  return !!(active && active.closest && active.closest('[data-action="control-filter"]'));
 }
 
 /** Only re-renders while the Amministratore is actually on Controllo, and
@@ -3513,19 +3508,23 @@ function renderGlobalStrategyPanel() {
 }
 
 /* ------------------------------------------------------------------ */
-/* "Gestione utenti" panel (Controllo page, admin-only)                */
+/* Pagina "Utenti" (admin-only)                                        */
 /*                                                                       */
 /* Lets an Amministratore create other accounts — admin or agronomo —   */
 /* and see who already has one. The backend independently enforces      */
 /* require_admin on both /users endpoints (see                          */
-/* backend/app/features/users/dependencies.py), so this panel being     */
-/* admin-only client-side is a UX convenience, not the real boundary.   */
+/* backend/app/features/users/dependencies.py), so this page being      */
+/* admin-only client-side (gated the same way as Controllo, see         */
+/* switchView()/updateNavForRole()) is a UX convenience, not the real    */
+/* boundary. Used to live embedded inside the Controllo page ("Gestione */
+/* utenti" panel); moved out to its own top-level "Utenti" nav item so   */
+/* it doesn't depend on Controllo's zones data/poll at all.             */
 /* ------------------------------------------------------------------ */
 
-/** Loads the account list once per Controllo visit (see renderControl()) —
- * re-fetched from scratch after every successful creation instead of just
- * appending locally, so the list stays exactly what the backend has even if
- * another admin session created an account in the meantime. */
+/** Loads the account list once (see renderUsersView()) — re-fetched from
+ * scratch after every successful creation instead of just appending
+ * locally, so the list stays exactly what the backend has even if another
+ * admin session created an account in the meantime. */
 async function ensureUsersLoaded() {
   const state = STATE.users;
   if (state.loaded || state.loading) return;
@@ -3538,7 +3537,7 @@ async function ensureUsersLoaded() {
     state.error = err.message;
   } finally {
     state.loading = false;
-    renderControlIfSafe();
+    renderUsersIfSafe();
   }
 }
 
@@ -3551,7 +3550,7 @@ function onUserFormInput(field, value) {
 
 function onUserFormRoleChange(value) {
   STATE.users.form.role = value;
-  renderControlIfSafe();
+  renderUsersIfSafe();
 }
 
 /** Creates a new account with the role an Amministratore picked — this is
@@ -3568,17 +3567,30 @@ async function submitCreateUser() {
 
   if (username.length < 3) {
     state.status = { kind: "error", message: "L'utente deve avere almeno 3 caratteri." };
-    renderControlIfSafe();
+    renderUsersIfSafe();
+    return;
+  }
+  // Stesso pattern di UserCreate.username lato backend (vedi
+  // backend/app/features/users/models.py): controllarlo anche qui evita di
+  // mostrare all'amministratore il messaggio grezzo di validazione Pydantic
+  // di un 422, che apiRequest() non traduce in qualcosa di leggibile come
+  // fa invece per il 409 di username duplicato qui sotto.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(username)) {
+    state.status = {
+      kind: "error",
+      message: "L'utente può contenere solo lettere, cifre, underscore e trattini, e non può iniziare con questi ultimi.",
+    };
+    renderUsersIfSafe();
     return;
   }
   if (password.length < 4) {
     state.status = { kind: "error", message: "La password deve avere almeno 4 caratteri." };
-    renderControlIfSafe();
+    renderUsersIfSafe();
     return;
   }
 
   state.status = { kind: "sending" };
-  renderControlIfSafe();
+  renderUsersIfSafe();
   try {
     const created = await apiPost("/users", {
       username,
@@ -3595,7 +3607,7 @@ async function submitCreateUser() {
       kind: "error",
       message: err.status === 409 ? "Questo nome utente è già in uso." : err.message,
     };
-    renderControlIfSafe();
+    renderUsersIfSafe();
   }
 }
 
@@ -3630,7 +3642,7 @@ function renderUserManagementPanel() {
     : "";
 
   return `
-    <div class="zone-section" style="margin-top:22px">
+    <div class="zone-section">
       <div class="zone-section-title">Gestione utenti</div>
       <div class="empty-note" style="margin-bottom:16px">
         Crea nuovi account amministratore o agronomo. Un amministratore può creare anche altri amministratori, oltre ad agronomi.
@@ -3639,7 +3651,7 @@ function renderUserManagementPanel() {
       <div class="user-create-form">
         <div class="login-field">
           <label class="login-label">UTENTE</label>
-          <input type="text" class="login-input" data-action="user-form-input" data-field="username" value="${escapeAttr(form.username)}" placeholder="es. mario.rossi" autocomplete="off" ${busy ? "disabled" : ""}>
+          <input type="text" class="login-input" data-action="user-form-input" data-field="username" value="${escapeAttr(form.username)}" placeholder="es. mario_rossi" autocomplete="off" ${busy ? "disabled" : ""}>
         </div>
         <div class="login-field">
           <label class="login-label">PASSWORD</label>
@@ -3661,6 +3673,36 @@ function renderUserManagementPanel() {
       ${statusHtml}
     </div>
   `;
+}
+
+/** Only re-renders while the Amministratore is actually sulla pagina Utenti,
+ * e mai mentre uno dei campi del form ha il focus — stesso motivo di
+ * isFocusedInControlFilter()/renderControlIfSafe() per Controllo: qui non
+ * c'e' un poll periodico (vedi switchView()), ma un re-render puo' comunque
+ * scattare mentre si sta scrivendo (l'elenco che finisce di caricare,
+ * ensureUsersLoaded() dopo una creazione), e perdere il focus in quel
+ * momento sarebbe comunque fastidioso. */
+function isFocusedInUserForm() {
+  const active = document.activeElement;
+  return !!(active && active.closest && active.closest('[data-action="user-form-input"]'));
+}
+
+function renderUsersIfSafe() {
+  if (STATE.view === "users" && !isFocusedInUserForm()) renderUsersView();
+}
+
+/** Pagina "Utenti" (nav item dedicato, admin-only — vedi switchView()/
+ * updateNavForRole()): elenco account esistenti + form di creazione. */
+function renderUsersView() {
+  if (!isAdmin()) {
+    // Difensivo soltanto — switchView() e' il vero gate e non lascia mai
+    // STATE.view a "users" per chi non e' Amministratore, quindi questo
+    // percorso non dovrebbe essere raggiungibile in pratica.
+    document.getElementById("view-users").innerHTML = '<div class="empty-note">Sezione riservata agli amministratori.</div>';
+    return;
+  }
+  setPageTitle("Utenti", "Crea e consulta gli account che possono accedere alla dashboard · solo Amministratore");
+  document.getElementById("view-users").innerHTML = renderUserManagementPanel();
 }
 
 function renderControl() {
@@ -3732,7 +3774,6 @@ function renderControl() {
       <div class="data-table-head cols-control"><span>SETTORE</span><span>REPARTO</span><span>SPECIE</span><span>FASE</span><span>SICUREZZA</span><span>STRATEGIE</span><span></span></div>
       ${rowsHtml || '<div class="empty-note">Nessun settore corrisponde ai filtri selezionati.</div>'}
     </div>
-    ${renderUserManagementPanel()}
   `;
 }
 
@@ -4910,21 +4951,29 @@ function paintViewImmediately(view) {
     // The grid is built from STATE.zones (active_recipe_id per sector), not
     // the recipe catalog — unlike the old catalog-wide picker this replaced.
     if (STATE.zonesLoaded) renderSimulatorView(); else el.innerHTML = '<div class="empty-note">Caricamento…</div>';
+  } else if (view === "users") {
+    // No zones dependency and no periodic poll (see switchView()): the
+    // account list loads once via ensureUsersLoaded()/renderUsersView()
+    // itself, which shows its own "Caricamento…" row while that's pending.
+    renderUsersView();
   } else if (view === "alerts") {
     renderAlertsView(); // already shows its own "Caricamento…" until STATE.alertsPage.loaded
   }
 }
 
 function switchView(view) {
-  // Controllo is Amministratore-only. This is the single choke point every
-  // view switch goes through (the nav click handler, and anything else that
-  // might ever call switchView programmatically — there's no separate
-  // per-view URL/routing in this app, so there's nowhere else a direct
-  // "reach this view another way" attempt could enter), so gating here
-  // covers it regardless of how "control" was requested — not just hiding
-  // the nav item in updateNavForRole(). A visual/navigation gate only, like
-  // the rest of this login system: nothing real is being protected.
-  if (view === "control" && !isAdmin()) {
+  // Controllo e Utenti sono Amministratore-only. Questo e' l'unico punto di
+  // passaggio per ogni cambio di vista (il click sulla nav, e qualunque
+  // altra cosa chiami switchView programmaticamente — non c'e' un routing
+  // per-vista separato in questa app, quindi non c'e' un altro modo di
+  // "raggiungere questa vista altrimenti"), quindi il gate qui copre
+  // entrambe indipendentemente da come sono state richieste — non solo
+  // nasconderle in updateNavForRole(). Un gate visivo/di navigazione, come
+  // il resto di questo sistema di login: non protegge nulla di reale (il
+  // backend applica lo stesso vincolo in modo indipendente, vedi
+  // require_admin su GET/POST /users e require_role su ChangeStrategy/
+  // ConfirmConfiguration).
+  if ((view === "control" || view === "users") && !isAdmin()) {
     showToast("Sezione riservata agli amministratori.", "warn");
     view = "home";
   }
@@ -4948,7 +4997,7 @@ function switchView(view) {
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === view);
   });
-  ["home", "recipes", "simulator", "control", "alerts"].forEach((v) => {
+  ["home", "recipes", "simulator", "control", "users", "alerts"].forEach((v) => {
     document.getElementById("view-" + v).classList.toggle("hidden", v !== view);
   });
   // Retints the topbar title on the Simulatore page — one more visual cue
@@ -5299,9 +5348,10 @@ function initEventDelegation() {
       STATE.plantUi[plantId] = { ...ui, quarantineReason: plantQuarantineReason.value };
     }
 
-    // "Gestione utenti" create-account form: same no-re-render pattern as
-    // the recipe form's text inputs below, so typing a password doesn't
-    // fight renderControlIfSafe()'s periodic re-render.
+    // "Gestione utenti" create-account form (pagina Utenti): same
+    // no-re-render pattern as the recipe form's text inputs below, so typing
+    // a password doesn't fight a renderUsersIfSafe() re-render (e.g. the
+    // account list finishing its first load while the form is mid-typing).
     const userFormInput = e.target.closest('[data-action="user-form-input"]');
     if (userFormInput) { onUserFormInput(userFormInput.dataset.field, userFormInput.value); }
 
@@ -5365,8 +5415,10 @@ function applySidebarUser(user) {
  * two checks don't rely on each other and neither is the only thing
  * protecting the account-management endpoints. */
 function updateNavForRole(role) {
-  const navItem = document.querySelector('.nav-item[data-view="control"]');
-  if (navItem) navItem.classList.toggle("hidden", role !== "admin");
+  ["control", "users"].forEach((view) => {
+    const navItem = document.querySelector(`.nav-item[data-view="${view}"]`);
+    if (navItem) navItem.classList.toggle("hidden", role !== "admin");
+  });
 }
 
 /** Shows the login screen, clearing any previous input and — unlike the
@@ -5375,6 +5427,7 @@ function updateNavForRole(role) {
  * blank error area. */
 function showLoginScreen(message) {
   document.getElementById("app-shell").classList.add("hidden");
+  document.getElementById("bootstrap-screen").classList.add("hidden");
   document.getElementById("login-screen").classList.remove("hidden");
   const errorEl = document.getElementById("login-error");
   if (message) {
@@ -5399,6 +5452,7 @@ function enterApp(user) {
   applySidebarUser(user);
   updateNavForRole(user.role);
   document.getElementById("login-screen").classList.add("hidden");
+  document.getElementById("bootstrap-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
   switchView("home");
 }
@@ -5473,13 +5527,132 @@ function initLoginScreen() {
 }
 
 /* ------------------------------------------------------------------ */
+/* First-run bootstrap — creates the very first (admin) account         */
+/*                                                                       */
+/* Shown instead of the login screen only while GET /auth/setup-required*/
+/* answers true, i.e. the `users` table is still empty (see init()).    */
+/* There's no role choice here: the first account is always admin (see  */
+/* backend POST /auth/bootstrap-admin). The backend independently        */
+/* refuses a second call once any account exists, so this form can't be */
+/* used to create a second admin even if it were somehow shown again.   */
+/* ------------------------------------------------------------------ */
+
+/** Mirrors showLoginScreen(): clears any previous input and focuses the
+ * username field, but for the bootstrap form instead of the normal login. */
+function showBootstrapScreen() {
+  document.getElementById("app-shell").classList.add("hidden");
+  document.getElementById("login-screen").classList.add("hidden");
+  document.getElementById("bootstrap-screen").classList.remove("hidden");
+  const errorEl = document.getElementById("bootstrap-error");
+  errorEl.classList.add("hidden");
+  errorEl.textContent = "";
+  const usernameInput = document.getElementById("bootstrap-username");
+  usernameInput.value = "";
+  document.getElementById("bootstrap-password").value = "";
+  usernameInput.focus();
+}
+
+/** Creates the first account and logs straight into the app with the
+ * session token /auth/bootstrap-admin returns — no separate /auth/login
+ * round-trip needed, since the backend already opens a session for it. */
+async function submitBootstrapAdmin() {
+  const usernameInput = document.getElementById("bootstrap-username");
+  const passwordInput = document.getElementById("bootstrap-password");
+  const submitBtn = document.getElementById("bootstrap-submit");
+  const errorEl = document.getElementById("bootstrap-error");
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
+
+  if (!username || !password) {
+    errorEl.textContent = "Inserisci utente e password per continuare.";
+    errorEl.classList.remove("hidden");
+    (username ? passwordInput : usernameInput).focus();
+    return;
+  }
+  if (username.length < 3) {
+    errorEl.textContent = "L'utente deve avere almeno 3 caratteri.";
+    errorEl.classList.remove("hidden");
+    usernameInput.focus();
+    return;
+  }
+  // Stesso pattern di BootstrapAdminRequest.username lato backend (vedi
+  // backend/app/features/users/models.py) e dello stesso controllo già
+  // fatto in submitCreateUser(): evita di mostrare qui l'errore grezzo di
+  // validazione Pydantic di un 422.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(username)) {
+    errorEl.textContent = "L'utente può contenere solo lettere, cifre, underscore e trattini, e non può iniziare con questi ultimi.";
+    errorEl.classList.remove("hidden");
+    usernameInput.focus();
+    return;
+  }
+  if (password.length < 4) {
+    errorEl.textContent = "La password deve avere almeno 4 caratteri.";
+    errorEl.classList.remove("hidden");
+    passwordInput.focus();
+    return;
+  }
+
+  errorEl.classList.add("hidden");
+  submitBtn.disabled = true;
+  submitBtn.textContent = "Creazione…";
+  try {
+    const { token, user } = await apiPost("/auth/bootstrap-admin", { username, password });
+    saveSessionToken(token);
+    enterApp({ ...user, token });
+  } catch (err) {
+    // 409 significa che, fra il caricamento della pagina e l'invio del
+    // form, qualcun altro ha già completato il primo avvio: non c'è nulla
+    // da correggere nel form, occorre solo ricaricare per vedere il login.
+    errorEl.textContent = err.status === 409
+      ? "Esiste già un account su questo backend: ricarica la pagina per accedere con il login normale."
+      : `Creazione non riuscita: ${err.message}`;
+    errorEl.classList.remove("hidden");
+    passwordInput.value = "";
+    passwordInput.focus();
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "Crea account amministratore";
+  }
+}
+
+function initBootstrapScreen() {
+  document.getElementById("bootstrap-submit").addEventListener("click", submitBootstrapAdmin);
+  ["bootstrap-username", "bootstrap-password"].forEach((id) => {
+    document.getElementById(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitBootstrapAdmin();
+    });
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
 async function init() {
   initLoginScreen();
+  initBootstrapScreen();
   initEventDelegation();
   setPoll("system-status", tickSystemStatus, STATUS_POLL_MS);
+
+  // Il backend decide se mostrare la creazione del primo amministratore o
+  // il login normale: se la tabella users è vuota, nessun token salvato può
+  // comunque valere qualcosa, quindi questo controllo viene prima di tutto
+  // il resto della logica di sessione qui sotto.
+  let setupRequired = false;
+  try {
+    const status = await apiGet("/auth/setup-required");
+    setupRequired = !!(status && status.setup_required);
+  } catch (e) {
+    // Backend irraggiungibile: si prosegue come se il setup non fosse
+    // richiesto, mostrando il login normale — che comunque segnalerà
+    // l'errore in modo chiaro al primo tentativo di accesso — invece di
+    // bloccare la pagina su questo controllo preliminare.
+    setupRequired = false;
+  }
+  if (setupRequired) {
+    showBootstrapScreen();
+    return;
+  }
 
   const token = loadSessionToken();
   if (!token) {

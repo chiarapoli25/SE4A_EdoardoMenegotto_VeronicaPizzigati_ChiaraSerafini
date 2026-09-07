@@ -53,3 +53,24 @@ class LoginResponse(BaseModel):
 
     token: str
     user: User
+
+
+class SetupStatus(BaseModel):
+    """@brief Indica se la tabella `users` e' ancora vuota."""
+
+    setup_required: bool
+
+
+class BootstrapAdminRequest(BaseModel):
+    """@brief Credenziali per il primissimo account.
+
+    @details Nessun campo ruolo: il primo account creato sul database e'
+    sempre amministratore, non e' una scelta della persona che lo crea.
+    """
+
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=_USERNAME_PATTERN,
+    )
+    password: str = Field(min_length=4, max_length=200)

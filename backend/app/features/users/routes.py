@@ -10,13 +10,23 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from ...core.config import session_ttl_seconds
 from ...core.database import get_db
 from .dependencies import extract_bearer_token, get_current_user, require_admin
-from .models import LoginRequest, LoginResponse, User, UserCreate
+from .models import (
+    BootstrapAdminRequest,
+    LoginRequest,
+    LoginResponse,
+    SetupStatus,
+    User,
+    UserCreate,
+)
 from .repository import (
+    SetupAlreadyComplete,
     UsernameConflict,
+    bootstrap_admin,
     create_session,
     create_user,
     delete_session,
     get_stored_user,
+    is_setup_required,
     list_users,
 )
 from .security import verify_password
@@ -61,6 +71,39 @@ def logout(
 def read_current_user(user: Annotated[User, Depends(get_current_user)]) -> User:
     """@brief Restituisce l'identita' associata al token di sessione corrente."""
     return user
+
+
+@auth_router.get("/setup-required", response_model=SetupStatus)
+def read_setup_required(
+    connection: sqlite3.Connection = Depends(get_db),
+) -> SetupStatus:
+    """@brief Indica se la dashboard deve mostrare la creazione del primo account.
+
+    @details Interrogato dal frontend prima di disegnare la schermata di
+    accesso: se la tabella `users` e' ancora vuota, al suo posto va mostrato
+    il form di creazione del primo amministratore.
+    """
+    return SetupStatus(setup_required=is_setup_required(connection))
+
+
+@auth_router.post("/bootstrap-admin", response_model=LoginResponse, status_code=201)
+def create_bootstrap_admin(
+    payload: BootstrapAdminRequest,
+    connection: sqlite3.Connection = Depends(get_db),
+) -> LoginResponse:
+    """@brief Crea il primo account (sempre amministratore) e apre subito una sessione.
+
+    @details Funziona una sola volta: appena esiste un account, qualunque
+    chiamata successiva viene rifiutata con 409, qualunque sia il contenuto
+    inviato. Non e' quindi possibile usare questo endpoint per bypassare il
+    pannello "Utenti" riservato agli amministratori gia' esistenti.
+    """
+    try:
+        created = bootstrap_admin(connection, payload.username, payload.password)
+    except SetupAlreadyComplete as error:
+        raise HTTPException(status_code=409, detail="setup already completed") from error
+    token, _ = create_session(connection, created.username, session_ttl_seconds())
+    return LoginResponse(token=token, user=created)
 
 
 @router.post("", response_model=User, status_code=201)

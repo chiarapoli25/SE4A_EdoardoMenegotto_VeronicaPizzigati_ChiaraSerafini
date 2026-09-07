@@ -48,6 +48,43 @@
       </div>
     </div>
 
+    <div id="bootstrap-screen" class="login-screen hidden">
+      <div class="login-card">
+        <div class="login-brand-panel">
+          <div class="login-brand">Smart<span class="brand-accent">Hydro</span></div>
+          <div class="login-tag">PRIMO AVVIO</div>
+          <p class="login-brand-text">Non esiste ancora nessun account su questo backend. Crea l'account amministratore per iniziare a usare la dashboard.</p>
+          <div class="sidebar-footer login-status">
+            <span class="status-dot"></span>
+            <div>
+              <div class="status-name">SmartHydro Backend</div>
+              <div class="status-detail">connessione…</div>
+            </div>
+          </div>
+        </div>
+        <div class="login-form-panel">
+          <div>
+            <h1 class="login-title">Crea il tuo account amministratore</h1>
+            <p class="login-subtitle">Sarà il primo account del sistema: avrà sempre pieni poteri di amministrazione.</p>
+          </div>
+          <div class="login-field">
+            <label for="bootstrap-username" class="login-label">UTENTE</label>
+            <input type="text" id="bootstrap-username" class="login-input" placeholder="es. admin" autocomplete="username">
+          </div>
+          <div class="login-field">
+            <label for="bootstrap-password" class="login-label">PASSWORD</label>
+            <input type="password" id="bootstrap-password" class="login-input" placeholder="••••••••" autocomplete="new-password">
+          </div>
+          <div id="bootstrap-error" class="login-error hidden"></div>
+          <button type="button" id="bootstrap-submit" class="btn btn-primary login-submit">Crea account amministratore</button>
+        </div>
+      </div>
+      <div class="login-disclaimer">
+        <span class="login-disclaimer-dot"></span>
+        <span>Questo form è disponibile solo finché non esiste nessun account: una volta creato il primo, ricompare il login normale.</span>
+      </div>
+    </div>
+
     <div class="app-shell hidden" id="app-shell">
       <aside class="sidebar">
         <div class="brand">Smart<span class="brand-accent">Hydro</span></div>
@@ -73,6 +110,9 @@
           </button>
           <button type="button" class="nav-item" data-view="control">
             <span class="nav-dot"></span>Controllo
+          </button>
+          <button type="button" class="nav-item" data-view="users">
+            <span class="nav-dot"></span>Utenti
           </button>
           <button type="button" class="nav-item" data-view="alerts">
             <span class="nav-dot"></span>Allarmi
@@ -100,6 +140,7 @@
         <section id="view-recipes" class="view hidden"></section>
         <section id="view-simulator" class="view hidden"></section>
         <section id="view-control" class="view hidden"></section>
+        <section id="view-users" class="view hidden"></section>
         <section id="view-alerts" class="view hidden"></section>
       </main>
     </div>

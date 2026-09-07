@@ -187,8 +187,13 @@ def test_admin_can_list_existing_accounts(client: TestClient) -> None:
     response = client.get("/users", headers=_auth_headers(token))
 
     assert response.status_code == 200
-    usernames = {user["username"] for user in response.json()}
+    body = response.json()
+    usernames = {user["username"] for user in body}
     assert {"admin", "agronomo"} <= usernames
+    # Ne' la password ne' il suo hash devono mai comparire, nemmeno qui.
+    for user in body:
+        assert "password" not in user
+        assert "password_hash" not in user
 
 
 def test_agronomo_cannot_list_accounts(client: TestClient) -> None:
@@ -197,3 +202,99 @@ def test_agronomo_cannot_list_accounts(client: TestClient) -> None:
     response = client.get("/users", headers=_auth_headers(token))
 
     assert response.status_code == 403
+
+
+@pytest.fixture()
+def empty_client() -> TestClient:
+    """@brief Client su un database con la tabella `users` ancora vuota."""
+    connection = sqlite3.connect(":memory:", check_same_thread=False)
+    init_db(connection)
+    # Niente seed_default_users() qui: e' esattamente lo scenario di "primo
+    # avvio" che gli endpoint setup-required/bootstrap-admin devono gestire.
+
+    def override_get_db():
+        yield connection
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+        connection.close()
+
+
+def test_setup_required_is_true_on_empty_database(
+    empty_client: TestClient,
+) -> None:
+    response = empty_client.get("/auth/setup-required")
+
+    assert response.status_code == 200
+    assert response.json() == {"setup_required": True}
+
+
+def test_setup_required_is_false_once_a_user_exists(client: TestClient) -> None:
+    response = client.get("/auth/setup-required")
+
+    assert response.status_code == 200
+    assert response.json() == {"setup_required": False}
+
+
+def test_bootstrap_admin_creates_the_first_account_and_logs_in(
+    empty_client: TestClient,
+) -> None:
+    response = empty_client.post(
+        "/auth/bootstrap-admin",
+        json={"username": "primo-admin", "password": "pass123"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["token"]
+    assert body["user"]["username"] == "primo-admin"
+    assert body["user"]["role"] == "admin"
+    assert "password" not in body["user"]
+
+    # Il token restituito e' gia' una sessione valida: nessun secondo
+    # /auth/login e' necessario per considerarsi "loggati automaticamente".
+    me_response = empty_client.get(
+        "/auth/me", headers=_auth_headers(body["token"])
+    )
+    assert me_response.status_code == 200
+    assert me_response.json()["username"] == "primo-admin"
+
+    # Da questo momento la tabella non e' piu' vuota.
+    setup_response = empty_client.get("/auth/setup-required")
+    assert setup_response.json() == {"setup_required": False}
+
+
+def test_bootstrap_admin_rejects_once_a_user_already_exists(
+    client: TestClient,
+) -> None:
+    # `client` semina gia' admin/agronomo: la tabella non e' vuota.
+    response = client.post(
+        "/auth/bootstrap-admin",
+        json={"username": "secondo-admin", "password": "pass123"},
+    )
+
+    assert response.status_code == 409
+
+    # Nessun account e' stato creato dal tentativo rifiutato.
+    login_response = client.post(
+        "/auth/login",
+        json={"username": "secondo-admin", "password": "pass123"},
+    )
+    assert login_response.status_code == 401
+
+
+def test_bootstrap_admin_rejects_regardless_of_payload_once_setup_is_done(
+    client: TestClient,
+) -> None:
+    # Anche riusando lo username di un account gia' esistente, o qualsiasi
+    # altro valore, la risposta resta sempre 409: l'endpoint non deve mai
+    # piu' creare nulla una volta che esiste almeno un utente.
+    response = client.post(
+        "/auth/bootstrap-admin",
+        json={"username": "admin", "password": "qualcosa-di-diverso"},
+    )
+
+    assert response.status_code == 409
