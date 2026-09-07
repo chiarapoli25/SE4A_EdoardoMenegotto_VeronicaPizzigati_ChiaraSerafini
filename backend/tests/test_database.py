@@ -11,6 +11,9 @@ from backend.app.database import (
     init_db,
     save_recipe,
 )
+from backend.app.features.control_strategy.repository import (
+    get_all as get_control_strategy_settings,
+)
 from backend.app.models import Recipe
 
 
@@ -24,6 +27,25 @@ def connection() -> sqlite3.Connection:
         conn.close()
 
 
+def _assert_recipe_round_trips_except_global_strategy(
+    stored: Recipe, saved: Recipe, connection: sqlite3.Connection
+) -> None:
+    """Da quando Strategy e parametri di controllo sono un'impostazione
+    globale per variabile (vedi control_strategy/) e non piu' una
+    caratteristica della singola ricetta, una lettura non restituisce piu'
+    esattamente cio' che e' stato salvato per `controllers[*]`: viene
+    invece ristampata dall'impostazione corrente (recipes/repository.py::
+    _stamp_global_strategy). Tutto il resto della ricetta — fasi, target,
+    limiti di sicurezza, identificativi — fa ancora un round-trip esatto.
+    """
+    assert stored.model_dump(exclude={"controllers"}) == saved.model_dump(
+        exclude={"controllers"}
+    )
+    settings = get_control_strategy_settings(connection)
+    for controller in stored.controllers:
+        assert controller.selected_strategy == settings[controller.variable]
+
+
 def test_save_and_get_recipe_round_trip(
     connection: sqlite3.Connection, example_recipe: Recipe
 ) -> None:
@@ -31,7 +53,9 @@ def test_save_and_get_recipe_round_trip(
 
     stored = get_recipe(connection, example_recipe.id)
 
-    assert stored == example_recipe
+    _assert_recipe_round_trips_except_global_strategy(
+        stored, example_recipe, connection
+    )
 
 
 def test_get_missing_recipe_returns_none(connection: sqlite3.Connection) -> None:
@@ -124,7 +148,9 @@ def test_save_recipe_upserts_on_higher_version(
 
     save_recipe(connection, updated)
 
-    assert get_recipe(connection, updated.id) == updated
+    _assert_recipe_round_trips_except_global_strategy(
+        get_recipe(connection, updated.id), updated, connection
+    )
 
 
 def test_save_recipe_rejects_non_increasing_version(

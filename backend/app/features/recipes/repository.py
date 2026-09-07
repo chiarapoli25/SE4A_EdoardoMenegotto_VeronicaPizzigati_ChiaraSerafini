@@ -4,11 +4,41 @@
 
 import sqlite3
 
+from ..control_strategy.repository import get_all as get_control_strategy_settings
 from .models import Recipe
+from .parameters import default_parameters_for
 
 
 class RecipeVersionConflict(Exception):
     """@brief Segnala una versione non maggiore di quella gia salvata."""
+
+
+def _stamp_global_strategy(connection: sqlite3.Connection, recipe: Recipe) -> Recipe:
+    """@brief Sovrascrive Strategy e parametri con l'impostazione globale.
+
+    @details La Strategy non e' piu' una caratteristica della singola
+    ricetta (vedi ../control_strategy/): questo e' l'unico punto in cui una
+    `Recipe` viene letta dal database, quindi basta ristampare qui perche'
+    ogni consumatore — le rotte GET, la ricetta imbustata nei comandi zona,
+    il Simulatore batch — veda sempre la scelta corrente, anche per ricette
+    salvate prima dell'ultimo cambio. Setpoint e range restano quelli della
+    ricetta (variano per reparto/specie); solo Strategy e i suoi parametri
+    derivati diventano globali, usando il target della prima fase come
+    riferimento — la stessa convenzione gia' usata in fase di creazione
+    ricetta sia da `catalog.py` sia dalla dashboard.
+    """
+    settings = get_control_strategy_settings(connection)
+    first_phase_targets = {
+        target.variable: target for target in recipe.phases[0].targets
+    }
+    for controller in recipe.controllers:
+        strategy = settings[controller.variable]
+        target = first_phase_targets.get(controller.variable)
+        controller.selected_strategy = strategy
+        controller.parameters = default_parameters_for(
+            strategy, controller.variable, target
+        )
+    return recipe
 
 
 def save_recipe(connection: sqlite3.Connection, recipe: Recipe) -> None:
@@ -53,7 +83,7 @@ def get_recipe(connection: sqlite3.Connection, recipe_id: str) -> Recipe | None:
     ).fetchone()
     if row is None:
         return None
-    return Recipe.model_validate_json(row[0])
+    return _stamp_global_strategy(connection, Recipe.model_validate_json(row[0]))
 
 
 def list_recipes(connection: sqlite3.Connection) -> list[Recipe]:
@@ -61,4 +91,7 @@ def list_recipes(connection: sqlite3.Connection) -> list[Recipe]:
     rows = connection.execute(
         "SELECT data FROM recipes ORDER BY id"
     ).fetchall()
-    return [Recipe.model_validate_json(row[0]) for row in rows]
+    return [
+        _stamp_global_strategy(connection, Recipe.model_validate_json(row[0]))
+        for row in rows
+    ]

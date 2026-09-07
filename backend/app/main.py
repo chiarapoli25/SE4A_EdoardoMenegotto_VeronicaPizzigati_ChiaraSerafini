@@ -18,6 +18,7 @@ from .core.config import default_edge_id, offline_threshold_seconds
 from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
 from .features.commands.routes import router as command_router
+from .features.control_strategy.routes import router as control_strategy_router
 from .features.cultivations.routes import router as cultivation_router
 from .features.events.routes import router as event_router
 from .features.plants.routes import router as plant_router
@@ -76,7 +77,7 @@ app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["null"],
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     # Content-Type per i body JSON, Authorization per il token di sessione
     # che apiRequest() allega dopo il login (vedi features/users).
     allow_headers=["Content-Type", "Authorization"],
@@ -90,6 +91,7 @@ app.include_router(edge_router)
 app.include_router(telemetry_router)
 app.include_router(actuator_router)
 app.include_router(recipe_router)
+app.include_router(control_strategy_router)
 app.include_router(event_router)
 app.include_router(command_router)
 app.include_router(plant_router)

@@ -359,6 +359,15 @@ def init_db(connection: sqlite3.Connection) -> None:
     _migrate_recipe_catalog_version(connection)
     connection.execute(
         """
+        CREATE TABLE IF NOT EXISTS control_strategy_settings (
+            variable TEXT PRIMARY KEY,
+            selected_strategy TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE IF NOT EXISTS zones (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -688,9 +697,13 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
     )
 
+    from ..features.control_strategy.repository import (
+        seed_defaults as seed_control_strategy_defaults,
+    )
     from ..features.recipes.catalog import seed_recipe_catalog
 
     seed_recipe_catalog(connection)
+    seed_control_strategy_defaults(connection)
     # Gli account non vengono piu' seminati automaticamente all'avvio: un
     # admin/pass123 cablato nel codice di startup e' un rischio di sicurezza
     # (vedi discussione merge del 2026-09-07). Il primo account si crea in

@@ -155,11 +155,13 @@ const SUBSTRATE_LABELS = {
 /* by smarthydro::RecipeControlSystem::validate_recipe() on the Edge — */
 /* REQUIRED_DEFAULT_STRATEGY below must keep matching both, or a       */
 /* submitted recipe comes back as a 422 (it's sent unconditionally,   */
-/* see buildRecipePayload). selected_strategy is a free choice among   */
-/* STRATEGIES for every variable, N/P/K included: Threshold, PID and   */
-/* Predictive are all valid regardless of input_source (see the        */
-/* CHOOSABLE_STRATEGIES comment above for why N/P/K used to be locked  */
-/* to Predictive and no longer are).                                   */
+/* see buildRecipePayload). selected_strategy is NOT a per-recipe      */
+/* choice this form exposes: it's a plant-wide setting (see            */
+/* Controllo/renderGlobalStrategyPanel and                             */
+/* backend/app/features/control_strategy/) — the form shows it read-   */
+/* only per variable (currentControlStrategy()) and the payload just   */
+/* carries that same value, since the backend re-derives it from the   */
+/* global setting on every read regardless of what's submitted.        */
 /* ------------------------------------------------------------------ */
 
 const NUTRIENT_VARIABLES = ["nitrogen", "phosphorus", "potassium"];
@@ -356,26 +358,34 @@ const STATE = {
     status: null,
   },
 
-  // Plant-wide Strategy panel (Controllo page, Amministratore-only): one
-  // Strategy choice per variable in GLOBAL_STRATEGY_VARIABLES, applied as a
-  // separate ChangeStrategy+ConfirmConfiguration command to every production
-  // zone (department 1-4) that currently has an active cultivation — see
-  // applyGlobalStrategy(). Keyed by variable key throughout:
-  //  - drafts: the <select>'s chosen-but-not-yet-applied value (defaults to
-  //    REQUIRED_DEFAULT_STRATEGY at render time when absent) — persisted
-  //    here so a background renderControl() (the 6s zones poll) doesn't
-  //    reset an in-progress selection.
-  //  - status: "sending" | "waiting" | "done" | null — "sending" while the
-  //    per-zone commands are being posted, "waiting" while polling for the
-  //    Edge Controller to confirm each one, "done" once every targeted zone
-  //    has resolved (success or timeout). Gates the Apply button so a
-  //    second click can't overlap an in-flight batch for the same variable.
-  //  - results: array of { zoneId, label, status: "waiting"|"success"|
-  //    "timeout"|"error", message } — the real per-zone outcome, shown
-  //    instead of a single generic "fatto" (see the panel's own comment).
-  //    Left in place (not cleared) after status flips to "done" so the
-  //    summary stays visible until the next apply.
-  globalStrategy: { drafts: {}, status: {}, results: {} },
+  // Strategy di controllo a livello di impianto (pagina Controllo,
+  // Amministratore-only per la scrittura — GET /control-strategy e' invece
+  // leggibile da qualunque account, cosi' la pagina Ricette puo' mostrare
+  // in sola lettura la Strategy in vigore). Non e' piu' una caratteristica
+  // di ogni singola ricetta (vedi backend/app/features/control_strategy/):
+  // un'unica scelta per variabile, persistita dal server e valida per
+  // tutto l'impianto, incluse ricette non ancora assegnate a un settore e
+  // il Simulatore batch. Keyed by variable key throughout:
+  //  - settings: l'ultimo valore confermato dal server (GET/PUT
+  //    /control-strategy) — vedi ensureControlStrategyLoaded().
+  //  - drafts: la scelta nel <select> non ancora inviata (persistita qui
+  //    cosi' un renderControl() in background, il poll zone ogni 6s, non
+  //    perde una selezione in corso).
+  //  - status: "sending" | "waiting" | "done" | null — "sending" durante
+  //    la PUT, "waiting" mentre si attende che ogni settore gia' in
+  //    coltivazione confermi il cambio live che il backend ha appena
+  //    fatto per suo conto, "done" quando ogni settore coinvolto si e'
+  //    risolto (successo o timeout). Gate sul pulsante "Applica" cosi' un
+  //    secondo click non sovrappone un invio ancora in corso per la stessa
+  //    variabile.
+  //  - results: array di { zoneId, label, status: "waiting"|"success"|
+  //    "timeout"|"error", message } — l'esito reale per settore, mostrato
+  //    al posto di un singolo "fatto" generico (un cambio del genere puo',
+  //    e su un settore non Running lo fara' davvero, riuscire per alcuni
+  //    settori e non per altri). Lasciato in piedi (non azzerato) dopo che
+  //    lo status passa a "done", cosi' il riepilogo resta visibile fino al
+  //    prossimo invio.
+  controlStrategy: { settings: {}, loaded: false, loading: false, drafts: {}, status: {}, results: {} },
   // setInterval ids started by applyGlobalStrategy's per-variable polling —
   // tracked separately from STATE.adhocIntervals (that one is cleared by
   // closeModal(), but this panel lives in the page itself, not a pop-up) so
@@ -528,6 +538,7 @@ async function apiRequest(method, path, { params, body } = {}) {
 const apiGet = (path, params) => apiRequest("GET", path, { params });
 const apiPost = (path, body) => apiRequest("POST", path, { body });
 const apiPatch = (path, body) => apiRequest("PATCH", path, { body });
+const apiPut = (path, body) => apiRequest("PUT", path, { body });
 const apiDelete = (path) => apiRequest("DELETE", path, {});
 
 /**
@@ -662,6 +673,43 @@ function activeProductionZones() {
   return STATE.zones.filter((z) => z.department_number >= 1 && z.department_number <= 4 && !!z.active_cultivation_id);
 }
 
+/** Loads the current plant-wide Strategy per variable (GET /control-strategy)
+ * into STATE.controlStrategy.settings, once — subsequent calls are no-ops
+ * until the settings are explicitly refreshed by a successful
+ * applyGlobalStrategy(). Called both from renderGlobalStrategyPanel() (the
+ * Controllo page) and from the recipe form (which shows the same values
+ * read-only), same lazy-load pattern as ensureUsersLoaded()/
+ * ensureRecipeLoaded(). Readable by any logged-in account — only the PUT is
+ * Amministratore-only — so an agronomo opening Ricette also sees the real
+ * current Strategy, not just REQUIRED_DEFAULT_STRATEGY's fallback. */
+async function ensureControlStrategyLoaded() {
+  const cs = STATE.controlStrategy;
+  if (cs.loaded || cs.loading) return;
+  cs.loading = true;
+  try {
+    const rows = await apiGet("/control-strategy");
+    rows.forEach((row) => { cs.settings[row.variable] = row.selected_strategy; });
+    cs.loaded = true;
+  } catch (err) {
+    // Left un-loaded on failure: renderers fall back to
+    // REQUIRED_DEFAULT_STRATEGY, and the next render retries.
+  } finally {
+    cs.loading = false;
+    // Two call sites read this: renderGlobalStrategyPanel() (Controllo) and
+    // the recipe form's read-only Strategy cells (opened as a modal, not a
+    // view) — refresh whichever is actually showing.
+    if (STATE.modalKind === "recipe-form") renderModalIfSafe();
+    else renderControlIfSafe();
+  }
+}
+
+/** Current Strategy for a variable — the server's answer once loaded,
+ * REQUIRED_DEFAULT_STRATEGY as a placeholder before the first successful
+ * ensureControlStrategyLoaded(). */
+function currentControlStrategy(variableKey) {
+  return STATE.controlStrategy.settings[variableKey] || REQUIRED_DEFAULT_STRATEGY[variableKey];
+}
+
 function setPageTitle(title, subtitle) {
   document.getElementById("page-title").textContent = title;
   document.getElementById("page-subtitle").textContent = subtitle;
@@ -732,16 +780,20 @@ function bandCalc(value, min, max) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Strategy-change command payloads                                   */
+/* Strategy parameters — recipe payload placeholder only               */
 /*                                                                    */
-/* The backend accepts an untyped JSON payload for ChangeStrategy     */
-/* (see features/commands/models.py); the Edge Controller is the one  */
-/* that interprets `parameters` against ThresholdConfig / PidConfig / */
-/* PredictiveConfig. This dashboard only exposes a Strategy choice per */
-/* variable (per the control-table spec), so it derives reasonable    */
-/* default parameters from the recipe's phase target — mirroring the  */
-/* defaults backend/app/features/recipes/catalog.py seeds recipes     */
-/* with. Fine-tuning individual gains is out of scope for this UI.    */
+/* Strategy is a plant-wide setting now (see control_strategy/ on the  */
+/* backend and renderGlobalStrategyPanel() below), not a per-recipe    */
+/* choice: the live ChangeStrategy+ConfirmConfiguration fan-out this   */
+/* function used to feed has moved server-side into                    */
+/* PUT /control-strategy/{variable}, which derives its own parameters  */
+/* (backend/app/features/recipes/parameters.py — a Python port of the  */
+/* same formulas below). This copy survives only to fill               */
+/* controllers[*].parameters in buildRecipePayload(): the backend      */
+/* always re-derives Strategy and parameters from the current global   */
+/* setting on every read (recipes/repository.py), so whatever is sent  */
+/* here is a placeholder that satisfies the Recipe schema, not what    */
+/* ends up in effect.                                                  */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -1941,7 +1993,7 @@ function renderRecipeModal() {
           <div class="data-table-head cols-recipe"><span>VARIABILE</span><span>SETPOINT</span><span>MIN</span><span>MAX</span><span>STRATEGIA</span></div>
           ${rows}
         </div>
-        <div class="empty-note">Durata fase: ${fmtNum(phase.duration_hours, 1)} h · fotoperiodo dalle ${fmtNum(phase.photoperiod.start_hour, 1)} per ${fmtNum(phase.photoperiod.duration_hours, 1)} h (fino alle ${fmtNum(photoEnd, 1)}) · setpoint, banda e strategia sono definiti a livello di ricetta e non sono modificabili da questa dashboard.</div>
+        <div class="empty-note">Durata fase: ${fmtNum(phase.duration_hours, 1)} h · fotoperiodo dalle ${fmtNum(phase.photoperiod.start_hour, 1)} per ${fmtNum(phase.photoperiod.duration_hours, 1)} h (fino alle ${fmtNum(photoEnd, 1)}) · setpoint e banda sono definiti a livello di ricetta, la Strategia a livello di impianto dalla pagina Controllo — nessuno dei due è modificabile da questa vista.</div>
       </div>
     </div>
   `;
@@ -2836,8 +2888,11 @@ function buildBlankDraft() {
     care_profile: { light: "", watering: "", temperature: "", fertilization: "" },
     phases: [defaultPhase(phaseNameOptionsFor("1")[0])],
     activePhaseIdx: 0,
+    // No selected_strategy here: Strategy is a plant-wide setting (see
+    // Controllo/renderGlobalStrategyPanel), not something this form lets
+    // the user choose per recipe — buildRecipePayload() reads the current
+    // one from STATE.controlStrategy when it assembles the payload.
     controllers: Object.fromEntries(VARIABLES.map((v) => [v.key, {
-      selected_strategy: REQUIRED_DEFAULT_STRATEGY[v.key],
       output_limits: defaultOutputLimits(v.key),
     }])),
     status: null,
@@ -2871,8 +2926,9 @@ function buildDraftFromRecipe(recipe) {
       }])),
     })),
     activePhaseIdx: 0,
+    // See buildBlankDraft's comment: c.selected_strategy (whatever the
+    // backend last stamped this recipe with) isn't editable here.
     controllers: Object.fromEntries(recipe.controllers.map((c) => [c.variable, {
-      selected_strategy: c.selected_strategy,
       output_limits: { ...c.output_limits },
     }])),
     status: null,
@@ -3025,13 +3081,13 @@ function buildRecipePayload(draft) {
 
   const controllers = VARIABLES.map((v) => {
     const c = draft.controllers[v.key];
-    // "selected_strategy vuoto -> default_strategy" fallback from the task
-    // spec: structurally the form always has a value here (every draft is
-    // initialized with one, and every variable's select always has a
-    // selection), but this keeps the one place a blank UI value could
-    // theoretically reach this function defensive rather than silently
-    // sending an invalid payload.
-    const selected = c.selected_strategy || REQUIRED_DEFAULT_STRATEGY[v.key];
+    // Strategy is plant-wide now (see Controllo/renderGlobalStrategyPanel):
+    // this form has no per-variable choice to read, so the payload just
+    // carries the current global setting — the backend re-derives Strategy
+    // and parameters from it on every read regardless (recipes/
+    // repository.py), so this is a schema-satisfying placeholder, not what
+    // ends up in effect.
+    const selected = currentControlStrategy(v.key);
     const firstTarget = phases[0].targets.find((t) => t.variable === v.key);
     return {
       variable: v.key,
@@ -3109,6 +3165,11 @@ function renderRecipeFormModal() {
   const wrap = document.getElementById("modal-content");
   if (!draft) { wrap.innerHTML = ""; return; }
 
+  // The Strategy cells below read STATE.controlStrategy — load it once per
+  // visit, same lazy pattern as ensureUsersLoaded()/renderUserManagementPanel.
+  const cs = STATE.controlStrategy;
+  if (!cs.loaded && !cs.loading) ensureControlStrategyLoaded();
+
   const sending = draft.status === "sending";
   const idx = Math.min(draft.activePhaseIdx, draft.phases.length - 1);
   const phase = draft.phases[idx];
@@ -3144,9 +3205,9 @@ function renderRecipeFormModal() {
 
   const controllerRows = VARIABLES.map((v) => {
     const c = draft.controllers[v.key];
-    const strategyCell = `<select class="form-select" data-action="recipe-form-select" data-path="controllers.${v.key}.selected_strategy">
-          ${STRATEGIES.map((s) => `<option value="${s}" ${c.selected_strategy === s ? "selected" : ""}>${s}</option>`).join("")}
-        </select>`;
+    // Strategy si sceglie da Controllo, non qui — vedi lo stesso pattern
+    // di sola lettura in renderZoneAdvanced/renderZoneSummary.
+    const strategyCell = `<div class="readonly-cell" title="La Strategia si imposta a livello di impianto dalla pagina Controllo, non per singola ricetta">${escapeHtml(currentControlStrategy(v.key))}</div>`;
     const limitCells = OUTPUT_LIMIT_FIELDS.map((f) => `
       <div>
         <input type="number" step="any" min="0" class="form-num" data-action="recipe-form-input" data-path="controllers.${v.key}.output_limits.${f.key}" value="${escapeAttr(c.output_limits[f.key])}" title="${f.label} (${f.unit})">
@@ -3283,14 +3344,16 @@ function renderRecipeFormModal() {
 /* Control view: plant-wide Strategy panel + all sectors in a table   */
 /*                                                                    */
 /* Amministratore-only page (see isAdmin()/switchView()). The panel   */
-/* below replaces what used to be a per-sector Strategy choice inside */
-/* "Controllo avanzato" (see renderZoneAdvanced): there is no "change  */
-/* everywhere at once" command on the backend, so applying a Strategy */
-/* here fans out into one ChangeStrategy(+ConfirmConfiguration)       */
-/* command per currently-active production zone (activeProductionZones)*/
-/* and reports each zone's real outcome — not a single generic "fatto",*/
-/* since a broadcast like this can (and, on a zone that isn't Running, */
-/* will) succeed for some sectors and not others.                     */
+/* below sends PUT /control-strategy/{variable}: the backend persists  */
+/* the choice once for the whole impianto (used by every future        */
+/* ricetta/settore/simulazione — see recipes/repository.py's read-time */
+/* stamping), then does the same "one ChangeStrategy(+Confirm          */
+/* Configuration) command per currently-active production zone" fan-   */
+/* out server-side that this file used to do itself (see               */
+/* backend/app/features/control_strategy/routes.py). What's left here  */
+/* is just showing each zone's real live-confirmation outcome — not a  */
+/* single generic "fatto", since that fan-out can (and, on a zone      */
+/* that isn't Running, will) succeed for some sectors and not others.  */
 /* ------------------------------------------------------------------ */
 
 /** Whether the one thing worth protecting from a background re-render on
@@ -3302,7 +3365,7 @@ function renderRecipeFormModal() {
  * showing the per-zone results a click just kicked off, until the admin
  * happened to click/tab somewhere else. A focused button (or a focused
  * global-strategy <select> — its choice already survives a re-render via
- * STATE.globalStrategy.drafts, same as the old per-zone code protected
+ * STATE.controlStrategy.drafts, same as the old per-zone code protected
  * strategyDrafts) has nothing left to lose from being rebuilt underneath it.
  * (The "Gestione utenti" create-account fields used to need the same
  * protection here too, back when that panel was embedded in this page —
@@ -3325,16 +3388,16 @@ function clearGlobalStrategyPolls() {
   // away is left at whatever per-zone results it already has — marked
   // "done" so a later revisit doesn't show a stuck spinner for a poll that
   // isn't actually running anymore.
-  const status = STATE.globalStrategy.status;
+  const status = STATE.controlStrategy.status;
   Object.keys(status).forEach((k) => {
     if (status[k] === "sending" || status[k] === "waiting") status[k] = "done";
   });
 }
 
-/** Returns a cached full recipe (with `phases`, needed for
- * findPhaseTarget/buildStrategyParameters) or fetches+caches it — mirrors
- * the same STATE.recipesById cache openRecipeModal()/tickRecipes() use, so
- * a recipe already seen on the Ricette/Simulatore pages isn't re-fetched. */
+/** Returns a cached full recipe (with `phases`, needed by e.g. the
+ * Simulatore's phase/target lookups) or fetches+caches it — mirrors the
+ * same STATE.recipesById cache openRecipeModal()/tickRecipes() use, so a
+ * recipe already seen on the Ricette/Simulatore pages isn't re-fetched. */
 async function ensureRecipeLoaded(recipeId) {
   if (!recipeId) return null;
   const cached = STATE.recipesById[recipeId];
@@ -3345,65 +3408,36 @@ async function ensureRecipeLoaded(recipeId) {
 }
 
 function globalStrategyResultText(r) {
-  if (r.status === "sending") return "invio…";
   if (r.status === "waiting") return "in attesa…";
   if (r.status === "success") return "confermata ✓";
   if (r.status === "timeout") return "nessuna conferma (verifica che sia Running)";
-  if (r.status === "error") return `errore: ${r.message || "invio non riuscito"}`;
   return "";
 }
 
 function onGlobalStrategyDraftChange(variableKey, value) {
-  STATE.globalStrategy.drafts[variableKey] = value;
+  STATE.controlStrategy.drafts[variableKey] = value;
   renderControlIfSafe();
-}
-
-/** Sends ChangeStrategy (+ ConfirmConfiguration, same two-command sequence
- * the old per-zone flow used — see the removed sendStrategyChange) to one
- * zone, updating that zone's entry in STATE.globalStrategy.results[key] in
- * place. Never throws: a failed send is recorded as this zone's result,
- * not a rejection that would stop the other zones in the batch. */
-async function sendGlobalStrategyToZone(variableKey, strategy, zone) {
-  const entry = STATE.globalStrategy.results[variableKey]?.find((r) => r.zoneId === zone.id);
-  try {
-    const recipe = await ensureRecipeLoaded(zone.active_recipe_id);
-    const target = findPhaseTarget(recipe, zone.current_phase, variableKey);
-    const params = buildStrategyParameters(strategy, target, variableKey);
-    const base = `global-strategy-${zone.id}-${variableKey}-${Date.now()}`;
-    await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
-      command_id: base,
-      command_type: "ChangeStrategy",
-      payload: { variable: variableKey, strategy, parameters: params },
-    });
-    await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
-      command_id: base + "-confirm",
-      command_type: "ConfirmConfiguration",
-      payload: { variable: variableKey },
-    });
-    if (entry) entry.status = "waiting";
-  } catch (err) {
-    if (entry) { entry.status = "error"; entry.message = err.message; }
-  }
 }
 
 function finishGlobalStrategyPoll(iv, variableKey) {
   clearInterval(iv);
   STATE.controlAdhocIntervals = STATE.controlAdhocIntervals.filter((x) => x !== iv);
-  STATE.globalStrategy.status[variableKey] = "done";
+  STATE.controlStrategy.status[variableKey] = "done";
   renderControlIfSafe();
 }
 
-/** Polls only STATE.globalStrategy.results[variableKey] entries still
- * "waiting" (queued or in-flight commands resolve into this state — see
- * sendGlobalStrategyToZone), same GET-the-zone-and-compare-current_strategies
- * approach and COMMAND_TIMEOUT_MS timeout as the old single-zone
- * pollForStrategyApplied — just fanned out across every targeted zone each
- * tick instead of one. A zone that never confirms (e.g. not Running) ends
- * up "timeout", not silently forgotten. */
+/** Polls only STATE.controlStrategy.results[variableKey] entries still
+ * "waiting" — the live confirmation of the ChangeStrategy+
+ * ConfirmConfiguration pair the backend already fanned out to every active
+ * production zone inside PUT /control-strategy/{variable} (see
+ * applyGlobalStrategy). Same GET-the-zone-and-compare-current_strategies
+ * approach and COMMAND_TIMEOUT_MS timeout the old client-side fan-out used.
+ * A zone that never confirms (e.g. not Running) ends up "timeout", not
+ * silently forgotten. */
 function pollGlobalStrategyResults(variableKey, strategy) {
   const startedAt = Date.now();
   const iv = setInterval(async () => {
-    const results = STATE.globalStrategy.results[variableKey] || [];
+    const results = STATE.controlStrategy.results[variableKey] || [];
     const pending = results.filter((r) => r.status === "waiting");
     if (pending.length === 0) {
       finishGlobalStrategyPoll(iv, variableKey);
@@ -3423,41 +3457,60 @@ function pollGlobalStrategyResults(variableKey, strategy) {
       if (timedOut) entry.status = "timeout";
     });
     renderControlIfSafe();
-    if (results.every((r) => r.status !== "sending" && r.status !== "waiting")) {
+    if (results.every((r) => r.status !== "waiting")) {
       finishGlobalStrategyPoll(iv, variableKey);
     }
   }, COMMAND_POLL_MS);
   STATE.controlAdhocIntervals.push(iv);
 }
 
+/** Persists the plant-wide Strategy for one variable (PUT
+ * /control-strategy/{variable}) — a single call, replacing what used to be
+ * an N-zone client-side fan-out (see the section comment above): the
+ * backend both saves the setting (so it's picked up by every future
+ * ricetta/settore/simulazione, no exceptions) and pushes the same live
+ * ChangeStrategy+ConfirmConfiguration pair to every zone already in
+ * coltivazione. What's left to do here is just watch those zones confirm,
+ * same as before. */
 async function applyGlobalStrategy(variableKey) {
-  const gs = STATE.globalStrategy;
+  const gs = STATE.controlStrategy;
   if (gs.status[variableKey] === "sending" || gs.status[variableKey] === "waiting") return;
-  const strategy = gs.drafts[variableKey] || REQUIRED_DEFAULT_STRATEGY[variableKey];
+  const strategy = gs.drafts[variableKey] || currentControlStrategy(variableKey);
   gs.drafts[variableKey] = strategy;
-  const targets = activeProductionZones();
-  if (targets.length === 0) {
-    showToast("Nessun settore produttivo ha una coltivazione attiva al momento.", "warn");
-    return;
-  }
   gs.status[variableKey] = "sending";
-  gs.results[variableKey] = targets.map((z) => ({ zoneId: z.id, label: zoneLabel(z), status: "sending", message: null }));
   renderControlIfSafe();
 
-  await Promise.all(targets.map((zone) => sendGlobalStrategyToZone(variableKey, strategy, zone)));
+  try {
+    await apiPut(`/control-strategy/${encodeURIComponent(variableKey)}`, { selected_strategy: strategy });
+    gs.settings[variableKey] = strategy;
+  } catch (err) {
+    gs.status[variableKey] = "done";
+    renderControlIfSafe();
+    showToast(`Impossibile aggiornare la Strategy: ${err.message}`, "error");
+    return;
+  }
 
+  const targets = activeProductionZones();
+  if (targets.length === 0) {
+    gs.status[variableKey] = "done";
+    gs.results[variableKey] = [];
+    renderControlIfSafe();
+    return;
+  }
   gs.status[variableKey] = "waiting";
+  gs.results[variableKey] = targets.map((z) => ({ zoneId: z.id, label: zoneLabel(z), status: "waiting", message: null }));
   renderControlIfSafe();
   pollGlobalStrategyResults(variableKey, strategy);
 }
 
 function renderGlobalStrategyPanel() {
+  ensureControlStrategyLoaded();
   const targets = activeProductionZones();
-  const gs = STATE.globalStrategy;
+  const gs = STATE.controlStrategy;
 
   const editableRows = GLOBAL_STRATEGY_VARIABLES.map((key) => {
     const v = VARIABLES_BY_KEY[key];
-    const draft = gs.drafts[key] || REQUIRED_DEFAULT_STRATEGY[key];
+    const draft = gs.drafts[key] || currentControlStrategy(key);
     const status = gs.status[key];
     const busy = status === "sending" || status === "waiting";
     const results = gs.results[key] || [];
@@ -3467,19 +3520,19 @@ function renderGlobalStrategyPanel() {
     else if (status === "waiting") buttonLabel = "In attesa di conferma…";
 
     const successCount = results.filter((r) => r.status === "success").length;
-    const failCount = results.filter((r) => r.status === "timeout" || r.status === "error").length;
+    const failCount = results.filter((r) => r.status === "timeout").length;
 
     const resultsHtml = results.length ? `
       <div class="global-strategy-results">
         <div class="global-strategy-summary">
           ${busy
-            ? `Applicazione in corso su ${results.length} settor${results.length === 1 ? "e" : "i"}…`
+            ? `Conferma in corso su ${results.length} settor${results.length === 1 ? "e" : "i"} gia' in coltivazione…`
             : `${successCount} di ${results.length} settor${results.length === 1 ? "e confermato" : "i confermati"}${failCount ? ` · ${failCount} senza conferma` : ""}`}
         </div>
         ${results.map((r) => `
           <div class="global-strategy-result-row">
             <span class="label mono">${escapeHtml(r.label)}</span>
-            <span class="strategy-status ${r.status === "success" ? "applied" : (r.status === "sending" || r.status === "waiting") ? "pending" : "failed"}">${globalStrategyResultText(r)}</span>
+            <span class="strategy-status ${r.status === "success" ? "applied" : r.status === "waiting" ? "pending" : "failed"}">${globalStrategyResultText(r)}</span>
           </div>
         `).join("")}
       </div>
@@ -3492,7 +3545,7 @@ function renderGlobalStrategyPanel() {
           <select data-action="global-strategy-select" data-variable="${key}" ${busy ? "disabled" : ""}>
             ${CHOOSABLE_STRATEGIES.map((s) => `<option value="${s}" ${draft === s ? "selected" : ""}>${s}</option>`).join("")}
           </select>
-          <button type="button" class="btn btn-warn" data-action="apply-global-strategy" data-variable="${key}" ${busy || targets.length === 0 ? "disabled" : ""}>${buttonLabel}</button>
+          <button type="button" class="btn btn-warn" data-action="apply-global-strategy" data-variable="${key}" ${busy ? "disabled" : ""}>${buttonLabel}</button>
         </div>
         <div class="global-strategy-scope">${targets.length} settor${targets.length === 1 ? "e attivo" : "i attivi"}</div>
       </div>
@@ -3504,16 +3557,18 @@ function renderGlobalStrategyPanel() {
     <div class="zone-section" style="margin-bottom:22px">
       <div class="zone-section-title">Strategia di controllo — a livello di impianto</div>
       <div class="empty-note" style="margin-bottom:16px">
-        Scegli una Strategy per variabile: si applica subito a ogni settore produttivo (reparti 1-4) con una coltivazione attiva
-        ${targets.length ? ` — <b>${targets.length}</b> al momento (${targets.map(zoneLabel).join(", ")})` : ", ma nessun settore ne ha una al momento"}.
+        Scegli una Strategy per variabile: vale subito per l'intero impianto — ogni ricetta, nuovo settore o simulazione la
+        userà, non solo i settori con una coltivazione già in corso. Chi è già in coltivazione
+        ${targets.length ? ` (<b>${targets.length}</b> al momento: ${targets.map(zoneLabel).join(", ")})` : " (nessuno al momento)"}
+        riceve in più una conferma live immediata, tracciata qui sotto.
         Azoto, Fosforo e Potassio scelgono fra Threshold, PID e Predictive come le altre variabili.
       </div>
       <div class="data-table">
-        <div class="data-table-head cols-global-strategy"><span>VARIABILE</span><span>STRATEGIA</span><span>SETTORI COINVOLTI</span></div>
+        <div class="data-table-head cols-global-strategy"><span>VARIABILE</span><span>STRATEGIA</span><span>SETTORI IN COLTIVAZIONE</span></div>
         ${editableRows}
       </div>
       <div class="recipe-hint-box" style="margin-top:16px">
-        <span>Questa scelta si applica ora ai settori attivi. Un nuovo settore o un cambio di ricetta futuro riprenderanno la Strategy definita dalla ricetta assegnata, non questa impostazione — andrà riapplicata se necessario.</span>
+        <span>Questa scelta è permanente: resta in vigore fino al prossimo cambio da questa pagina, per ogni settore, ricetta futura e per il Simulatore.</span>
       </div>
     </div>
   `;
@@ -5519,7 +5574,7 @@ async function logout() {
   discardActiveSimulationIfAny();
   STATE.simulation = null;
   clearGlobalStrategyPolls();
-  STATE.globalStrategy = { drafts: {}, status: {}, results: {} };
+  STATE.controlStrategy = { settings: {}, loaded: false, loading: false, drafts: {}, status: {}, results: {} };
   STATE.users = {
     list: [], loaded: false, loading: false, error: null,
     form: { username: "", password: "", displayName: "", role: "agronomo" },

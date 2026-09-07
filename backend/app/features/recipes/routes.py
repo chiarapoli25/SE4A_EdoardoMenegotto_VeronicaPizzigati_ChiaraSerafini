@@ -25,13 +25,24 @@ def create_recipe(
     recipe: Recipe,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Recipe:
-    """Valida e salva integralmente la ricetta in SQLite."""
+    """Valida e salva integralmente la ricetta in SQLite.
+
+    @details Restituisce la ricetta ricaricata da `get_recipe`, non
+    l'oggetto ricevuto in ingresso: da quando Strategy e parametri di
+    controllo sono un'impostazione globale (vedi
+    ../control_strategy/, repository.py::_stamp_global_strategy), il
+    payload inviato dal client per `controllers[*].selected_strategy` e'
+    solo un placeholder che soddisfa lo schema — la risposta deve riflettere
+    subito lo stesso valore che una `GET` successiva restituirebbe.
+    """
     try:
         save_recipe(connection, recipe)
     except RecipeVersionConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
-    return recipe
+    stored = get_recipe(connection, recipe.id)
+    assert stored is not None
+    return stored
 
 
 @router.get("", response_model=list[Recipe])
