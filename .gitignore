@@ -26,3 +26,11 @@ edge/experiment_results/
 
 doc/doxygen/
 output/
+
+# Note di sessione di Claude Code (sincronizzate separatamente nel progetto
+# Claude, non fanno parte del codice sorgente del repository).
+claude/
+
+# Outbox persistente creato a runtime dall'Edge C++ reale quando lanciato
+# dalla working directory del repository (vedi demo/seed_dev_data.py).
+edge-data/

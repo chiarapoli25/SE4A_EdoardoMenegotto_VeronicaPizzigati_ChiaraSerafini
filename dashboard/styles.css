@@ -118,8 +118,6 @@ a:hover { color: var(--accent-dark); }
   background: #f7fbf9;
 }
 .login-input:focus { outline: none; border-color: var(--accent); }
-.login-select { appearance: none; cursor: pointer; }
-.login-role-hint { font: 400 11px/1.5 var(--mono); color: var(--ink-faint); }
 
 .login-error {
   font-size: 12px; color: var(--danger);

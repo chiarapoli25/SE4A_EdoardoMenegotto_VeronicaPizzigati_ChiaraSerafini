@@ -17,6 +17,7 @@ from .core.database import get_connection, get_db, init_db
 from .core.config import default_edge_id, offline_threshold_seconds
 from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
+from .features.auth.routes import router as auth_router
 from .features.commands.routes import router as command_router
 from .features.cultivations.routes import router as cultivation_router
 from .features.events.routes import router as event_router
@@ -80,6 +81,7 @@ app.add_middleware(
 )
 
 app.include_router(system_router)
+app.include_router(auth_router)
 app.include_router(zone_router)
 app.include_router(edge_router)
 app.include_router(telemetry_router)
@@ -112,13 +114,37 @@ for versioned_router in (
     )
 
 
+class _RevalidatingStaticFiles(StaticFiles):
+    """StaticFiles che forza sempre una revalidazione condizionale (ETag/
+    Last-Modified) invece di lasciare il browser servire una copia in cache
+    senza contattare il server.
+
+    Senza questo, StaticFiles non manda alcun header Cache-Control: il
+    browser puo' quindi decidere da solo, con una euristica, di riusare una
+    versione già scaricata di index.html o script.js senza nemmeno una
+    richiesta condizionale — ed e' esattamente cosi' che un normale
+    ricaricamento della pagina puo' mostrare una schermata bianca dopo un
+    deploy: index.html nuovo (con ID diversi) servito insieme a un
+    script.js VECCHIO ancora in cache, che cerca un elemento del DOM non
+    piu' presente e lancia un'eccezione non gestita prima di mostrare
+    qualunque cosa. "no-cache" (a differenza di "no-store") lascia comunque
+    il browser cachare il file: gli impone solo di rivalidarlo con
+    If-None-Match/If-Modified-Since a ogni richiesta, cosa che StaticFiles
+    supporta già nativamente (risponde 304 quando l'ETag combacia)."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # La control room usa intenzionalmente gli endpoint senza prefisso, mantenuti
 # per i client browser same-origin. Il mount resta dopo i router API, cosi la
 # directory statica non puo intercettare i relativi path.
 DASHBOARD_DIRECTORY = Path(__file__).resolve().parents[2] / "dashboard"
 app.mount(
     "/dashboard",
-    StaticFiles(directory=DASHBOARD_DIRECTORY, html=True),
+    _RevalidatingStaticFiles(directory=DASHBOARD_DIRECTORY, html=True),
     name="dashboard",
 )
 

@@ -1,12 +1,15 @@
 """Endpoint HTTP della coda comandi Edge."""
 
 import sqlite3
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from ...core.database import get_db
+from ..auth.models import Role
+from ..auth.routes import get_current_user
 from ..zones.repository import get_zone
-from .models import RuntimeCommand, RuntimeCommandCreate, RuntimeCommandResultCreate
+from .models import CommandType, RuntimeCommand, RuntimeCommandCreate, RuntimeCommandResultCreate
 from .repository import (
     RuntimeCommandConflict,
     complete_command,
@@ -16,10 +19,41 @@ from .repository import (
 
 router = APIRouter(prefix="/zones/{zone_id}/commands", tags=["commands"])
 
+## @brief command_type per cui il pannello Strategy invia oggi comandi che
+## modificano la configurazione di controllo dell'impianto: SOLO questi due
+## richiedono il ruolo amministratore. Scelta di scope deliberata — non
+## estendere ad altri command_type senza una decisione esplicita.
+ADMINISTRATOR_ONLY_COMMAND_TYPES = {
+    CommandType.CHANGE_STRATEGY,
+    CommandType.CONFIRM_CONFIGURATION,
+}
+
 
 def _require_zone(connection: sqlite3.Connection, zone_id: str) -> None:
     if get_zone(connection, zone_id) is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
+
+
+def _require_administrator_if_strategy_command(
+    command_type: CommandType,
+    connection: sqlite3.Connection,
+    authorization: str | None,
+) -> None:
+    """@brief Applica require_role('amministratore') solo a ChangeStrategy e
+    ConfirmConfiguration; ogni altro command_type su questo stesso endpoint
+    (usato da script/demo) resta libero, come da scelta di scope esplicita.
+    """
+    if command_type not in ADMINISTRATOR_ONLY_COMMAND_TYPES:
+        return
+    user = get_current_user(authorization=authorization, connection=connection)
+    if user.role is not Role.AMMINISTRATORE:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"il comando {command_type.value!r} e' riservato agli "
+                "amministratori"
+            ),
+        )
 
 
 @router.post("", response_model=RuntimeCommand, status_code=201)
@@ -27,8 +61,12 @@ def enqueue_command(
     zone_id: str,
     command: RuntimeCommandCreate,
     connection: sqlite3.Connection = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
 ) -> RuntimeCommand:
     _require_zone(connection, zone_id)
+    _require_administrator_if_strategy_command(
+        command.command_type, connection, authorization
+    )
     try:
         return create_command(connection, zone_id, command)
     except RuntimeCommandConflict as error:

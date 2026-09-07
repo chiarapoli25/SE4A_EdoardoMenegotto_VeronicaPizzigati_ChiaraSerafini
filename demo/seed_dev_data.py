@@ -30,6 +30,15 @@ VINCOLI RISPETTATI:
   POST /cultivations, SetSimulationSpeed, InjectFault, ResetFault,
   ResetEmergency) e la parte di piante/quarantena, tutta pura richiesta
   legittima come farebbe un chiamante umano o un pannello di controllo.
+
+AUTENTICAZIONE: come primo passo lo script fa login su POST /auth/login con
+l'account amministratore di esempio (vedi demo/seed_users.py, che va
+eseguito almeno una volta prima di questo script) e allega il token
+ottenuto a ogni comando accodato su POST /zones/{id}/commands. Nessuno dei
+command_type usati qui è oggi ChangeStrategy/ConfirmConfiguration (l'unico
+gate protetto da ruolo, vedi backend/app/features/commands/routes.py), ma
+restare autenticati allo stesso modo evita rotture silenziose se lo
+scenario dovesse cambiare in futuro.
 - edge.exe NON viene lanciato da qui: lo script stampa il comando e
   aspetta un INVIO dell'utente prima di fare polling.
 - Un solo Edge (--edge-id) gestisce tutte le zone con quell'
@@ -85,8 +94,18 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+# Sibling module, non il pacchetto backend: Python mette la cartella dello
+# script (demo/) in sys.path[0] quando lo lanci direttamente, quindi questo
+# import funziona sia da `python demo/seed_dev_data.py` (dalla radice) sia
+# da dentro demo/, senza bisogno di manipolare sys.path.
+from seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
+
 BASE_URL = "http://127.0.0.1:8000"
 EDGE_ID = "edge-serra-1"
+
+# Token di sessione ottenuto da login_as_admin() e allegato da request() a
+# ogni chiamata di scrittura (POST/PATCH/DELETE).
+_AUTH_TOKEN: str | None = None
 
 # Vedi nota in cima al file: SOLO per accelerare test/demo in questo
 # ambiente. Il prodotto di default lavora a time_scale=1x.
@@ -131,11 +150,14 @@ QUARANTINE_ZONES = [
 
 def request(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"}
+    if _AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {_AUTH_TOKEN}"
     req = urllib.request.Request(
         f"{BASE_URL}{path}",
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(req) as response:
@@ -148,6 +170,25 @@ def request(method: str, path: str, payload: dict | None = None) -> tuple[int, d
         raise SystemExit(
             f"[seed] impossibile raggiungere {BASE_URL} — il backend è acceso? ({error})"
         ) from error
+
+
+def login_as_admin() -> None:
+    """Autentica lo script come l'account amministratore di seed e salva il
+    token in _AUTH_TOKEN, cosi' request() lo allega da qui in poi. Richiede
+    che demo/seed_users.py sia gia' stato eseguito almeno una volta contro
+    lo stesso database del backend."""
+    global _AUTH_TOKEN
+    status, body = request(
+        "POST", "/auth/login", {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
+    )
+    if status != 200:
+        raise SystemExit(
+            "[seed] impossibile autenticarsi come amministratore "
+            f"({ADMIN_USERNAME!r}): status {status} {body}. Hai gia' eseguito "
+            "`python demo/seed_users.py` contro questo stesso database?"
+        )
+    _AUTH_TOKEN = body["token"]
+    print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['role']})")
 
 
 def pick_recipes(department_number: int, how_many: int) -> list[dict]:
@@ -663,7 +704,10 @@ def verify_state_sequence(
 def main() -> None:
     run_suffix = str(int(time.time() * 1000))
 
-    print("[seed] --- Passo 1: registrazione zone (puro input) ---")
+    print("[seed] --- Passo 0: login come amministratore di seed ---")
+    login_as_admin()
+
+    print("\n[seed] --- Passo 1: registrazione zone (puro input) ---")
     by_department: dict[int, list[tuple]] = {}
     for entry in PRODUCTION_ZONES:
         by_department.setdefault(entry[2], []).append(entry)

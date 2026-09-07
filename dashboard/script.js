@@ -94,13 +94,16 @@ const CHOOSABLE_STRATEGIES = ["Threshold", "PID"];
 // wherever the panel lists them.
 const GLOBAL_STRATEGY_VARIABLES = ["soil_moisture", "light", "ph"];
 
-// Demo login roles (see the "Login screen" section far below): purely a
-// local-only display identity, no real authentication — but "Amministratore"
-// is the one role value with an actual effect on what's shown (gates the
-// Controllo page/nav item, see isAdmin()). Kept to exactly these two per an
-// explicit later decision — "Grower" used to be a third option; removing it
-// here is what makes loadDemoUser() below treat a previously-saved Grower
-// user as invalid.
+// Roles the backend actually issues (see Role in
+// backend/app/features/auth/models.py — returned lowercase, capitalized on
+// the way into STATE.currentUser.role by capitalizeRole() in the "Login
+// screen" section far below). "Amministratore" is the one role value with
+// an effect on what's shown/allowed here (gates the Controllo page/nav
+// item, see isAdmin()) — and, since the auth work, also on what the backend
+// itself accepts (see require_role() in commands/routes.py). Kept to
+// exactly these two per an explicit earlier decision — "Grower" used to be
+// a third, demo-only option; removing it here is what makes
+// loadAuthSession() below treat a stale stored Grower session as logged out.
 const VALID_ROLES = ["Agronomo", "Amministratore"];
 
 const OP_META = {
@@ -462,6 +465,14 @@ async function apiRequest(method, path, { params, body } = {}) {
     if (qs) url += (url.includes("?") ? "&" : "?") + qs;
   }
   const opts = { method, headers: {} };
+  // Attached to every call (reads included), not only writes: harmless for
+  // endpoints that ignore it, and means nothing has to remember to add it
+  // per call-site. Only the two admin-gated command types on
+  // POST /zones/{id}/commands actually check it (see backend
+  // require_role/get_current_user in features/auth/routes.py) — everything
+  // else on the backend today accepts requests with or without it.
+  const token = getAuthToken();
+  if (token) opts.headers["Authorization"] = `Bearer ${token}`;
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -5082,74 +5093,93 @@ function initEventDelegation() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Login screen — local-only display identity, no real auth            */
+/* Login screen — real authentication via POST /auth/login              */
 /*                                                                       */
-/* Nothing here is checked by the backend: it's a name + role the user  */
-/* picks to be shown next to their actions in the sidebar, persisted    */
-/* only in this browser's localStorage. Gates the whole app on first    */
-/* load; "CAMBIA UTENTE" clears it and returns to the login screen.     */
+/* Username+password are verified by the backend (bcrypt hash check,    */
+/* see backend/app/features/auth/); the opaque token it returns is what */
+/* actually gates server-side actions from here on (see apiRequest()    */
+/* above, which attaches it to every call) — not just this UI. The role */
+/* the backend returns comes back lowercase ("agronomo"/"amministratore",*/
+/* see Role in backend/app/features/auth/models.py) and is capitalized  */
+/* here on the way into STATE.currentUser.role so the rest of this file */
+/* (isAdmin(), updateNavForRole(), …) keeps comparing against the same  */
+/* "Agronomo"/"Amministratore" strings it always has. "CAMBIA UTENTE"   */
+/* only forgets the token locally — the backend has no session-logout   */
+/* endpoint (out of scope for this pass), so the token stays valid      */
+/* server-side until the browser storage holding it is cleared.        */
 /* ------------------------------------------------------------------ */
 
-const DEMO_USER_KEY = "smarthydro_demo_user";
+const AUTH_SESSION_KEY = "smarthydro_auth_session";
 
-function loadDemoUser() {
+function capitalizeRole(role) {
+  const value = String(role || "");
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function loadAuthSession() {
   try {
-    const raw = localStorage.getItem(DEMO_USER_KEY);
+    const raw = localStorage.getItem(AUTH_SESSION_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.name === "string" && parsed.name.trim()) {
-      // A user saved before "Grower" was removed as a role option (or any
-      // other role value that isn't one of the two current choices) is
-      // treated as logged out rather than silently let in with a role that
-      // no longer exists: clear the stale entry so init() falls through to
-      // the login screen instead of enterApp().
-      if (!VALID_ROLES.includes(parsed.role)) {
-        clearDemoUser();
-        return null;
-      }
-      return { name: parsed.name, role: parsed.role };
+    if (
+      parsed &&
+      typeof parsed.token === "string" && parsed.token &&
+      typeof parsed.username === "string" && parsed.username &&
+      VALID_ROLES.includes(parsed.role)
+    ) {
+      return { token: parsed.token, username: parsed.username, role: parsed.role };
     }
   } catch (e) { /* malformed or inaccessible storage — treat as logged out */ }
   return null;
 }
 
-function saveDemoUser(user) {
-  try { localStorage.setItem(DEMO_USER_KEY, JSON.stringify(user)); } catch (e) { /* storage unavailable — session-only */ }
+function saveAuthSession(session) {
+  try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session)); } catch (e) { /* storage unavailable — session-only */ }
 }
 
-function clearDemoUser() {
-  try { localStorage.removeItem(DEMO_USER_KEY); } catch (e) {}
+function clearAuthSession() {
+  try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+}
+
+/** Read by apiRequest() to attach `Authorization: Bearer <token>` to every
+ * call. A plain STATE read (not localStorage) so it stays in sync within a
+ * tab without a round trip; loadAuthSession() at boot is what seeds it. */
+function getAuthToken() {
+  return (STATE.currentUser && STATE.currentUser.token) || null;
 }
 
 function applySidebarUser(user) {
-  document.getElementById("sidebar-user-avatar").textContent = user.name.trim().charAt(0).toUpperCase() || "?";
-  document.getElementById("sidebar-user-name").textContent = user.name;
+  document.getElementById("sidebar-user-avatar").textContent = user.username.trim().charAt(0).toUpperCase() || "?";
+  document.getElementById("sidebar-user-name").textContent = user.username;
   document.getElementById("sidebar-user-role").textContent = String(user.role).toUpperCase();
 }
 
 /** Shows/hides the "Controllo" sidebar item for the current role. Purely a
- * navigation gate, same principle as the rest of this login system (see
- * isAdmin()) — a non-Amministratore never sees the nav item at all, and
- * switchView() below independently refuses to enter that view even if it
- * were reached some other way, so the two checks don't rely on each other. */
+ * navigation/UX convenience — a non-Amministratore never sees the nav item
+ * at all, and switchView() below independently refuses to enter that view
+ * even if it were reached some other way — but unlike before, it is now
+ * backed by a real server-side check too: the backend rejects
+ * ChangeStrategy/ConfirmConfiguration from a non-amministratore token even
+ * if this UI gate were bypassed entirely (see require_role() in
+ * backend/app/features/commands/routes.py). */
 function updateNavForRole(role) {
   const navItem = document.querySelector('.nav-item[data-view="control"]');
   if (navItem) navItem.classList.toggle("hidden", role !== "Amministratore");
 }
 
-/** Shows the login screen. `prefill` (the just-cleared user, on "cambia
- * utente") pre-fills the form so switching identity is a quick edit
- * rather than starting from a blank form. */
-function showLoginScreen(prefill) {
+/** Shows the login screen. `prefillUsername` (the just-cleared user, on
+ * "cambia utente") pre-fills the username field so switching identity means
+ * re-typing only a password, not both fields — never the password itself. */
+function showLoginScreen(prefillUsername) {
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("login-screen").classList.remove("hidden");
   const errorEl = document.getElementById("login-error");
   errorEl.classList.add("hidden");
   errorEl.textContent = "";
-  const nameInput = document.getElementById("login-name");
-  nameInput.value = (prefill && prefill.name) || "";
-  document.getElementById("login-role").value = (prefill && prefill.role) || "Agronomo";
-  nameInput.focus();
+  const usernameInput = document.getElementById("login-username");
+  usernameInput.value = prefillUsername || "";
+  document.getElementById("login-password").value = "";
+  usernameInput.focus();
 }
 
 /** Reveals the already-built app behind the login gate and (re)starts it
@@ -5165,30 +5195,47 @@ function enterApp(user) {
   switchView("home");
 }
 
-function submitLogin() {
-  const nameInput = document.getElementById("login-name");
-  const name = nameInput.value.trim();
+async function submitLogin() {
+  const usernameInput = document.getElementById("login-username");
+  const passwordInput = document.getElementById("login-password");
+  const submitBtn = document.getElementById("login-submit");
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value;
   const errorEl = document.getElementById("login-error");
-  if (!name) {
-    errorEl.textContent = "Inserisci un nome per continuare.";
+  errorEl.classList.add("hidden");
+  errorEl.textContent = "";
+  if (!username || !password) {
+    errorEl.textContent = "Inserisci utente e password per continuare.";
     errorEl.classList.remove("hidden");
-    nameInput.focus();
+    (username ? passwordInput : usernameInput).focus();
     return;
   }
-  const role = document.getElementById("login-role").value;
-  const user = { name, role };
-  saveDemoUser(user);
-  enterApp(user);
+  submitBtn.disabled = true;
+  try {
+    const result = await apiPost("/auth/login", { username, password });
+    const user = { token: result.token, username: result.username, role: capitalizeRole(result.role) };
+    saveAuthSession(user);
+    enterApp(user);
+  } catch (e) {
+    errorEl.textContent = e.status === 401
+      ? "Utente o password non validi."
+      : "Impossibile contattare il backend. Riprova tra poco.";
+    errorEl.classList.remove("hidden");
+    passwordInput.value = "";
+    passwordInput.focus();
+  } finally {
+    submitBtn.disabled = false;
+  }
 }
 
-/** "CAMBIA UTENTE": drops the stored identity and whatever view state is
+/** "CAMBIA UTENTE": drops the stored session and whatever view state is
  * mid-flight (view polls, an in-progress batch simulation) before
  * returning to the login screen — the same discipline switchView()
  * already applies when navigating away from any single view, just for
  * the whole app at once. */
 function switchDemoUser() {
-  const previous = loadDemoUser();
-  clearDemoUser();
+  const previous = loadAuthSession();
+  clearAuthSession();
   STATE.currentUser = null;
   clearPoll("zones");
   clearPoll("recipes-poll");
@@ -5197,12 +5244,12 @@ function switchDemoUser() {
   STATE.simulation = null;
   clearGlobalStrategyPolls();
   STATE.globalStrategy = { drafts: {}, status: {}, results: {} };
-  showLoginScreen(previous);
+  showLoginScreen(previous && previous.username);
 }
 
 function initLoginScreen() {
   document.getElementById("login-submit").addEventListener("click", submitLogin);
-  document.getElementById("login-name").addEventListener("keydown", (e) => {
+  document.getElementById("login-password").addEventListener("keydown", (e) => {
     if (e.key === "Enter") submitLogin();
   });
   document.getElementById("sidebar-user-switch").addEventListener("click", switchDemoUser);
@@ -5217,9 +5264,9 @@ function init() {
   initEventDelegation();
   setPoll("system-status", tickSystemStatus, STATUS_POLL_MS);
 
-  const user = loadDemoUser();
-  if (user) {
-    enterApp(user);
+  const session = loadAuthSession();
+  if (session) {
+    enterApp(session);
   } else {
     showLoginScreen(null);
   }

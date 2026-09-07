@@ -655,6 +655,35 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON actuator_snapshots (cultivation_id, recorded_at DESC)
         """
     )
+    # Autenticazione della dashboard (utenti/ruoli e sessioni via token
+    # opaco): meccanismo separato dal Bearer SMARTHYDRO_API_TOKEN usato
+    # dall'Edge, vedi backend/app/core/security.py.
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('agronomo', 'amministratore')),
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            username TEXT NOT NULL REFERENCES users(username),
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_sessions_username
+        ON sessions (username)
+        """
+    )
     from ..features.recipes.catalog import seed_recipe_catalog
 
     seed_recipe_catalog(connection)
