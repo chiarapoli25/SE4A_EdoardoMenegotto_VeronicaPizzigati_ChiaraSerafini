@@ -1,8 +1,9 @@
 # Seed degli account della dashboard — nessuna registrazione self-service.
-# Crea (o aggiorna la password di) due utenze di esempio, una per ruolo.
-# Le password in chiaro vivono SOLO in questo file: qualunque altro script
-# demo/ che debba autenticarsi le importa da qui (ADMIN_USERNAME /
-# ADMIN_PASSWORD), non le ripete.
+# Crea (o aggiorna la password di) l'unica utenza di bootstrap, l'account
+# amministratore. Le password in chiaro vivono SOLO in questo file: qualunque
+# altro script demo/ che debba autenticarsi la importa da qui (ADMIN_USERNAME /
+# ADMIN_PASSWORD), non la ripete. Gli account agronomo di esempio non sono
+# più qui: vedi NAMED_AGRONOMO_ACCOUNTS in demo/seed_test_scenario.py.
 
 """Seed degli account di autenticazione della dashboard SmartHydro.
 
@@ -55,18 +56,19 @@ from backend.app.features.users.models import UserRole
 from backend.app.features.users.repository import UsernameConflict, create_user
 from backend.app.features.users.security import hash_password
 
-# NOTA: queste sono le UNICHE due righe di questo repository in cui una
-# password compare in chiaro, a parte l'output di questo script. Chi
-# consuma queste credenziali (demo/seed_dev_data.py, demo/seed_test_scenario.py,
-# la persona che testa la dashboard) le importa da qui.
+# NOTA: questa e' l'UNICA riga di questo repository in cui una password
+# compare in chiaro, a parte l'output di questo script. Chi consuma questa
+# credenziale (demo/seed_dev_data.py, demo/seed_test_scenario.py, la persona
+# che testa la dashboard) la importa da qui.
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "V3IkzqpWRh2Hfc"
-AGRONOMO_USERNAME = "agronomo"
-AGRONOMO_PASSWORD = "N4MKdI0jRIB6i5"
 
+# L'account agronomo generico ("agronomo"/pass) e' stato rimosso: i quattro
+# account agronomo nominati (mario/elena/antonio/alice, vedi
+# NAMED_AGRONOMO_ACCOUNTS in demo/seed_test_scenario.py) lo sostituiscono per
+# ogni test/demo che richieda un utente non amministratore.
 SEED_ACCOUNTS = (
     (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
-    (AGRONOMO_USERNAME, AGRONOMO_PASSWORD, UserRole.AGRONOMO, "Agronomo"),
 )
 
 
@@ -103,7 +105,11 @@ def main() -> None:
     print(f"[seed] database: {DEFAULT_DATABASE_PATH}")
     print("[seed] account pronti per il login su POST /auth/login:")
     print(f"[seed]   amministratore -> username={ADMIN_USERNAME!r} password={ADMIN_PASSWORD!r}")
-    print(f"[seed]   agronomo       -> username={AGRONOMO_USERNAME!r} password={AGRONOMO_PASSWORD!r}")
+    print(
+        "[seed] nessun account agronomo generico: crealo dal pannello \"Utenti\" "
+        "oppure esegui demo/seed_test_scenario.py (account nominati mario/elena/"
+        "antonio/alice, vedi NAMED_AGRONOMO_ACCOUNTS)."
+    )
     print("=" * 78)
 
 

@@ -1069,6 +1069,14 @@ async function submitAddSector() {
  * inner markup in one place means the two pages can never silently drift
  * apart in what a sector tile actually shows.
  *
+ * showConnection (default true) toggles ONLY the online/offline dot + label:
+ * real connectivity state is meaningless inside the Simulatore, which is by
+ * definition an isolated, non-live scenario — showing it there risks
+ * suggesting the simulation reflects the zone's real connection, which it
+ * never does. Home's own sector row never passes this (stays true); the
+ * Simulatore grid (renderSimulatorSectorRow) passes false. Every other tag
+ * (species, phase, safety badge, plant count) is unaffected either way.
+ *
  * The plant-count tag is identified by data-plant-count (not an id): the
  * same zone can now legitimately appear in two different grids at once
  * (Home's and Simulatore's DOM subtrees both stay mounted, just toggled
@@ -1076,15 +1084,15 @@ async function submitAddSector() {
  * below updates every matching element via querySelectorAll instead of
  * getElementById.
  */
-function renderSectorRowInner(z) {
+function renderSectorRowInner(z, { showConnection = true } = {}) {
   const online = z.status === "online";
   const species = z.plant_species || (z.department_number === 5 ? "Zona mista (quarantena)" : "—");
   return `
-    <span class="conn-dot ${online ? "online" : "offline"}"></span>
+    ${showConnection ? `<span class="conn-dot ${online ? "online" : "offline"}"></span>` : ""}
     <div class="sector-row-body">
       <div class="sector-row-top">
         <span class="sector-num">SETTORE ${z.sector_number}</span>
-        <span class="sector-conn" style="color:${online ? "#2f9e6b" : "#c15a4a"}">${online ? "ONLINE" : "OFFLINE"}</span>
+        ${showConnection ? `<span class="sector-conn" style="color:${online ? "#2f9e6b" : "#c15a4a"}">${online ? "ONLINE" : "OFFLINE"}</span>` : ""}
       </div>
       <div class="sector-row-species">${escapeHtml(species)}</div>
       <div class="sector-row-tags">
@@ -2193,7 +2201,11 @@ function renderSimulatorDeptCard(n, zones) {
  * that would show nothing useful on click: no data-action, muted styling,
  * no arrow. */
 function renderSimulatorSectorRow(z) {
-  const inner = renderSectorRowInner(z);
+  // showConnection:false — vedi il commento su renderSectorRowInner: online/
+  // offline è connettività reale, fuori luogo in un contesto che simula
+  // sempre uno scenario isolato. Le altre informazioni della card (specie,
+  // fase, badge di sicurezza, conteggio piante) restano identiche a Home.
+  const inner = renderSectorRowInner(z, { showConnection: false });
   if (!z.active_recipe_id) {
     return `
       <div class="sector-row sector-row-disabled" title="Nessuna ricetta assegnata a questo settore: non simulabile.">
