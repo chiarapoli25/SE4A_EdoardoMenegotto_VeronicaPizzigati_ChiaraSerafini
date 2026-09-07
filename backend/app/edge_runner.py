@@ -32,8 +32,25 @@ class EdgeOutputInvalid(RuntimeError):
 
 
 def edge_is_ready(executable: Path) -> bool:
-    """Controlla esistenza e permesso di esecuzione senza avviare processi."""
-    return executable.is_file() and os.access(executable, os.X_OK)
+    """Controlla esistenza e permesso di esecuzione senza avviare processi.
+
+    Il controllo del permesso di esecuzione (os.access(..., os.X_OK)) viene
+    saltato su Windows: li' non esiste un bit di esecuzione per-file
+    paragonabile a quello POSIX (l'eseguibilita' e' decisa dall'estensione,
+    gia' distinta da _edge_simulator_candidates() tramite i nomi
+    "edge_simulator"/"edge_simulator.exe"), e os.access(os.X_OK) su Windows
+    si limita di fatto a verificare l'esistenza del file — non offre quindi
+    alcuna protezione reale in piu' rispetto a is_file(), a fronte del
+    rischio di un raro falso negativo se mai si comportasse diversamente
+    (ACL insolite, filesystem di rete). Su POSIX il controllo resta
+    invariato: e' li' che un file presente ma privo del bit +x va scartato
+    (vedi test_non_executable_file_is_not_a_match, che per lo stesso motivo
+    e' marcato solo-POSIX in backend/tests/test_edge_runner.py)."""
+    if not executable.is_file():
+        return False
+    if os.name == "nt":
+        return True
+    return os.access(executable, os.X_OK)
 
 
 def _edge_simulator_candidates() -> list[Path]:

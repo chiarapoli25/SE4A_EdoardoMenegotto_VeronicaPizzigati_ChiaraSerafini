@@ -1109,13 +1109,21 @@ lo stato visualizzato a `Dashboard ready`.
 ### Account e ruoli
 
 L'accesso alla dashboard richiede un account reale, verificato dal backend:
-non e piu una semplice etichetta locale. `init_db()` crea automaticamente,
-alla prima esecuzione, due account dimostrativi con password `pass123`:
+non e piu una semplice etichetta locale. Il database non viene piu seminato
+automaticamente all'avvio (un account admin/pass123 cablato nel codice di
+startup era un rischio di sicurezza): su un database vuoto occorre eseguire
+una volta lo script esplicito
 
-| Utente | Ruolo | Password |
-| --- | --- | --- |
-| `admin` | Amministratore | `pass123` |
-| `agronomo` | Agronomo | `pass123` |
+```bash
+python demo/seed_users.py
+```
+
+che crea un account `admin` e un account `agronomo`; le password (diverse
+da `pass123`, generate per essere usate in locale) vengono stampate a video
+da questo comando e vivono solo li e in `demo/seed_users.py` stesso: non
+sono ripetute qui per lo stesso motivo per cui non vanno incollate altrove
+nel codice sorgente. Lo script e' rieseguibile senza effetti collaterali
+(su un username gia' esistente aggiorna password/ruolo invece di fallire).
 
 Il login (`POST /auth/login`) verifica username e password (hash PBKDF2-HMAC-
 SHA256 con salt, libreria standard) e restituisce un token di sessione opaco,

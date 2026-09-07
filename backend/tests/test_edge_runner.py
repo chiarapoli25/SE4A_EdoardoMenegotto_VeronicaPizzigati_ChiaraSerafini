@@ -87,6 +87,16 @@ def test_falls_back_to_default_when_nothing_built(isolated_bin_dir: Path) -> Non
     )
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason=(
+        "il bit di esecuzione POSIX (chmod +x) e' il meccanismo che questo "
+        "test verifica; su Windows non esiste un equivalente per-file "
+        "affidabile (os.access(path, os.X_OK) vi si riduce di fatto a un "
+        "controllo di sola esistenza, vedi edge_is_ready()), quindi i due "
+        "file creati qui non sarebbero davvero distinguibili"
+    ),
+)
 def test_non_executable_file_is_not_a_match(isolated_bin_dir: Path) -> None:
     """Un file presente ma senza permesso di esecuzione non conta come
     trovato (stesso criterio di edge_is_ready, usato anche a valle prima
