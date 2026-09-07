@@ -6,8 +6,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from ...core.database import get_db
-from ..auth.models import Role
-from ..auth.routes import get_current_user
+from ..users.dependencies import get_current_user
+from ..users.models import UserRole
 from ..zones.repository import get_zone
 from .models import CommandType, RuntimeCommand, RuntimeCommandCreate, RuntimeCommandResultCreate
 from .repository import (
@@ -46,7 +46,7 @@ def _require_administrator_if_strategy_command(
     if command_type not in ADMINISTRATOR_ONLY_COMMAND_TYPES:
         return
     user = get_current_user(authorization=authorization, connection=connection)
-    if user.role is not Role.AMMINISTRATORE:
+    if user.role is not UserRole.ADMIN:
         raise HTTPException(
             status_code=403,
             detail=(

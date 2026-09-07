@@ -167,7 +167,7 @@ def login_as_admin() -> None:
             "`python demo/seed_users.py` contro questo stesso database?"
         )
     _AUTH_TOKEN = body["token"]
-    print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['role']})")
+    print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['user']['role']})")
 
 
 def pick_recipes(department_number: int, how_many: int) -> list[dict]:

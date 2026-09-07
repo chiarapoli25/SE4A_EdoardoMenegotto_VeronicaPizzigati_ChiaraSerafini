@@ -25,9 +25,14 @@ fallire con un errore (comodo per rigenerare l'hash se cambi le password in
 questo file).
 
 Le password NON sono mai salvate in chiaro nel database (solo il loro hash
-bcrypt, vedi backend/app/features/auth/repository.py). Le uniche due copie
-in chiaro che dovrebbero esistere sono qui sotto e nel riepilogo stampato a
-fine esecuzione — non incollarle altrove nel codice sorgente.
+pbkdf2_sha256, vedi backend/app/features/users/security.py). Le uniche due
+copie in chiaro che dovrebbero esistere sono qui sotto e nel riepilogo
+stampato a fine esecuzione — non incollarle altrove nel codice sorgente.
+
+Nota: init_db() non crea piu' automaticamente alcun account all'avvio del
+backend (era un rischio di sicurezza avere admin/pass123 cablato nel codice
+di startup) — questo script e' quindi ora l'UNICO modo per popolare un
+database vuoto di un primo account amministratore.
 """
 
 from __future__ import annotations
@@ -46,12 +51,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from backend.app.core.database import DEFAULT_DATABASE_PATH, get_connection, init_db
-from backend.app.features.auth.models import Role
-from backend.app.features.auth.repository import (
-    UserAlreadyExists,
-    create_user,
-    hash_password,
-)
+from backend.app.features.users.models import UserRole
+from backend.app.features.users.repository import UsernameConflict, create_user
+from backend.app.features.users.security import hash_password
 
 # NOTA: queste sono le UNICHE due righe di questo repository in cui una
 # password compare in chiaro, a parte l'output di questo script. Chi
@@ -63,22 +65,27 @@ AGRONOMO_USERNAME = "agronomo"
 AGRONOMO_PASSWORD = "N4MKdI0jRIB6i5"
 
 SEED_ACCOUNTS = (
-    (ADMIN_USERNAME, ADMIN_PASSWORD, Role.AMMINISTRATORE),
-    (AGRONOMO_USERNAME, AGRONOMO_PASSWORD, Role.AGRONOMO),
+    (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
+    (AGRONOMO_USERNAME, AGRONOMO_PASSWORD, UserRole.AGRONOMO, "Agronomo"),
 )
 
 
 def _upsert_user(
-    connection: sqlite3.Connection, username: str, password: str, role: Role
+    connection: sqlite3.Connection,
+    username: str,
+    password: str,
+    role: UserRole,
+    display_name: str,
 ) -> None:
     try:
-        create_user(connection, username, password, role, commit=False)
+        create_user(connection, username, password, role, display_name)
         print(f"[seed] utente creato: {username} (ruolo={role.value})")
-    except UserAlreadyExists:
+    except UsernameConflict:
         connection.execute(
-            "UPDATE users SET password_hash = ?, role = ? WHERE username = ?",
-            (hash_password(password), role.value, username),
+            "UPDATE users SET password_hash = ?, role = ?, display_name = ? WHERE username = ?",
+            (hash_password(password), role.value, display_name, username),
         )
+        connection.commit()
         print(f"[seed] utente gia' esistente, password/ruolo aggiornati: {username} (ruolo={role.value})")
 
 
@@ -86,9 +93,8 @@ def main() -> None:
     connection = get_connection()
     try:
         init_db(connection)
-        for username, password, role in SEED_ACCOUNTS:
-            _upsert_user(connection, username, password, role)
-        connection.commit()
+        for username, password, role, display_name in SEED_ACCOUNTS:
+            _upsert_user(connection, username, password, role, display_name)
     finally:
         connection.close()
 

@@ -1,11 +1,21 @@
+"""Gate amministratore-only su ChangeStrategy/ConfirmConfiguration.
+
+Copre solo l'autorizzazione dei command_type riservati (vedi
+ADMINISTRATOR_ONLY_COMMAND_TYPES in backend/app/features/commands/routes.py),
+contro il sistema di account in backend/app/features/users/. Login/logout/me
+e la gestione degli account (creazione, conflitti, permessi su POST/GET
+/users) sono gia' coperti a fondo da backend/tests/test_users.py — non
+duplicati qui.
+"""
+
 import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.database import init_db
-from backend.app.features.auth.models import Role
-from backend.app.features.auth.repository import create_user
+from backend.app.features.users.models import UserRole
+from backend.app.features.users.repository import create_user
 from backend.app.main import app, get_db
 
 
@@ -13,8 +23,11 @@ from backend.app.main import app, get_db
 def connection() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     init_db(conn)
-    create_user(conn, "admin-1", "admin-secret", Role.AMMINISTRATORE)
-    create_user(conn, "agro-1", "agro-secret", Role.AGRONOMO)
+    # Account creati esplicitamente qui (non tramite seed_default_users):
+    # questo file non deve dipendere dagli account dimostrativi admin/
+    # agronomo, solo dal ruolo.
+    create_user(conn, username="admin-1", password="admin-secret", role=UserRole.ADMIN, display_name=None)
+    create_user(conn, username="agro-1", password="agro-secret", role=UserRole.AGRONOMO, display_name=None)
     return conn
 
 
@@ -42,37 +55,9 @@ def client(connection: sqlite3.Connection) -> TestClient:
         connection.close()
 
 
-def test_login_succeeds_with_correct_credentials(client: TestClient) -> None:
-    response = client.post("/auth/login", json={"username": "admin-1", "password": "admin-secret"})
-    assert response.status_code == 200
-    body = response.json()
-    assert body["username"] == "admin-1"
-    assert body["role"] == "amministratore"
-    assert isinstance(body["token"], str) and len(body["token"]) >= 20
-
-
-def test_login_rejects_wrong_password(client: TestClient) -> None:
-    response = client.post("/auth/login", json={"username": "admin-1", "password": "wrong"})
-    assert response.status_code == 401
-
-
-def test_login_rejects_unknown_username(client: TestClient) -> None:
-    response = client.post("/auth/login", json={"username": "nobody", "password": "whatever"})
-    assert response.status_code == 401
-
-
-def test_passwords_are_never_stored_in_plaintext(connection: sqlite3.Connection) -> None:
-    row = connection.execute(
-        "SELECT password_hash FROM users WHERE username = ?", ("admin-1",)
-    ).fetchone()
-    assert row is not None
-    assert row[0] != "admin-secret"
-    assert row[0].startswith("$2")  # bcrypt hash prefix
-
-
 def _login(client: TestClient, username: str, password: str) -> str:
     response = client.post("/auth/login", json={"username": username, "password": password})
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     return response.json()["token"]
 
 
@@ -104,7 +89,7 @@ def test_confirm_configuration_rejects_agronomo(client: TestClient) -> None:
     assert response.status_code == 403
 
 
-def test_change_strategy_accepts_amministratore(client: TestClient) -> None:
+def test_change_strategy_accepts_admin(client: TestClient) -> None:
     token = _login(client, "admin-1", "admin-secret")
     response = client.post(
         "/zones/zone-1/commands",
@@ -151,7 +136,7 @@ def test_other_command_types_stay_unprotected(
     assert response.status_code == 201
 
 
-def test_get_current_user_rejects_malformed_header(client: TestClient) -> None:
+def test_change_strategy_rejects_malformed_authorization_header(client: TestClient) -> None:
     response = client.post(
         "/zones/zone-1/commands",
         json={"command_id": "c6", "command_type": "ChangeStrategy", "payload": {}},

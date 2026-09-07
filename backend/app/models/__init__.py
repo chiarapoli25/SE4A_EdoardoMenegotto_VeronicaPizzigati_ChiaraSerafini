@@ -52,6 +52,13 @@ from ..features.telemetry.models import (
     TelemetryCreate,
     TelemetrySample,
 )
+from ..features.users.models import (
+    LoginRequest,
+    LoginResponse,
+    User,
+    UserCreate,
+    UserRole,
+)
 from ..features.zones.models import (
     ControlSetpoints,
     ControlStrategies,
@@ -86,6 +93,8 @@ __all__ = [
     "FertilizerQuantities",
     "FertilizerValveStates",
     "GreenhouseTelemetry",
+    "LoginRequest",
+    "LoginResponse",
     "OutputSafetyLimits",
     "OperationalState",
     "PhaseVariableTarget",
@@ -106,6 +115,9 @@ __all__ = [
     "TelemetryCreate",
     "TelemetrySample",
     "ThresholdConfig",
+    "User",
+    "UserCreate",
+    "UserRole",
     "ValueRange",
     "Zone",
     "ZoneAdministrativeStatus",

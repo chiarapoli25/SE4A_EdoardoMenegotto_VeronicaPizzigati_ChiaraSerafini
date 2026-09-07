@@ -1,5 +1,14 @@
 #include <smarthydro/simulation/environment_simulator.hpp>
 
+// Solo per le costanti di conversione EC <-> mg/L (SoilProbeModelConfig): la
+// EC "vera" del terriccio va derivata con la STESSA formula che il sensore
+// inverte per stimare N/P/K, altrimenti le due grandezze divergono nel tempo
+// (vedi il commento su state_.ec_ms_cm piu' sotto). E' un'inclusione solo
+// nel .cpp, non nell'header: non introduce un ciclo (sensor_simulator.hpp
+// include gia' environment_simulator.hpp) ne' un legame di link, dato che
+// SoilProbeModelConfig e' una semplice struttura di dati header-only.
+#include <smarthydro/simulation/sensor_simulator.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -125,9 +134,6 @@ void validate_config(const EnvironmentConfig& config) {
         validate_non_negative(
             profile.potassium_milligrams_per_milliliter,
             "fertilizer potassium content");
-        validate_non_negative(
-            profile.ec_increase_ms_cm_per_milliliter,
-            "fertilizer EC effect");
         require_finite(profile.ph_change_per_milliliter, "fertilizer pH effect");
     }
     const auto& ph_up = config.fertilizer_profiles[
@@ -340,7 +346,6 @@ void EnvironmentSimulator::integrate_substep(
     const double light_activity =
         std::clamp(state_.light_ppfd_umol_m2_s / 700.0, 0.0, 1.5);
     double soil_water_fraction = state_.soil_moisture_percent / 100.0;
-    const double water_before_step = soil_water_fraction;
     const double depletion = soil.depletion_per_hour * (0.20 + 0.80 * light_activity);
     const double irrigation_volume_liters =
         actuator_output.irrigation_volume_liters_last_step;
@@ -386,18 +391,6 @@ void EnvironmentSimulator::integrate_substep(
     state_.ph += (ph_equilibrium - state_.ph) * delta_hours /
                  (24.0 * soil.ph_buffering_days);
     state_.ph += 0.004 * uptake_activity * delta_hours / 24.0;
-    state_.ec_ms_cm -= 0.025 * uptake_activity * delta_hours / 24.0;
-
-    const double water_change =
-        soil_water_fraction - water_before_step;
-    if (water_change < 0.0) {
-        state_.ec_ms_cm *= 1.0 + (-water_change) * 0.08;
-    }
-    if (irrigation_volume_liters > 0.0) {
-        constexpr double kIrrigationWaterEcMsCm = 0.60;
-        state_.ec_ms_cm += (kIrrigationWaterEcMsCm - state_.ec_ms_cm) *
-                           soil.ec_leaching_per_liter * irrigation_volume_liters;
-    }
 
     for (std::size_t index = 0; index < kFertilizerTypeCount; ++index) {
         const double fertilizer_volume_milliliters =
@@ -417,8 +410,6 @@ void EnvironmentSimulator::integrate_substep(
             fertilizer_volume_milliliters;
         state_.ph += profile.ph_change_per_milliliter *
                      fertilizer_volume_milliliters;
-        state_.ec_ms_cm += profile.ec_increase_ms_cm_per_milliliter *
-                           fertilizer_volume_milliliters;
     }
 
     // Il drenaggio rimuove la stessa frazione di ogni massa disciolta
@@ -463,7 +454,30 @@ void EnvironmentSimulator::integrate_substep(
         config_.maximum_nutrient_concentration_mg_per_liter);
 
     state_.ph = std::clamp(state_.ph, 3.0, 9.0);
-    state_.ec_ms_cm = std::clamp(state_.ec_ms_cm, 0.0, 8.0);
+
+    // La EC "vera" del terriccio non e' un ulteriore stato con una propria
+    // dinamica additiva: e' semplicemente la conducibilita corrispondente
+    // alla massa totale di fertilizzante ORA disciolta nell'acqua radicale
+    // disponibile, con la STESSA formula (fondo + totale/fattore) che
+    // update_soil_probe_estimates() inverte per stimare N/P/K dalla EC letta
+    // dalla sonda resistiva. Prima di questa correzione la EC seguiva un
+    // proprio aggiornamento indipendente (incremento fisso per mL dosato,
+    // lieve amplificazione in fase di essiccamento, diluizione verso l'EC
+    // dell'acqua d'irrigazione): su substrati drenanti con forti escursioni
+    // di umidita le due grandezze divergevano nel tempo, la stima N/P/K
+    // restava bassa e il controllore continuava a dosare mentre la
+    // concentrazione vera saliva senza limite (vedi RemainsBoundedForAWeek...
+    // e i log di simulazione con substrato "draining").
+    const SoilProbeModelConfig probe{};
+    const double total_fertilizer_mg_per_liter =
+        state_.nitrogen_mg_per_liter + state_.phosphorus_mg_per_liter +
+        state_.potassium_mg_per_liter;
+    state_.ec_ms_cm = std::clamp(
+        probe.background_ec_ms_cm +
+            total_fertilizer_mg_per_liter /
+                probe.fertilizer_mg_per_liter_per_ms_cm,
+        0.0,
+        8.0);
 }
 
 const EnvironmentState& EnvironmentSimulator::state() const noexcept {

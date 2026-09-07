@@ -1,0 +1,22 @@
+.git
+.DS_Store
+**/.DS_Store
+.venv
+.pytest_cache
+__pycache__
+**/__pycache__
+*.py[cod]
+
+# Build locale dell'Edge C++: viene ricompilato nello stage edge-builder,
+# non deve essere copiato (pesante e specifico della macchina locale).
+edge/build/
+
+# Database SQLite locale: viene creato al primo avvio dal container.
+backend/data/
+
+edge/experiment_results/
+edge-data/
+output/
+tmp/
+doc/doxygen/
+*.png

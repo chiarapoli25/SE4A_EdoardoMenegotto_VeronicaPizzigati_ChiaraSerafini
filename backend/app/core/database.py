@@ -656,14 +656,16 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
     )
     # Autenticazione della dashboard (utenti/ruoli e sessioni via token
-    # opaco): meccanismo separato dal Bearer SMARTHYDRO_API_TOKEN usato
-    # dall'Edge, vedi backend/app/core/security.py.
+    # opaco, vedi backend/app/features/users/): meccanismo separato dal
+    # Bearer SMARTHYDRO_API_TOKEN usato dall'Edge, vedi
+    # backend/app/core/security.py.
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'agronomo')),
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('agronomo', 'amministratore')),
             created_at TEXT NOT NULL
         )
         """
@@ -672,9 +674,10 @@ def init_db(connection: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS sessions (
             token TEXT PRIMARY KEY,
-            username TEXT NOT NULL REFERENCES users(username),
+            username TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            expires_at TEXT
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (username) REFERENCES users(username)
         )
         """
     )
@@ -684,7 +687,12 @@ def init_db(connection: sqlite3.Connection) -> None:
         ON sessions (username)
         """
     )
+
     from ..features.recipes.catalog import seed_recipe_catalog
 
     seed_recipe_catalog(connection)
+    # Gli account non vengono piu' seminati automaticamente all'avvio: un
+    # admin/pass123 cablato nel codice di startup e' un rischio di sicurezza
+    # (vedi discussione merge del 2026-09-07). Il primo account si crea in
+    # modo esplicito con demo/seed_users.py.
     connection.commit()

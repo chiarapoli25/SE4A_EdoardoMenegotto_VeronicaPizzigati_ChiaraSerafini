@@ -17,7 +17,6 @@ from .core.database import get_connection, get_db, init_db
 from .core.config import default_edge_id, offline_threshold_seconds
 from .core.security import require_api_token
 from .features.actuators.routes import router as actuator_router
-from .features.auth.routes import router as auth_router
 from .features.commands.routes import router as command_router
 from .features.cultivations.routes import router as cultivation_router
 from .features.events.routes import router as event_router
@@ -26,6 +25,7 @@ from .features.recipes.routes import router as recipe_router
 from .features.simulations.routes import router as simulation_router
 from .features.system.routes import router as system_router
 from .features.telemetry.routes import router as telemetry_router
+from .features.users.routes import auth_router, router as user_router
 from .features.zones.routes import (
     edge_router,
     router as zone_router,
@@ -77,11 +77,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["null"],
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    # Content-Type per i body JSON, Authorization per il token di sessione
+    # che apiRequest() allega dopo il login (vedi features/users).
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 app.include_router(system_router)
 app.include_router(auth_router)
+app.include_router(user_router)
 app.include_router(zone_router)
 app.include_router(edge_router)
 app.include_router(telemetry_router)

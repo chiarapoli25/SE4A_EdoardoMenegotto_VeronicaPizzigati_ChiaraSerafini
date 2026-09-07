@@ -48,7 +48,7 @@ def test_init_db_persists_the_seed_catalog_in_sqlite(
 
     assert count == 20
     assert stored is not None
-    assert stored[0] == 2
+    assert stored[0] == 5
     expanded = Recipe.model_validate_json(stored[1])
     assert expanded.plant_type == "Calathea"
     assert len(expanded.phases) == 4
@@ -73,7 +73,7 @@ def test_catalog_seed_does_not_overwrite_a_database_customization(
     recipe = get_recipe(connection, "recipe-calathea")
     assert recipe is not None
     customized = recipe.model_copy(
-        update={"version": 3, "plant_type": "Calathea personalizzata"}
+        update={"version": 6, "plant_type": "Calathea personalizzata"}
     )
     save_recipe(connection, customized)
 
@@ -81,7 +81,7 @@ def test_catalog_seed_does_not_overwrite_a_database_customization(
 
     stored = get_recipe(connection, "recipe-calathea")
     assert stored is not None
-    assert stored.version == 3
+    assert stored.version == 6
     assert stored.plant_type == "Calathea personalizzata"
 
 
@@ -111,7 +111,7 @@ def test_catalog_v1_bootstrap_is_migrated_to_multiphase_v2(
 
     migrated = get_recipe(connection, legacy.id)
     assert migrated is not None
-    assert migrated.version == 2
+    assert migrated.version == 5
     assert len(migrated.phases) == 4
 
 

@@ -386,6 +386,7 @@ _REQUIRED_ACTUATOR: dict[ControlledVariable, ActuatorType] = {
     ControlledVariable.POTASSIUM: ActuatorType.POTASSIUM_VALVE,
 }
 
+
 ## @brief Insieme immutabile delle variabili nutritive N/P/K.
 _NUTRIENT_VARIABLES = frozenset({
     ControlledVariable.NITROGEN,
@@ -397,9 +398,19 @@ _NUTRIENT_VARIABLES = frozenset({
 def _required_default_strategy(variable: ControlledVariable) -> StrategyType:
     """@brief Determina la strategia predefinita di una variabile.
 
+    @details N/P/K leggono da una stima di modello (`input_source` in
+    `nitrogen_model`/`phosphorus_model`/`potassium_model`), non da un
+    sensore diretto: questo non le rende incompatibili con Threshold o PID
+    (`RecipeControlSystem` risolve il valore da controllare in modo identico
+    per qualunque Strategy), ma Predictive resta il default perche' e' l'unica
+    pensata per proiettare un trend nel tempo — utile perche' le valvole di
+    concentrato si aprono solo mentre la pompa dell'acqua sta irrigando, non
+    a ogni ciclo di controllo: conviene dosare in vista della prossima
+    occasione utile, non solo del valore istantaneo. Threshold e PID restano
+    comunque selezionabili.
+
     @param variable Variabile controllata da classificare.
-    @return `Predictive` per N/P/K, `PID` per il pH e `Threshold` negli altri
-        casi.
+    @return `Predictive` per N/P/K, `PID` per il pH, `Threshold` altrimenti.
     """
     if variable in _NUTRIENT_VARIABLES:
         return StrategyType.PREDICTIVE

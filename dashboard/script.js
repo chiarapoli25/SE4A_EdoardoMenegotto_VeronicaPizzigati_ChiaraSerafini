@@ -38,7 +38,7 @@ const COMMAND_POLL_MS = 1500;
 const COMMAND_TIMEOUT_MS = 20000;
 // Simulatore page: batch preview job polling — isolated from every
 // operational poll above, see the dedicated section near
-// openSimulatorModal().
+// openGreenhouseSimulatorModal().
 const SIMULATION_POLL_MS = 1500;
 
 // Frontend-only rule (not enforced by the backend): "Fai uscire" stays
@@ -82,29 +82,32 @@ const SIMULATION_DURATION_PRESETS = [
 ];
 
 const STRATEGIES = ["Threshold", "PID", "Predictive"];
-// Threshold/PID are the only two Strategy values that make sense as a real
-// per-variable choice (see StrategyName in backend/app/features/zones/
-// models.py) — Predictive is always forced for the three nutrients, never a
-// real choice, and there is no separate "photoperiod" Strategy anywhere in
-// the backend (photoperiod is a fixed recipe timing property, not a
-// controller strategy), so it's never offered as one here either.
-const CHOOSABLE_STRATEGIES = ["Threshold", "PID"];
-// The three variables the plant-wide Strategy panel (Controllo page) lets an
+// Predictive used to be forced for the three nutrients (the only source
+// available for N/P/K is a model estimate, not a direct sensor) and was
+// therefore excluded here as "never a real choice". That lock was a policy
+// choice, not a technical one — process_value()/source_value() on the Edge
+// resolve a model estimate identically for any Strategy (see
+// control_system.cpp's required_default_strategy()) — and has been lifted:
+// an Amministratore can now pick all three, from this same bulk panel, for
+// every variable including N/P/K. There is still no separate "photoperiod"
+// Strategy anywhere in the backend (photoperiod is a fixed recipe timing
+// property, not a controller strategy), so it's never offered as one here.
+const CHOOSABLE_STRATEGIES = ["Threshold", "PID", "Predictive"];
+// The variables the plant-wide Strategy panel (Controllo page) lets an
 // Amministratore actually choose a Strategy for. Kept in this fixed order
-// wherever the panel lists them.
-const GLOBAL_STRATEGY_VARIABLES = ["soil_moisture", "light", "ph"];
+// wherever the panel lists them. Nitrogen/phosphorus/potassium joined this
+// list once Threshold/PID became valid choices for them too (see the
+// CHOOSABLE_STRATEGIES comment above).
+const GLOBAL_STRATEGY_VARIABLES = [
+  "soil_moisture", "light", "ph", "nitrogen", "phosphorus", "potassium",
+];
 
-// Roles the backend actually issues (see Role in
-// backend/app/features/auth/models.py — returned lowercase, capitalized on
-// the way into STATE.currentUser.role by capitalizeRole() in the "Login
-// screen" section far below). "Amministratore" is the one role value with
-// an effect on what's shown/allowed here (gates the Controllo page/nav
-// item, see isAdmin()) — and, since the auth work, also on what the backend
-// itself accepts (see require_role() in commands/routes.py). Kept to
-// exactly these two per an explicit earlier decision — "Grower" used to be
-// a third, demo-only option; removing it here is what makes
-// loadAuthSession() below treat a stale stored Grower session as logged out.
-const VALID_ROLES = ["Agronomo", "Amministratore"];
+// Account roles (see the "Login screen" section far below), verified by the
+// backend on every login — "admin" is the one role value with an actual
+// effect on what's shown (gates the Controllo page/nav item and the "Gestione
+// utenti" panel inside it, see isAdmin()) and on what the backend itself
+// accepts (POST/GET /users, see backend/app/features/users/dependencies.py).
+const VALID_ROLES = ["agronomo", "admin"];
 
 const OP_META = {
   Nominal: { color: "#1f7a51" },
@@ -145,18 +148,18 @@ const SUBSTRATE_LABELS = {
 /* ------------------------------------------------------------------ */
 /* Recipe form (create/edit) constants                                */
 /*                                                                    */
-/* Mirrors the fixed variable <-> input_source/actuator/default_strategy */
-/* associations enforced server-side in                               */
-/* backend/app/features/recipes/models.py                             */
-/* (_REQUIRED_INPUT_SOURCE / _REQUIRED_ACTUATOR /                     */
-/* _required_default_strategy) and validated again, more strictly, by */
-/* smarthydro::RecipeControlSystem::confirm_configuration() on the    */
-/* Edge — a recipe whose N/P/K selected_strategy isn't Predictive     */
-/* fails that confirmation and, since recipe adoption now confirms    */
-/* synchronously (see control_system.cpp's confirm_all_from_recipe),  */
-/* would reject the whole ActivateCultivation/LoadRecipe command.     */
-/* Locking the form's Strategy choice for N/P/K prevents ever          */
-/* constructing a payload that could trigger that at adoption time.   */
+/* Mirrors the fixed variable <-> input_source/actuator associations  */
+/* enforced server-side in backend/app/features/recipes/models.py     */
+/* (_REQUIRED_INPUT_SOURCE / _REQUIRED_ACTUATOR). default_strategy is  */
+/* also enforced there (_required_default_strategy) and, redundantly, */
+/* by smarthydro::RecipeControlSystem::validate_recipe() on the Edge — */
+/* REQUIRED_DEFAULT_STRATEGY below must keep matching both, or a       */
+/* submitted recipe comes back as a 422 (it's sent unconditionally,   */
+/* see buildRecipePayload). selected_strategy is a free choice among   */
+/* STRATEGIES for every variable, N/P/K included: Threshold, PID and   */
+/* Predictive are all valid regardless of input_source (see the        */
+/* CHOOSABLE_STRATEGIES comment above for why N/P/K used to be locked  */
+/* to Predictive and no longer are).                                   */
 /* ------------------------------------------------------------------ */
 
 const NUTRIENT_VARIABLES = ["nitrogen", "phosphorus", "potassium"];
@@ -304,32 +307,54 @@ const STATE = {
   // overlay as the zone/recipe modals via STATE.modalKind = "recipe-form".
   recipeForm: null,
 
-  // Simulatore (STATE.view = "simulator"): an isolated batch preview of the
-  // recipe REALLY assigned to one REAL, currently-registered sector — never
-  // a free pick from the full catalog (see POST /simulations — never
-  // touches the zone itself, only reads its active_recipe_id once when the
-  // pop-up is opened). Shape:
-  // { zoneId, recipeId, durationDays, starting, job, result, error,
-  //   chartVariable, playback } — zoneId is the sector this scenario was
-  // opened for (header context + the "which sector's recipe is this"
-  // banner inside the pop-up); recipeId is that sector's active_recipe_id
-  // at open time. job is the polled SimulationJob (queued/running/
-  // succeeded/failed/cancelled); result is the SimulationPreview, fetched
-  // once job succeeds. null whenever the simulation pop-up (STATE.modalKind
-  // = "simulator", see openSimulatorModal) is not open. Reset to null
-  // (after discarding any still-active job — see
-  // discardActiveSimulationIfAny) both when the pop-up is closed and when
-  // navigating away from the Simulatore page (switchView), so a job never
-  // outlives its pop-up occupying the system's single global batch slot.
+  // Simulatore (STATE.view = "simulator"): one "Simula l'intera serra"
+  // batch preview covering every REAL, currently-registered production
+  // sector that has a recipe REALLY assigned — never a free pick from the
+  // full catalog, and never a single isolated sector (see POST
+  // /simulations — never touches any zone itself, only reads
+  // active_recipe_id for each once when the run starts). Shape:
+  // { greenhouse: true, durationDays, starting, job, result, activeZoneId,
+  //   error, chartVariable, chartView } — job is the polled
+  // SimulationJob (queued/running/succeeded/failed/cancelled); result is
+  // an ARRAY of SimulationPreview, one per zone, fetched once job
+  // succeeds (see activeSimulationPreview); activeZoneId picks which one
+  // the charts currently show — set on open (clicking a sector row, see
+  // renderSimulatorSectorRow) or via the "Settore mostrato" <select>
+  // inside the pop-up (renderSimulationResult).
+  //
+  // null whenever no simulation has been started yet this visit to the
+  // Simulatore page. Unlike every other pop-up, closing this one
+  // (closeModal) does NOT reset it to null — the job keeps polling and any
+  // result stays around, so reopening (another sector row, or the page
+  // button) shows the very same run. Only starting a genuinely new run
+  // (restartSimulationSetup, "Nuova simulazione") or leaving the
+  // Simulatore page entirely (switchView, which also frees the system's
+  // single global batch slot via discardActiveSimulationIfAny if a job is
+  // still queued/running) resets it.
   simulation: null,
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
-  // The logged-in demo identity (see "Login screen" below), mirrored into
-  // STATE so isAdmin()/nav visibility/switchView's Controllo gate can read
-  // it synchronously without touching localStorage on every check. null
-  // while the login screen is showing.
+  // The account returned by POST /auth/login (or re-verified by GET
+  // /auth/me on boot — see the "Login screen" section below): { token,
+  // username, display_name, role }. Mirrored into STATE so isAdmin()/nav
+  // visibility/switchView's Controllo gate and apiRequest()'s Authorization
+  // header can read it synchronously. null while the login screen is
+  // showing.
   currentUser: null,
+
+  // "Gestione utenti" panel (Controllo page, admin-only): the account list
+  // and the create-account form — see ensureUsersLoaded()/
+  // renderUserManagementPanel()/submitCreateUser().
+  users: {
+    list: [],
+    loaded: false,
+    loading: false,
+    error: null,
+    form: { username: "", password: "", displayName: "", role: "agronomo" },
+    // null | { kind: "sending" } | { kind: "success"|"error", message }
+    status: null,
+  },
 
   // Plant-wide Strategy panel (Controllo page, Amministratore-only): one
   // Strategy choice per variable in GLOBAL_STRATEGY_VARIABLES, applied as a
@@ -465,17 +490,16 @@ async function apiRequest(method, path, { params, body } = {}) {
     if (qs) url += (url.includes("?") ? "&" : "?") + qs;
   }
   const opts = { method, headers: {} };
-  // Attached to every call (reads included), not only writes: harmless for
-  // endpoints that ignore it, and means nothing has to remember to add it
-  // per call-site. Only the two admin-gated command types on
-  // POST /zones/{id}/commands actually check it (see backend
-  // require_role/get_current_user in features/auth/routes.py) — everything
-  // else on the backend today accepts requests with or without it.
-  const token = getAuthToken();
-  if (token) opts.headers["Authorization"] = `Bearer ${token}`;
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
+  }
+  // Attaches the session token once one exists. Harmless on every endpoint
+  // that doesn't require an account (the vast majority — see main.py: only
+  // /users and /auth/me are gated) and required for the admin-only /users
+  // endpoints the "Gestione utenti" panel calls.
+  if (STATE.currentUser && STATE.currentUser.token) {
+    opts.headers["Authorization"] = `Bearer ${STATE.currentUser.token}`;
   }
   const res = await fetch(url, opts);
   const text = await res.text();
@@ -619,12 +643,13 @@ function groupZonesByDepartment(zones) {
   return map;
 }
 
-/** Whether the logged-in demo identity is "Amministratore" — the one role
- * value that actually gates something (the Controllo page/nav item). Purely
- * a navigation/display gate, same as the rest of this login system: nothing
- * here or on the backend actually authenticates the role. */
+/** Whether the logged-in account has the "admin" role — the one role value
+ * that actually gates something client-side (the Controllo page/nav item and
+ * the "Gestione utenti" panel). The backend enforces the same rule
+ * independently on POST/GET /users (require_admin), so this is a UI
+ * convenience, not the only line of defense. */
 function isAdmin() {
-  return !!STATE.currentUser && STATE.currentUser.role === "Amministratore";
+  return !!STATE.currentUser && STATE.currentUser.role === "admin";
 }
 
 /** Production zones (department 1-4 — never Quarantena) that currently have
@@ -719,19 +744,40 @@ function bandCalc(value, min, max) {
 /* with. Fine-tuning individual gains is out of scope for this UI.    */
 /* ------------------------------------------------------------------ */
 
-function buildStrategyParameters(strategy, target) {
+/**
+ * `variableKey` matters for N/P/K: unlike soil_moisture/light/ph (which can
+ * push the controlled variable in either direction, or at least sit at a
+ * true zero), a fertilizer valve can only add — it can never "un-dose" — so
+ * a Threshold/PID/Predictive command for a nutrient must never be allowed
+ * to go negative, and its command scale is a dose in mL (a handful of mL,
+ * see output_limits.maximum_dose_per_command_milliliters), not the
+ * L/W-scale magic numbers used for the other three.
+ */
+function buildStrategyParameters(strategy, target, variableKey) {
   const setpoint = target ? target.setpoint : 0;
   const min = target ? target.allowed_range.minimum : 0;
   const max = target ? target.allowed_range.maximum : Math.max(setpoint + 1, 1);
+  const doseOnly = NUTRIENT_VARIABLES.includes(variableKey);
   if (strategy === "Threshold") {
-    return { lower_threshold: min, upper_threshold: max, direction: "increases", active_command: 1.0, inactive_command: 0.0, bidirectional: false };
+    return {
+      lower_threshold: min, upper_threshold: max, direction: "increases",
+      active_command: doseOnly ? 2.0 : 1.0,
+      inactive_command: 0.0, bidirectional: false,
+    };
   }
   if (strategy === "PID") {
-    return { setpoint, proportional_gain: 1.0, integral_gain: 0.00001, derivative_gain: 0.0, command_minimum: -0.5, command_maximum: 0.5, direction: "increases" };
+    return doseOnly
+      ? { setpoint, proportional_gain: 0.05, integral_gain: 0.0001, derivative_gain: 0.0, command_minimum: 0.0, command_maximum: 3.0, direction: "increases" }
+      : { setpoint, proportional_gain: 1.0, integral_gain: 0.00001, derivative_gain: 0.0, command_minimum: -0.5, command_maximum: 0.5, direction: "increases" };
   }
+  // command_maximum e' una scala di comando (litri/watt/mL a seconda
+  // dell'attuatore), non va confusa con `max` sopra — quella e' la banda
+  // della VARIABILE controllata (es. 170 mg/L), un'unita' completamente
+  // diversa: usarla qui produrrebbe comandi enormi e privi di senso fisico.
   return {
-    setpoint, prediction_horizon_steps: 4.0, response_gain: 0.05, neutral_command: 0.0,
-    command_minimum: 0.0, command_maximum: Math.max(1.0, max), direction: "increases",
+    setpoint, prediction_horizon_steps: 1.0, response_gain: 0.02, neutral_command: 0.0,
+    command_minimum: 0.0, command_maximum: doseOnly ? 3.0 : 1.0,
+    direction: "increases",
     water_dilution_gain: 1.0, cumulative_dose_gain: 0.02, substrate_gain: 2.0,
   };
 }
@@ -795,6 +841,30 @@ async function tickZones() {
   }
 }
 
+/** Wraps already-rendered department cards (one per DEPT_ORDER entry, each
+ * carrying data-dept="N" — see renderDeptCard/renderSimulatorDeptCard) in
+ * the "piantina della serra" chrome: an outer wall, two decorative
+ * entrance tabs, and a "Corridoio centrale" bar between the two rows the
+ * grid naturally falls into (1-2-3 on top, 4-5 below — see the named
+ * grid-template-areas on .dept-grid in styles.css, which is what actually
+ * places d1..d5/corridor/dgap; this function only ever supplies the HTML,
+ * never the layout math). Shared by Home (renderHome/renderDeptGridOnly)
+ * and Simulatore (renderSimulatorView) — same building, two different
+ * pages looking at it. */
+function renderGreenhousePlan(deptCardsHtml) {
+  return `
+    <div class="greenhouse-plan">
+      <span class="greenhouse-entrance greenhouse-entrance-top">Ingresso principale</span>
+      <div class="dept-grid">
+        ${deptCardsHtml}
+        <div class="greenhouse-corridor">Corridoio centrale</div>
+        <div class="greenhouse-gap"><span>Attrezzi</span></div>
+      </div>
+      <span class="greenhouse-entrance greenhouse-entrance-bottom">Ingresso di servizio</span>
+    </div>
+  `;
+}
+
 function renderHome() {
   const zones = STATE.zones;
   const byDept = groupZonesByDepartment(zones);
@@ -803,13 +873,13 @@ function renderHome() {
   const degraded = zones.filter((z) => z.operational_state === "Degraded").length;
   const emergency = zones.filter((z) => z.operational_state === "EmergencyLockdown").length;
 
-  setPageTitle("Reparti della serra", `${total} settori registrati (massimo 9: 4 reparti produttivi × 2 settori + quarantena × 1) · ${online} online`);
+  setPageTitle("Serra", `${total} settori registrati (massimo 9: 4 reparti produttivi × 2 settori + quarantena × 1) · ${online} online`);
 
   const deptCards = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
 
   document.getElementById("view-home").innerHTML = `
     <div class="home-layout">
-      <div class="dept-grid">${deptCards}</div>
+      ${renderGreenhousePlan(deptCards)}
       <aside class="home-summary">
         <div class="side-card">
           <div class="side-card-title">Stato impianto</div>
@@ -851,7 +921,7 @@ function renderDeptCard(n, zones) {
     // of species/phase/operational state), and it's this inner box that's
     // clickable, exactly like a production sector row.
     return `
-      <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card" data-dept="${n}" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
         <div class="dept-card-head">
           <span class="dept-code">REPARTO ${n}</span>
         </div>
@@ -886,7 +956,7 @@ function renderDeptCard(n, zones) {
     return `<button type="button" class="sector-slot-add" data-action="open-add-sector" data-dept="${n}" data-sector="${sn}" ${noRecipes ? `disabled title="Nessuna ricetta disponibile per questo reparto: aggiungine una dalla pagina Ricette prima di creare un nuovo settore."` : ""}>+ Aggiungi settore</button>`;
   }).join("");
   return `
-    <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+    <div class="dept-card" data-dept="${n}" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
       <div class="dept-card-head">
         <span class="dept-code">REPARTO ${n}</span>
         <span class="dept-count">${zones.length} settor${zones.length === 1 ? "e" : "i"}</span>
@@ -1116,7 +1186,16 @@ function renderDeptGridOnly() {
   const grid = document.querySelector("#view-home .dept-grid");
   if (!grid) return;
   const byDept = groupZonesByDepartment(STATE.zones);
-  grid.innerHTML = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
+  const deptCards = DEPT_ORDER.map((n) => renderDeptCard(n, byDept[n] || [])).join("");
+  // Rebuilding just the cards would also wipe the corridor/gap filler
+  // (renderGreenhousePlan) since they live inside this same .dept-grid —
+  // put them back rather than only ever rendering them via a full
+  // renderHome().
+  grid.innerHTML = `
+    ${deptCards}
+    <div class="greenhouse-corridor">Corridoio centrale</div>
+    <div class="greenhouse-gap"></div>
+  `;
 }
 
 async function loadAlerts(zones) {
@@ -1656,11 +1735,10 @@ async function tickAlertsView() {
 /* Recipes view                                                       */
 /* ------------------------------------------------------------------ */
 
-// Backs BOTH the Ricette page and the Simulatore page's simulation pop-up
-// (renderSimulatorModal reads recipe details from STATE.recipesById) — both
-// consume the exact same unfiltered GET /recipes catalog (no department
-// scoping on either), so a single poll/cache serves both rather than
-// fetching the same list twice.
+// Backs the Ricette page; also re-renders the Simulatore page and its
+// pop-up on every tick (the sector grid itself reads only STATE.zones, no
+// recipe fields — kept in sync anyway since both pages share this one
+// poll/cache instead of fetching GET /recipes twice).
 async function tickRecipes() {
   try {
     const recipes = await apiGet("/recipes");
@@ -1875,29 +1953,31 @@ function renderRecipeModal() {
 /* from switchView() (navigating away from the Simulatore page          */
 /* entirely, pop-up open or not).                                       */
 /*                                                                       */
-/* Page layout: the SAME department-card grid as "Reparti della serra"  */
+/* Page layout: the SAME department-card grid as "Serra"                */
 /* (renderDeptCard/renderSectorRow in the Home section above), reused    */
 /* via renderSimulatorSectorRow/renderSimulatorDeptCard rather than a   */
 /* catalog-wide recipe picker — restricted to departments 1-4 (no       */
 /* Quarantena: department 5 never has an active_recipe_id) and, within  */
-/* those, only real registered sectors. A sector tile opens the         */
-/* simulation pop-up (openSimulatorModal, STATE.modalKind = "simulator")*/
-/* on THAT sector's own active_recipe_id — a separate pop-up from the   */
-/* real zone-detail one (openZoneModal/"zone"): the two must never      */
-/* converge into the same component/handler, since one is read-only     */
-/* live data and the other starts a batch job.                          */
+/* those, only real registered sectors. A sector tile opens/focuses the */
+/* one shared "Simula l'intera serra" pop-up (openGreenhouseSimulator   */
+/* Modal, STATE.modalKind = "simulator") on that sector — a separate    */
+/* pop-up from the real zone-detail one (openZoneModal/"zone"): the two */
+/* must never converge into the same component/handler, since one is   */
+/* read-only live data and the other starts/reads a batch job.          */
 /* ------------------------------------------------------------------ */
 
 /** Frees the global batch-simulation slot if the current job is still
- * queued/running when the user stops watching it (pop-up closed, or the
- * Simulatore page left entirely) — fire-and-forget, since there's nothing
- * more to show regardless of whether the DELETE itself succeeds. A no-op
- * if there is no job, or the job already reached a final state (nothing
- * to free). */
+ * queued/running when the user leaves the Simulatore page entirely
+ * (switchView) or starts a genuinely new run (restartSimulationSetup) —
+ * fire-and-forget, since there's nothing more to show regardless of
+ * whether the DELETE itself succeeds. Closing the pop-up alone does NOT
+ * call this (see closeModal): the job is meant to keep running/polling in
+ * the background while the user is still just browsing sectors on this
+ * same page. A no-op if there is no job, or the job already reached a
+ * final state (nothing to free). */
 function discardActiveSimulationIfAny() {
   const sim = STATE.simulation;
   clearPoll("simulation-job");
-  cancelSimulationPlayback();
   if (!sim || !sim.job) return;
   if (sim.job.status === "queued" || sim.job.status === "running") {
     apiDelete(`/simulations/${encodeURIComponent(sim.job.id)}`).catch(() => {});
@@ -1908,19 +1988,28 @@ function restartSimulationSetup() {
   const sim = STATE.simulation;
   if (!sim) return;
   clearPoll("simulation-job");
-  cancelSimulationPlayback();
   STATE.simulation = {
-    zoneId: sim.zoneId,
-    recipeId: sim.recipeId,
+    greenhouse: true,
     durationDays: sim.durationDays || 7,
     starting: false,
     job: null,
     result: null,
+    activeZoneId: null,
     error: null,
     chartVariable: sim.chartVariable || "soil_moisture",
-    playback: null,
+    chartView: sim.chartView || "single",
   };
   renderModal();
+}
+
+/** True when `a` and `b` are still "the same" simulation session as far as
+ * a late async response is concerned — there is only the one-of-a-kind
+ * "Simula l'intera serra" session now, so this only ever needs to check
+ * that both actually exist. Used by startSimulation to ignore a
+ * POST/error that resolves after the pop-up moved on (closed and a
+ * genuinely new run started via "Nuova simulazione" in the meantime). */
+function isSameSimulationSession(a, b) {
+  return !!a && !!b;
 }
 
 async function startSimulation() {
@@ -1931,21 +2020,25 @@ async function startSimulation() {
   sim.error = null;
   renderModal();
   try {
-    const job = await apiPost("/simulations", { recipe_id: sim.recipeId, duration_seconds: durationSeconds });
-    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId || STATE.modalKind !== "simulator") return; // pop-up closed/changed meanwhile
+    const job = await apiPost("/simulations", { duration_seconds: durationSeconds });
+    if (!isSameSimulationSession(STATE.simulation, sim) || STATE.modalKind !== "simulator") return; // pop-up closed/changed meanwhile
     STATE.simulation.starting = false;
     STATE.simulation.job = job;
     STATE.simulation.result = null;
     renderModal();
     pollSimulationJob();
   } catch (err) {
-    if (!STATE.simulation || STATE.simulation.recipeId !== sim.recipeId || STATE.modalKind !== "simulator") return;
+    if (!isSameSimulationSession(STATE.simulation, sim) || STATE.modalKind !== "simulator") return;
     STATE.simulation.starting = false;
-    // 409 here means "the system's one global batch slot is already
-    // taken" — a normal, expected condition, not a fault. Never show the
-    // raw backend detail for it.
+    // 409 here means one of two normal, expected conditions — never the
+    // raw backend detail: either the system's one global batch slot is
+    // already taken (SimulationBusy), or no zone has a recipe assigned at
+    // all (SimulationInvalid, routes.py) — distinguished by the backend's
+    // own detail text, since both map to the same HTTP status.
     STATE.simulation.error = err.status === 409
-      ? "È già in corso un'altra simulazione nel sistema, riprova tra poco."
+      ? ((err.message || "").includes("nothing to simulate")
+          ? "Nessun settore ha una ricetta assegnata: non c'è nulla da simulare."
+          : "È già in corso un'altra simulazione nel sistema, riprova tra poco.")
       : err.message;
     renderModal();
   }
@@ -2018,24 +2111,51 @@ function renderSimulatorView() {
     `${simulable.length} settor${simulable.length === 1 ? "e" : "i"} disponibil${simulable.length === 1 ? "e" : "i"} per la simulazione · nessun dato reale coinvolto`
   );
 
-  const deptCards = [1, 2, 3, 4].map((n) => renderSimulatorDeptCard(n, byDept[n] || [])).join("");
+  // Reparto 5 (quarantena) never has an active_recipe_id (see
+  // ZoneCreate._validate_department_role backend-side) and so is never
+  // simulable — shown as a muted, non-interactive room all the same
+  // rather than leaving a hole in the floor plan (renderGreenhousePlan
+  // always expects all 5).
+  const deptCards = [1, 2, 3, 4].map((n) => renderSimulatorDeptCard(n, byDept[n] || [])).join("")
+    + renderSimulatorQuarantineCard();
 
   document.getElementById("view-simulator").innerHTML = `
     <div class="simulator-intro simulator-intro-prominent">
       <div class="simulator-intro-title">Ambiente di simulazione</div>
       <div class="simulator-intro-text">
-        Questa griglia rispecchia i settori reali della serra — stessa specie, stessa fase, stesso stato — ma cliccarne
-        uno avvia solo uno scenario batch isolato sulla ricetta che quel settore ha davvero assegnata:
-        <strong>non tocca mai la telemetria, i comandi o la coltivazione reale di quel settore</strong>.
-        Ogni risultato è marcato esplicitamente <strong>«Scenario simulato — non operativo»</strong>.
+        Questa griglia rispecchia i settori reali della serra — stessa specie, stessa fase, stesso stato — ma "Simula
+        l'intera serra" avvia un unico scenario batch isolato che copre ogni settore con una ricetta assegnata, tutti
+        sullo stesso arco temporale: <strong>non tocca mai la telemetria, i comandi o le coltivazioni reali</strong>.
+        Cliccando un settore vedi il suo grafico dentro quella simulazione. Ogni risultato è marcato esplicitamente
+        <strong>«Scenario simulato — non operativo»</strong>.
       </div>
+      ${simulable.length > 0 ? `
+      <div class="simulator-intro-action">
+        <button type="button" class="btn btn-primary" data-action="open-greenhouse-simulator">Simula l'intera serra</button>
+        <span class="hint">un'unica simulazione per tutti i ${simulable.length} settor${simulable.length === 1 ? "e" : "i"} con ricetta assegnata — stesso arco temporale per tutti</span>
+      </div>` : ""}
     </div>
-    <div class="dept-grid">${deptCards}</div>
+    ${renderGreenhousePlan(deptCards)}
     ${simulable.length === 0 && STATE.zonesLoaded
       ? '<div class="simulator-empty" style="margin-top:20px">Nessun settore produttivo ha ancora una ricetta assegnata: non c\'è ancora nulla da simulare.</div>'
       : ""}
   `;
   maybeFetchHomeExtras(); // plant counts shown on each tile — same throttled fetch Home uses
+}
+
+/** Reparto 5's room in the Simulatore floor plan — never clickable (see
+ * the comment above its call site): quarantena has no recipe and nothing
+ * to simulate, so it's rendered muted instead of omitted, keeping all 5
+ * reparti visible as rooms on both pages. */
+function renderSimulatorQuarantineCard() {
+  const meta = DEPT_META[5];
+  return `
+    <div class="dept-card dept-card-muted" data-dept="5" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+      <div class="dept-card-head"><span class="dept-code">REPARTO 5</span></div>
+      <div class="dept-title">${escapeHtml(DEPT_FALLBACK_NAMES[5])}</div>
+      <div class="simulator-empty" style="margin:auto 0">Zona di quarantena: non coltivabile, quindi non simulabile.</div>
+    </div>
+  `;
 }
 
 /** One department card for the Simulatore grid — same visual shell as
@@ -2050,7 +2170,7 @@ function renderSimulatorDeptCard(n, zones) {
     ? zones.map((z) => renderSimulatorSectorRow(z)).join("")
     : '<div class="sector-slot-empty">Nessun settore registrato in questo reparto.</div>';
   return `
-    <div class="dept-card" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+    <div class="dept-card" data-dept="${n}" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
       <div class="dept-card-head">
         <span class="dept-code">REPARTO ${n}</span>
         <span class="dept-count">${zones.length} settor${zones.length === 1 ? "e" : "i"}</span>
@@ -2063,12 +2183,15 @@ function renderSimulatorDeptCard(n, zones) {
 
 /** A single sector tile on the Simulatore grid — same inner content as
  * Home's own sector row (species/phase/state/plant-count, via the shared
- * renderSectorRowInner), but clicking it opens the SIMULATION pop-up on
- * data-action="open-simulator-sector", never "open-zone". A production
- * sector without an active_recipe_id (should not happen with the current
- * creation flow, which always assigns one — but defensively handled
- * anyway) renders as a plain, non-clickable tile instead of one that would
- * fail on click: no data-action, muted styling, no arrow. */
+ * renderSectorRowInner), but clicking it opens/focuses that settore inside
+ * the shared "Simula l'intera serra" pop-up (data-action=
+ * "open-greenhouse-simulator", same action as the page-level button, just
+ * with a data-zone-id — see openGreenhouseSimulatorModal). There is no
+ * per-sector isolated simulation anymore: a settore's own chart only ever
+ * comes from the one greenhouse-wide run. A production sector without an
+ * active_recipe_id renders as a plain, non-clickable tile instead of one
+ * that would show nothing useful on click: no data-action, muted styling,
+ * no arrow. */
 function renderSimulatorSectorRow(z) {
   const inner = renderSectorRowInner(z);
   if (!z.active_recipe_id) {
@@ -2080,7 +2203,7 @@ function renderSimulatorSectorRow(z) {
     `;
   }
   return `
-    <div class="sector-row" data-action="open-simulator-sector" data-zone-id="${escapeAttr(z.id)}">
+    <div class="sector-row" data-action="open-greenhouse-simulator" data-zone-id="${escapeAttr(z.id)}">
       ${inner}
       <span class="sector-row-arrow">→</span>
     </div>
@@ -2088,54 +2211,38 @@ function renderSimulatorSectorRow(z) {
 }
 
 /**
- * Opens the simulation pop-up for one real sector's active_recipe_id.
- * Reuses #modal-overlay/#modal-content (STATE.modalKind = "simulator") —
- * the same overlay mechanism as the real zone pop-up, but its own kind, so
- * renderModal()/closeModal() never confuse the two. A no-op (defensive
- * only — the grid never renders a data-action for this case) if the zone
- * has no active_recipe_id.
+ * Opens (or brings back to front) the single, shared "Simula l'intera
+ * serra" pop-up — the only way to run or view a simulation now, no
+ * per-sector isolated run left (see renderSimulatorSectorRow). Called both
+ * by the page-level "Simula l'intera serra" button (no preferredZoneId)
+ * and by clicking a sector row (preferredZoneId set), so a sector's own
+ * chart is only ever reached through this one greenhouse-wide run.
+ *
+ * Reopening an already queued/running/completed simulation does NOT reset
+ * it — closing the pop-up alone never discards STATE.simulation either
+ * (see closeModal); only leaving the Simulatore page entirely (switchView)
+ * or starting a genuinely new run does. preferredZoneId just refocuses
+ * which settore's chart is shown once a result exists.
  */
-function openSimulatorModal(zoneId) {
-  const zone = STATE.zones.find((z) => z.id === zoneId);
-  if (!zone || !zone.active_recipe_id) return;
-
-  // A job for a *different* sector is still occupying the system's single
-  // batch slot (shouldn't normally happen — the grid is hidden behind the
-  // overlay while a pop-up is open — but defensive all the same): free it
-  // before starting this one.
-  if (STATE.simulation && STATE.simulation.zoneId !== zoneId) {
-    discardActiveSimulationIfAny();
-    STATE.simulation = null;
-  }
+function openGreenhouseSimulatorModal(preferredZoneId) {
   if (!STATE.simulation) {
     STATE.simulation = {
-      zoneId,
-      recipeId: zone.active_recipe_id,
+      greenhouse: true,
       durationDays: 7,
       starting: false,
       job: null,
       result: null,
+      activeZoneId: preferredZoneId || null,
       error: null,
       chartVariable: "soil_moisture",
-      playback: null,
+      chartView: "single",
     };
+  } else if (preferredZoneId) {
+    STATE.simulation.activeZoneId = preferredZoneId;
   }
-
   STATE.modalKind = "simulator";
   document.getElementById("modal-overlay").classList.remove("hidden");
   renderModal();
-
-  if (!STATE.recipesById[zone.active_recipe_id]) {
-    apiGet(`/recipes/${encodeURIComponent(zone.active_recipe_id)}`).then((r) => {
-      STATE.recipesById[r.id] = r;
-      if (STATE.modalKind === "simulator" && STATE.simulation && STATE.simulation.recipeId === r.id) renderModal();
-    }).catch(() => {
-      if (STATE.modalKind === "simulator" && STATE.simulation) {
-        STATE.simulation.error = "Impossibile caricare la ricetta assegnata a questo settore.";
-        renderModal();
-      }
-    });
-  }
 }
 
 /** Pop-up body: setup / progress / result, exactly the same three-state
@@ -2145,30 +2252,18 @@ function openSimulatorModal(zoneId) {
  * NEW LAYOUT note 3 this was written against: the grid looks enough like
  * the real one that the warning belongs inside the pop-up too, not only
  * above the grid). */
+/** "Simula l'intera serra" pop-up body: setup / progress / result — the
+ * only simulation pop-up now (see openGreenhouseSimulatorModal), so no
+ * recipe/zone to fetch first: the header names the greenhouse-wide run,
+ * not a single settore/ricetta, and setup/progress/result render
+ * immediately without an async load step. */
 function renderSimulatorModal() {
   const wrap = document.getElementById("modal-content");
   const sim = STATE.simulation;
   if (!sim) { wrap.innerHTML = '<div class="empty-note">Nessuna simulazione selezionata.</div>'; return; }
 
-  const zone = STATE.zones.find((z) => z.id === sim.zoneId) || null;
-  const recipe = STATE.recipesById[sim.recipeId];
-  if (!recipe) {
-    wrap.innerHTML = `
-      <div class="zone-header" style="--zone-tint:var(--sim-soft)">
-        <div style="min-width:0">
-          <div class="zone-header-code"><span class="code">${zone ? zoneLabel(zone) : "—"}</span></div>
-          <h2>Simulazione</h2>
-        </div>
-        <button type="button" class="zone-close" data-action="close-modal">✕</button>
-      </div>
-      <div style="padding:20px 28px 28px">
-        ${sim.error
-          ? `<div class="zone-danger-error">${escapeHtml(sim.error)}</div>`
-          : '<div class="empty-note">Caricamento ricetta…</div>'}
-      </div>
-    `;
-    return;
-  }
+  const zoneCount = (sim.job && sim.job.zone_ids && sim.job.zone_ids.length)
+    || (Array.isArray(sim.result) ? sim.result.length : STATE.zones.filter((z) => z.department_number !== 5 && !!z.active_recipe_id).length);
 
   let body;
   if (sim.result) {
@@ -2182,15 +2277,10 @@ function renderSimulatorModal() {
   wrap.innerHTML = `
     <div class="zone-header" style="--zone-tint:var(--sim-soft)">
       <div style="min-width:0">
-        <div class="zone-header-code">
-          <span class="code">${zone ? zoneLabel(zone) : "settore rimosso"} · ${escapeHtml(recipe.id)}</span>
-          <span class="recipe-badge">Versione ${recipe.version}</span>
-        </div>
-        <h2>${escapeHtml(recipe.plant_type)}</h2>
+        <div class="zone-header-code"><span class="code">Intera serra</span></div>
+        <h2>Simulazione dell'intera serra</h2>
         <div class="zone-header-meta">
-          <span>${zone ? `Ricetta assegnata a Reparto ${zone.department_number} — Settore ${zone.sector_number}` : "Questo settore non è più registrato"}</span>
-          <span class="sep"></span>
-          <span>${escapeHtml(recipe.department_name || "Reparto non catalogato")}</span>
+          <span>${zoneCount} settor${zoneCount === 1 ? "e" : "i"} con ricetta assegnata, ognuno con la propria ricetta</span>
         </div>
       </div>
       <button type="button" class="zone-close" data-action="close-modal">✕</button>
@@ -2199,8 +2289,9 @@ function renderSimulatorModal() {
       <div class="simulator-intro simulator-intro-compact">
         <div class="simulator-intro-title">Ambiente di simulazione</div>
         <div class="simulator-intro-text">
-          Questo scenario usa la ricetta assegnata a ${zone ? zoneLabel(zone) : "questo settore"}, ma resta un'anteprima
-          batch isolata: <strong>non tocca mai la telemetria, i comandi o la coltivazione reale del settore</strong>.
+          Ogni settore produttivo con una ricetta assegnata avanza sullo stesso arco temporale, ciascuno con la propria
+          ricetta — resta comunque un'anteprima batch isolata: <strong>non tocca mai la telemetria, i comandi o le
+          coltivazioni reali</strong>.
         </div>
       </div>
       ${body}
@@ -2262,32 +2353,75 @@ function varLegendLabel(v) {
   return `${v.label} · ${v.unit}`;
 }
 
+/** The SimulationPreview currently on screen. For "Simula un settore" (the
+ * original mode) sim.result is a single preview object, straight from
+ * GET /simulations/{id}/result. For "Simula l'intera serra" (STATE.
+ * simulation.greenhouse) that same endpoint returns an ARRAY instead — one
+ * preview per zone with an assigned recipe — and sim.activeZoneId (see the
+ * zone <select> in renderSimulationResult) picks which one every chart and
+ * summary below reads from; everything downstream stays written against a
+ * single preview object either way. */
+function activeSimulationPreview(sim) {
+  if (!sim || !sim.result) return null;
+  if (!Array.isArray(sim.result)) return sim.result;
+  return sim.result.find((p) => p.zone_id === sim.activeZoneId) || sim.result[0] || null;
+}
+
+/** Label for one entry of the "Simula l'intera serra" zone <select> — the
+ * preview only carries zone_id (see SimulationPreview.zone_id server-side),
+ * everything human-readable is resolved locally from STATE.zones, same as
+ * the rest of the app (zoneLabel). Falls back to the bare id for a zone
+ * removed mid-simulation (defensive only — a batch preview never mutates
+ * zones, so this should not normally happen). */
+function simZoneOptionLabel(preview) {
+  const zone = STATE.zones.find((z) => z.id === preview.zone_id);
+  return zone ? `${zoneLabel(zone)} · ${preview.recipe.plant_type}` : preview.zone_id;
+}
+
 function renderSimulationResult(sim) {
-  const result = sim.result;
-  const playing = !!(sim.playback && sim.playback.active);
+  const greenhouse = Array.isArray(sim.result);
+  const result = activeSimulationPreview(sim);
+  const gridView = sim.chartView === "grid";
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
-    <div class="sim-result-toolbar">
-      ${playing
-        ? `<span class="sim-playback-hint">Riproduzione in accelerato in corso…</span>
-           <button type="button" class="btn" data-action="sim-playback-skip">Salta al risultato completo →</button>`
-        : `<span class="sim-playback-hint">Il risultato completo è già mostrato qui sotto.</span>
-           <button type="button" class="btn" data-action="sim-playback-start">▶ Riproduci in accelerato</button>`}
-    </div>
+    ${greenhouse ? `
+    <div class="zone-section" style="margin-top:16px">
+      <div class="chart-head" style="margin-bottom:0">
+        <span class="title">Settore mostrato</span>
+        <select id="sim-zone-select">
+          ${sim.result.map((p) => `<option value="${escapeAttr(p.zone_id)}" ${p.zone_id === result.zone_id ? "selected" : ""}>${escapeHtml(simZoneOptionLabel(p))}</option>`).join("")}
+        </select>
+        <span class="hint">${sim.result.length} settori simulati sullo stesso arco temporale</span>
+      </div>
+    </div>` : ""}
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
         <span class="title">Andamento simulato</span>
+        ${gridView ? "" : `
         <select id="sim-chart-variable-select">
           ${VARIABLES.map((v) => `<option value="${v.key}" ${sim.chartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
-        </select>
+        </select>`}
+        <button type="button" class="chart-view-toggle" data-action="sim-chart-view-toggle">
+          ${gridView ? "◧ Un grafico alla volta" : "▦ Vedi tutti i grafici"}
+        </button>
         <span class="hint">durata simulata: ${fmtSimDuration(result.duration_seconds)}</span>
       </div>
       <div class="chart-legend">
-        <span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>
+        ${gridView
+          ? `<span class="legend-item"><span class="legend-line"></span>Valore simulato</span>`
+          : `<span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>`}
         <span class="legend-item"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>
       </div>
-      <div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
+      ${gridView
+        ? `<div class="sim-chart-grid">
+            ${VARIABLES.map((v) => `
+              <div class="sim-chart-grid-cell">
+                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}</div>
+                <canvas id="simulation-chart-${v.key}" style="width:100%;height:100%;display:block"></canvas>
+              </div>`).join("")}
+          </div>`
+        : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>`}
     </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
@@ -2334,80 +2468,6 @@ const SIM_ACTUATOR_ROWS = [
   { key: "valve_ph-up", short: "pH+" },
   { key: "valve_ph-down", short: "pH−" },
 ];
-
-/* -------------------------------------------------------------------- */
-/* "Riproduci in accelerato" — client-side animated replay of an        */
-/* already-complete simulation result. GET /simulations/{id}/result     */
-/* only ever returns once the job is "succeeded" (409 otherwise), so     */
-/* there is no such thing as live-streaming an in-progress computation — */
-/* this instead reveals an already-fetched, already-complete result     */
-/* progressively over a few real seconds. Both charts are redrawn with   */
-/* the same full data either way; only how much of it is clipped by      */
-/* revealT differs, which is what guarantees the animation's end state   */
-/* is pixel-identical to the static "risultato completo" view.           */
-/* -------------------------------------------------------------------- */
-
-const SIMULATION_PLAYBACK_DURATION_MS = 5000;
-
-function startSimulationPlayback() {
-  const sim = STATE.simulation;
-  if (!sim || !sim.result) return;
-  cancelSimulationPlayback();
-  const series = sim.result.series || [];
-  const minT = series.length ? series[0].start_seconds : 0;
-  const maxT = series.length ? series[series.length - 1].end_seconds : 0;
-  sim.playback = {
-    active: true,
-    minT,
-    maxT,
-    revealT: minT,
-    startedAt: null,
-    durationMs: SIMULATION_PLAYBACK_DURATION_MS,
-    rafId: null,
-  };
-  renderModal();
-  sim.playback.rafId = requestAnimationFrame(tickSimulationPlayback);
-}
-
-function tickSimulationPlayback(ts) {
-  const sim = STATE.simulation;
-  if (!sim || !sim.playback || !sim.playback.active) return;
-  const pb = sim.playback;
-  if (pb.startedAt === null) pb.startedAt = ts;
-  const frac = pb.durationMs > 0 ? Math.min(1, (ts - pb.startedAt) / pb.durationMs) : 1;
-  pb.revealT = pb.minT + (pb.maxT - pb.minT) * frac;
-  drawSimulationChart();
-  drawActuatorTimelineChart();
-  if (frac >= 1) {
-    finishSimulationPlayback();
-  } else {
-    pb.rafId = requestAnimationFrame(tickSimulationPlayback);
-  }
-}
-
-/** Ends the animation and falls back to the ordinary static render — the
- * same code path "Mostra risultato completo" always used, so there is no
- * separate "final frame" to keep in sync with it. */
-function finishSimulationPlayback() {
-  const sim = STATE.simulation;
-  if (!sim) return;
-  sim.playback = null;
-  renderModal();
-}
-
-function skipSimulationPlayback() {
-  finishSimulationPlayback();
-}
-
-/** Pure cleanup — cancels any pending animation frame without redrawing.
- * Called before STATE.simulation is replaced or torn down (new recipe,
- * restart, navigating away) so a stray rAF never fires against a
- * detached/replaced canvas. */
-function cancelSimulationPlayback() {
-  const sim = STATE.simulation;
-  if (sim && sim.playback && sim.playback.rafId) cancelAnimationFrame(sim.playback.rafId);
-  if (sim) sim.playback = null;
-}
 
 function renderSimulationSummary(summary) {
   const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
@@ -2461,21 +2521,33 @@ function fmtDurationHM(totalSeconds) {
   return `${minutes}m`;
 }
 
+/** Draws either the single selected-variable canvas, or (chartView ===
+ * "grid", see the "Vedi tutti i grafici" toggle) every VARIABLES entry into
+ * its own small canvas at once — same underlying drawSimulationSeriesChart
+ * either way, just once per variable in grid mode. */
 function drawSimulationChart() {
-  const canvas = document.getElementById("simulation-chart");
   const sim = STATE.simulation;
-  if (!canvas || !sim || !sim.result) return;
+  const preview = activeSimulationPreview(sim);
+  if (!preview) return;
+  if (sim.chartView === "grid") {
+    VARIABLES.forEach((v) => {
+      const canvas = document.getElementById(`simulation-chart-${v.key}`);
+      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v);
+    });
+    return;
+  }
+  const canvas = document.getElementById("simulation-chart");
+  if (!canvas) return;
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
-  const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
-  drawSimulationSeriesChart(canvas, sim.result.series, sim.result.phases, varMeta, revealT);
+  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta);
 }
 
 function drawActuatorTimelineChart() {
   const canvas = document.getElementById("simulation-actuator-chart");
   const sim = STATE.simulation;
-  if (!canvas || !sim || !sim.result) return;
-  const revealT = sim.playback && sim.playback.active ? sim.playback.revealT : null;
-  drawActuatorTimeline(canvas, sim.result.actuator_intervals || [], sim.result.series, sim.result.phases, revealT);
+  const preview = activeSimulationPreview(sim);
+  if (!canvas || !preview) return;
+  drawActuatorTimeline(canvas, preview.actuator_intervals || [], preview.series, preview.phases);
 }
 
 /**
@@ -2487,15 +2559,8 @@ function drawActuatorTimelineChart() {
  * own total duration don't exist (a finished recipe just holds on its
  * last phase), so the last phase's band is extended to the end of the
  * simulated span rather than leaving a gap.
- *
- * revealT (optional): when set, clips everything drawn to t <= revealT —
- * used by the "Riproduci in accelerato" playback to reveal the (already
- * fully computed) result progressively. Axis domains (minV/maxV/minT/maxT)
- * are always computed from the FULL dataset regardless, so the axes never
- * jitter mid-animation and the end state is pixel-identical to passing no
- * revealT at all (the static "risultato completo" view).
  */
-function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
+function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -2531,11 +2596,20 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
   const minT = series[0].start_seconds;
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
-  const revealCap = revealT != null ? Math.min(Math.max(revealT, minT), maxT) : maxT;
 
   let minV = Math.min(...points.map((p) => p.min));
   let maxV = Math.max(...points.map((p) => p.max));
+  // Solo le fasi che ricadono davvero nell'intervallo simulato [minT, maxT]
+  // contano per la scala dell'asse — esattamente lo stesso controllo di
+  // sovrapposizione usato sotto per decidere se disegnare la banda di una
+  // fase. Senza questo filtro, una simulazione breve che resta sempre nella
+  // prima fase vedrebbe comunque l'asse allungato fino ai target (spesso
+  // molto più ampi) delle fasi successive mai raggiunte, schiacciando la
+  // curva vicino al fondo pur essendo perfettamente in banda.
   phases.forEach((ph) => {
+    const segStart = Math.max(ph.start_seconds, minT);
+    const segEnd = Math.min(ph.end_seconds, maxT);
+    if (segEnd <= segStart) return;
     const t = ph.targets[varMeta.key];
     if (t) { minV = Math.min(minV, t.allowed_minimum); maxV = Math.max(maxV, t.allowed_maximum); }
   });
@@ -2563,7 +2637,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
     const target = ph.targets[varMeta.key];
     if (!target) return;
     const segStart = Math.max(ph.start_seconds, minT);
-    const segEnd = Math.min(i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT), revealCap);
+    const segEnd = i === phases.length - 1 ? maxT : Math.min(ph.end_seconds, maxT);
     const bx0 = x(segStart);
     const bx1 = x(segEnd);
     if (bx1 <= bx0) return;
@@ -2587,24 +2661,19 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
     }
   });
 
-  // Progressively revealed subset for the playback animation — point by
-  // point, as the user's own spec asked for ("punto per punto"). Unset
-  // revealT (the ordinary static render) keeps every point.
-  const drawPoints = revealT != null ? points.filter((p) => (p.t0 + p.t1) / 2 <= revealCap) : points;
-
   // Observed min/max spread per bucket (visible mainly on aggregated,
   // long-duration simulations where each point covers many raw steps).
-  if (drawPoints.length) {
+  if (points.length) {
     ctx.fillStyle = "rgba(31,122,81,0.14)";
     ctx.beginPath();
-    drawPoints.forEach((p, i) => {
+    points.forEach((p, i) => {
       const px = x((p.t0 + p.t1) / 2);
       const py = y(p.max);
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     });
-    for (let i = drawPoints.length - 1; i >= 0; i--) {
-      const px = x((drawPoints[i].t0 + drawPoints[i].t1) / 2);
-      ctx.lineTo(px, y(drawPoints[i].min));
+    for (let i = points.length - 1; i >= 0; i--) {
+      const px = x((points[i].t0 + points[i].t1) / 2);
+      ctx.lineTo(px, y(points[i].min));
     }
     ctx.closePath();
     ctx.fill();
@@ -2613,7 +2682,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
     ctx.strokeStyle = "#1f7a51";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    drawPoints.forEach((p, i) => {
+    points.forEach((p, i) => {
       const px = x((p.t0 + p.t1) / 2);
       const py = y(p.avg);
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
@@ -2638,13 +2707,8 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, revealT) {
  * drawSimulationSeriesChart above, so this canvas's plot area lines up
  * pixel-for-pixel under the sensor chart's and a valve opening visibly
  * lines up with whatever sensor reading triggered it.
- *
- * revealT (optional): same contract as drawSimulationSeriesChart — clips
- * each interval's drawn end to revealT (bars visibly "grow" during
- * playback) while every other computed value (minT/maxT, row layout,
- * phase-boundary positions) stays derived from the full dataset.
  */
-function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
+function drawActuatorTimeline(canvas, intervals, series, phases) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -2670,7 +2734,6 @@ function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
   const minT = series[0].start_seconds;
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
-  const revealCap = revealT != null ? Math.min(Math.max(revealT, minT), maxT) : maxT;
 
   const x = (t) => pad.l + ((t - minT) / spanT) * w;
 
@@ -2695,12 +2758,11 @@ function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
 
   // Phase boundary lines — same source/positions as the sensor chart
   // above, so a phase change lines up visually between the two stacked
-  // canvases; hidden past revealCap so a future phase change doesn't leak
-  // through before its data has been revealed.
+  // canvases.
   ctx.strokeStyle = "#d8e2da";
   ctx.lineWidth = 1;
   phases.forEach((ph, i) => {
-    if (i === 0 || ph.start_seconds > revealCap) return;
+    if (i === 0 || ph.start_seconds > maxT) return;
     const bx = x(Math.min(Math.max(ph.start_seconds, minT), maxT));
     ctx.beginPath();
     ctx.moveTo(bx, pad.t);
@@ -2708,16 +2770,16 @@ function drawActuatorTimeline(canvas, intervals, series, phases, revealT) {
     ctx.stroke();
   });
 
-  // One bar per active interval, clipped to revealCap.
+  // One bar per active interval.
   ctx.fillStyle = "rgba(31,122,81,0.55)";
   const inset = rowH * 0.28;
   SIM_ACTUATOR_ROWS.forEach((row, i) => {
     const ry = pad.t + rowH * i;
     const barH = Math.max(rowH - inset * 2, 2);
     intervals
-      .filter((iv) => iv.actuator === row.key && iv.start_seconds <= revealCap)
+      .filter((iv) => iv.actuator === row.key && iv.start_seconds <= maxT)
       .forEach((iv) => {
-        const end = Math.min(iv.end_seconds, revealCap);
+        const end = Math.min(iv.end_seconds, maxT);
         if (end <= iv.start_seconds) return;
         const bx0 = x(iv.start_seconds);
         const bx1 = x(end);
@@ -2855,12 +2917,9 @@ function removeRecipeFormPhase(idx) {
 
 /**
  * Client-side mirror of backend/app/features/recipes/models.py's
- * PhaseVariableTarget._check_range_chain (and the N/P/K -> Predictive
- * lock enforced at the Edge by RecipeControlSystem::confirm_configuration,
- * see the NUTRIENT_VARIABLES comment above): every rule checked here is
+ * PhaseVariableTarget._check_range_chain: every rule checked here is
  * checked again server-side, so this exists purely to turn a would-be 422
- * (or, for the N/P/K case, a would-be rejected recipe adoption at the
- * Edge) into a clear Italian message before the request is ever sent.
+ * into a clear Italian message before the request is ever sent.
  */
 function validateRecipeForm(draft) {
   const errors = [];
@@ -2917,9 +2976,6 @@ function validateRecipeForm(draft) {
 
   VARIABLES.forEach((v) => {
     const c = draft.controllers[v.key];
-    if (NUTRIENT_VARIABLES.includes(v.key) && c.selected_strategy !== "Predictive") {
-      errors.push(`${v.label}: la strategia deve essere Predictive per le variabili nutritive (azoto, fosforo, potassio).`);
-    }
     OUTPUT_LIMIT_FIELDS.forEach((f) => {
       const val = Number(c.output_limits[f.key]);
       if (!isFinite(val) || val < 0) errors.push(`${v.label}: il limite di sicurezza "${f.label}" deve essere un numero non negativo.`);
@@ -2959,10 +3015,10 @@ function buildRecipePayload(draft) {
     const c = draft.controllers[v.key];
     // "selected_strategy vuoto -> default_strategy" fallback from the task
     // spec: structurally the form always has a value here (every draft is
-    // initialized with one, and the select for the 3 non-NPK variables
-    // always has a selection), but this keeps the one place a blank UI
-    // value could theoretically reach this function defensive rather than
-    // silently sending an invalid payload.
+    // initialized with one, and every variable's select always has a
+    // selection), but this keeps the one place a blank UI value could
+    // theoretically reach this function defensive rather than silently
+    // sending an invalid payload.
     const selected = c.selected_strategy || REQUIRED_DEFAULT_STRATEGY[v.key];
     const firstTarget = phases[0].targets.find((t) => t.variable === v.key);
     return {
@@ -2971,7 +3027,7 @@ function buildRecipePayload(draft) {
       actuator: REQUIRED_ACTUATOR[v.key],
       default_strategy: REQUIRED_DEFAULT_STRATEGY[v.key],
       selected_strategy: selected,
-      parameters: buildStrategyParameters(selected, firstTarget),
+      parameters: buildStrategyParameters(selected, firstTarget, v.key),
       unit: VARIABLE_UNIT[v.key],
       output_limits: {
         maximum_water_volume_liters: Number(c.output_limits.maximum_water_volume_liters),
@@ -3076,10 +3132,7 @@ function renderRecipeFormModal() {
 
   const controllerRows = VARIABLES.map((v) => {
     const c = draft.controllers[v.key];
-    const locked = NUTRIENT_VARIABLES.includes(v.key);
-    const strategyCell = locked
-      ? `<span class="tag-phase" title="Bloccata su Predictive per le variabili nutritive">Predictive (obbligatoria)</span>`
-      : `<select class="form-select" data-action="recipe-form-select" data-path="controllers.${v.key}.selected_strategy">
+    const strategyCell = `<select class="form-select" data-action="recipe-form-select" data-path="controllers.${v.key}.selected_strategy">
           ${STRATEGIES.map((s) => `<option value="${s}" ${c.selected_strategy === s ? "selected" : ""}>${s}</option>`).join("")}
         </select>`;
     const limitCells = OUTPUT_LIMIT_FIELDS.map((f) => `
@@ -3238,10 +3291,18 @@ function renderRecipeFormModal() {
  * happened to click/tab somewhere else. A focused button (or a focused
  * global-strategy <select> — its choice already survives a re-render via
  * STATE.globalStrategy.drafts, same as the old per-zone code protected
- * strategyDrafts) has nothing left to lose from being rebuilt underneath it. */
+ * strategyDrafts) has nothing left to lose from being rebuilt underneath it.
+ * Also covers the "Gestione utenti" create-account text fields for the same
+ * reason a filter <select> needs it: onUserFormInput() already writes each
+ * keystroke into STATE.users.form without re-rendering, so nothing would be
+ * lost from a background rebuild except the admin's cursor position/focus —
+ * but losing that on every ~6s zones poll while typing a password would
+ * still be disruptive enough to avoid. */
 function isFocusedInControlFilter() {
   const active = document.activeElement;
-  return !!(active && active.closest && active.closest('[data-action="control-filter"]'));
+  return !!(active && active.closest && active.closest(
+    '[data-action="control-filter"], [data-action="user-form-input"]'
+  ));
 }
 
 /** Only re-renders while the Amministratore is actually on Controllo, and
@@ -3300,7 +3361,7 @@ async function sendGlobalStrategyToZone(variableKey, strategy, zone) {
   try {
     const recipe = await ensureRecipeLoaded(zone.active_recipe_id);
     const target = findPhaseTarget(recipe, zone.current_phase, variableKey);
-    const params = buildStrategyParameters(strategy, target);
+    const params = buildStrategyParameters(strategy, target, variableKey);
     const base = `global-strategy-${zone.id}-${variableKey}-${Date.now()}`;
     await apiPost(`/zones/${encodeURIComponent(zone.id)}/commands`, {
       command_id: base,
@@ -3432,33 +3493,172 @@ function renderGlobalStrategyPanel() {
     `;
   }).join("");
 
-  const fixedRows = NUTRIENT_VARIABLES.map((key) => {
-    const v = VARIABLES_BY_KEY[key];
-    return `
-      <div class="data-table-row cols-global-strategy">
-        <div><div class="var-name">${v.label}</div><div class="var-unit">${v.unit}</div></div>
-        <div class="readonly-cell" title="Richiesta dal backend per l'adozione della ricetta — non è una scelta disponibile">Predictive</div>
-        <div></div>
-      </div>
-    `;
-  }).join("");
-
   return `
     <div class="zone-section" style="margin-bottom:22px">
       <div class="zone-section-title">Strategia di controllo — a livello di impianto</div>
       <div class="empty-note" style="margin-bottom:16px">
         Scegli una Strategy per variabile: si applica subito a ogni settore produttivo (reparti 1-4) con una coltivazione attiva
         ${targets.length ? ` — <b>${targets.length}</b> al momento (${targets.map(zoneLabel).join(", ")})` : ", ma nessun settore ne ha una al momento"}.
-        Azoto, Fosforo e Potassio non sono scelte disponibili: restano sempre Predictive.
+        Azoto, Fosforo e Potassio scelgono fra Threshold, PID e Predictive come le altre variabili.
       </div>
       <div class="data-table">
         <div class="data-table-head cols-global-strategy"><span>VARIABILE</span><span>STRATEGIA</span><span>SETTORI COINVOLTI</span></div>
         ${editableRows}
-        ${fixedRows}
       </div>
       <div class="recipe-hint-box" style="margin-top:16px">
         <span>Questa scelta si applica ora ai settori attivi. Un nuovo settore o un cambio di ricetta futuro riprenderanno la Strategy definita dalla ricetta assegnata, non questa impostazione — andrà riapplicata se necessario.</span>
       </div>
+    </div>
+  `;
+}
+
+/* ------------------------------------------------------------------ */
+/* "Gestione utenti" panel (Controllo page, admin-only)                */
+/*                                                                       */
+/* Lets an Amministratore create other accounts — admin or agronomo —   */
+/* and see who already has one. The backend independently enforces      */
+/* require_admin on both /users endpoints (see                          */
+/* backend/app/features/users/dependencies.py), so this panel being     */
+/* admin-only client-side is a UX convenience, not the real boundary.   */
+/* ------------------------------------------------------------------ */
+
+/** Loads the account list once per Controllo visit (see renderControl()) —
+ * re-fetched from scratch after every successful creation instead of just
+ * appending locally, so the list stays exactly what the backend has even if
+ * another admin session created an account in the meantime. */
+async function ensureUsersLoaded() {
+  const state = STATE.users;
+  if (state.loaded || state.loading) return;
+  state.loading = true;
+  try {
+    state.list = await apiGet("/users");
+    state.loaded = true;
+    state.error = null;
+  } catch (err) {
+    state.error = err.message;
+  } finally {
+    state.loading = false;
+    renderControlIfSafe();
+  }
+}
+
+/** Writes straight into STATE.users.form without a re-render — same
+ * "don't fight the caret" pattern as the recipe form's text inputs (see
+ * the "recipe-form-input" input-delegation handler). */
+function onUserFormInput(field, value) {
+  STATE.users.form[field] = value;
+}
+
+function onUserFormRoleChange(value) {
+  STATE.users.form.role = value;
+  renderControlIfSafe();
+}
+
+/** Creates a new account with the role an Amministratore picked — this is
+ * the one path through which an admin can create another admin or an
+ * agronomo (see backend POST /users). Re-fetches the account list on
+ * success rather than trusting the response alone, and never clears a
+ * failed form's fields so a typo can just be fixed in place. */
+async function submitCreateUser() {
+  const state = STATE.users;
+  if (state.status && state.status.kind === "sending") return;
+  const form = state.form;
+  const username = form.username.trim();
+  const password = form.password;
+
+  if (username.length < 3) {
+    state.status = { kind: "error", message: "L'utente deve avere almeno 3 caratteri." };
+    renderControlIfSafe();
+    return;
+  }
+  if (password.length < 4) {
+    state.status = { kind: "error", message: "La password deve avere almeno 4 caratteri." };
+    renderControlIfSafe();
+    return;
+  }
+
+  state.status = { kind: "sending" };
+  renderControlIfSafe();
+  try {
+    const created = await apiPost("/users", {
+      username,
+      password,
+      role: form.role,
+      display_name: form.displayName.trim() || undefined,
+    });
+    state.form = { username: "", password: "", displayName: "", role: "agronomo" };
+    state.status = { kind: "success", message: `Account "${created.username}" (${roleLabel(created.role)}) creato.` };
+    state.loaded = false;
+    await ensureUsersLoaded();
+  } catch (err) {
+    state.status = {
+      kind: "error",
+      message: err.status === 409 ? "Questo nome utente è già in uso." : err.message,
+    };
+    renderControlIfSafe();
+  }
+}
+
+function renderUserManagementPanel() {
+  const state = STATE.users;
+  if (!state.loaded && !state.loading) ensureUsersLoaded();
+
+  const rowsHtml = state.list.map((u) => `
+    <div class="data-table-row cols-users">
+      <div>${escapeHtml(u.display_name)}</div>
+      <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(u.username)}</div>
+      <div><span class="pill role-${u.role}">${roleLabel(u.role)}</span></div>
+      <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${fmtDateTime(u.created_at)}</div>
+    </div>
+  `).join("");
+
+  const listHtml = state.error
+    ? `<div class="empty-note">Impossibile caricare gli account: ${escapeHtml(state.error)}</div>`
+    : `
+      <div class="data-table" style="margin-bottom:18px">
+        <div class="data-table-head cols-users"><span>NOME</span><span>UTENTE</span><span>RUOLO</span><span>CREATO IL</span></div>
+        ${rowsHtml || '<div class="empty-note">Caricamento…</div>'}
+      </div>
+    `;
+
+  const form = state.form;
+  const status = state.status;
+  const busy = !!status && status.kind === "sending";
+
+  const statusHtml = status
+    ? `<div class="${status.kind === "error" ? "login-error" : "login-success"}" style="margin-top:12px">${escapeHtml(status.message)}</div>`
+    : "";
+
+  return `
+    <div class="zone-section" style="margin-top:22px">
+      <div class="zone-section-title">Gestione utenti</div>
+      <div class="empty-note" style="margin-bottom:16px">
+        Crea nuovi account amministratore o agronomo. Un amministratore può creare anche altri amministratori, oltre ad agronomi.
+      </div>
+      ${listHtml}
+      <div class="user-create-form">
+        <div class="login-field">
+          <label class="login-label">UTENTE</label>
+          <input type="text" class="login-input" data-action="user-form-input" data-field="username" value="${escapeAttr(form.username)}" placeholder="es. mario.rossi" autocomplete="off" ${busy ? "disabled" : ""}>
+        </div>
+        <div class="login-field">
+          <label class="login-label">PASSWORD</label>
+          <input type="password" class="login-input" data-action="user-form-input" data-field="password" value="${escapeAttr(form.password)}" placeholder="minimo 4 caratteri" autocomplete="new-password" ${busy ? "disabled" : ""}>
+        </div>
+        <div class="login-field">
+          <label class="login-label">NOME VISUALIZZATO</label>
+          <input type="text" class="login-input" data-action="user-form-input" data-field="displayName" value="${escapeAttr(form.displayName)}" placeholder="opzionale" autocomplete="off" ${busy ? "disabled" : ""}>
+        </div>
+        <div class="login-field">
+          <label class="login-label">RUOLO</label>
+          <select class="login-input login-select" data-action="user-form-role" ${busy ? "disabled" : ""}>
+            <option value="agronomo" ${form.role === "agronomo" ? "selected" : ""}>Agronomo</option>
+            <option value="admin" ${form.role === "admin" ? "selected" : ""}>Amministratore</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-primary" data-action="submit-create-user" ${busy ? "disabled" : ""}>${busy ? "Creazione…" : "Crea account"}</button>
+      </div>
+      ${statusHtml}
     </div>
   `;
 }
@@ -3532,6 +3732,7 @@ function renderControl() {
       <div class="data-table-head cols-control"><span>SETTORE</span><span>REPARTO</span><span>SPECIE</span><span>FASE</span><span>SICUREZZA</span><span>STRATEGIE</span><span></span></div>
       ${rowsHtml || '<div class="empty-note">Nessun settore corrisponde ai filtri selezionati.</div>'}
     </div>
+    ${renderUserManagementPanel()}
   `;
 }
 
@@ -3595,16 +3796,14 @@ async function openZoneModal(zoneId, entry) {
 }
 
 function closeModal() {
-  // Closing the simulation pop-up specifically: free the system's single
-  // global batch-simulation slot right away if a job is still
-  // queued/running, instead of leaving it occupied until it expires on its
-  // own — a second user shouldn't be blocked for no reason just because
-  // this tab stopped watching. Every other modal kind has nothing
-  // equivalent to free.
-  if (STATE.modalKind === "simulator") {
-    discardActiveSimulationIfAny();
-    STATE.simulation = null;
-  }
+  // Closing the simulation pop-up specifically does NOT discard
+  // STATE.simulation (unlike every other modal kind, which has nothing
+  // equivalent to keep): the job keeps running/polling and any result
+  // stays in memory, so clicking a different sector on the grid (see
+  // renderSimulatorSectorRow -> openGreenhouseSimulatorModal) reopens the
+  // very same simulation instead of losing it. It's discarded only by
+  // starting a genuinely new run (restartSimulationSetup) or by leaving
+  // the Simulatore page entirely (switchView).
   document.getElementById("modal-overlay").classList.add("hidden");
   clearPoll("modal");
   clearPoll("modal-chart");
@@ -4993,8 +5192,8 @@ function initEventDelegation() {
     const confirmPlantRemoveBtn = e.target.closest('[data-action="confirm-plant-remove"]');
     if (confirmPlantRemoveBtn && !confirmPlantRemoveBtn.disabled) { confirmPlantRemove(confirmPlantRemoveBtn.dataset.plantId); return; }
 
-    const openSimulatorSector = e.target.closest('[data-action="open-simulator-sector"]');
-    if (openSimulatorSector) { openSimulatorModal(openSimulatorSector.dataset.zoneId); return; }
+    const openGreenhouseSimulator = e.target.closest('[data-action="open-greenhouse-simulator"]');
+    if (openGreenhouseSimulator) { openGreenhouseSimulatorModal(openGreenhouseSimulator.dataset.zoneId); return; }
 
     const simSelectDuration = e.target.closest('[data-action="sim-select-duration"]');
     if (simSelectDuration && !simSelectDuration.disabled && STATE.simulation) {
@@ -5012,11 +5211,18 @@ function initEventDelegation() {
     const simRestartBtn = e.target.closest('[data-action="sim-restart"]');
     if (simRestartBtn) { restartSimulationSetup(); return; }
 
-    const simPlaybackStartBtn = e.target.closest('[data-action="sim-playback-start"]');
-    if (simPlaybackStartBtn) { startSimulationPlayback(); return; }
+    const simChartViewToggle = e.target.closest('[data-action="sim-chart-view-toggle"]');
+    if (simChartViewToggle && STATE.simulation) {
+      // Swaps the DOM (single canvas <-> one per VARIABLES entry), so this
+      // needs the full renderModal() — unlike the variable <select> above,
+      // which only ever redraws the one canvas that's already there.
+      STATE.simulation.chartView = STATE.simulation.chartView === "grid" ? "single" : "grid";
+      renderModal();
+      return;
+    }
 
-    const simPlaybackSkipBtn = e.target.closest('[data-action="sim-playback-skip"]');
-    if (simPlaybackSkipBtn) { skipSimulationPlayback(); return; }
+    const submitCreateUserBtn = e.target.closest('[data-action="submit-create-user"]');
+    if (submitCreateUserBtn && !submitCreateUserBtn.disabled) { submitCreateUser(); return; }
   });
 
   document.addEventListener("change", (e) => {
@@ -5026,7 +5232,19 @@ function initEventDelegation() {
     const filterSelect = e.target.closest('[data-action="control-filter"]');
     if (filterSelect) { STATE.controlFilters[filterSelect.dataset.filter] = filterSelect.value; renderControl(); return; }
 
+    const userFormRole = e.target.closest('[data-action="user-form-role"]');
+    if (userFormRole) { onUserFormRoleChange(userFormRole.value); return; }
+
     if (e.target.id === "chart-variable-select") { onChartVariableChange(e.target.value); return; }
+
+    if (e.target.id === "sim-zone-select" && STATE.simulation) {
+      // Unlike the variable <select> below, switching zones changes almost
+      // everything on screen (recipe id/version, phase bands, summary
+      // totals) — a full renderModal() is simpler and cheap enough here.
+      STATE.simulation.activeZoneId = e.target.value;
+      renderModal();
+      return;
+    }
 
     if (e.target.id === "sim-chart-variable-select" && STATE.simulation) {
       // The simulation's series/phases are already in memory (no re-fetch
@@ -5081,6 +5299,12 @@ function initEventDelegation() {
       STATE.plantUi[plantId] = { ...ui, quarantineReason: plantQuarantineReason.value };
     }
 
+    // "Gestione utenti" create-account form: same no-re-render pattern as
+    // the recipe form's text inputs below, so typing a password doesn't
+    // fight renderControlIfSafe()'s periodic re-render.
+    const userFormInput = e.target.closest('[data-action="user-form-input"]');
+    if (userFormInput) { onUserFormInput(userFormInput.dataset.field, userFormInput.value); }
+
     // Recipe form text/number inputs: same "write straight into STATE,
     // don't re-render" pattern, keyed by a dotted data-path so one handler
     // covers every field in the form (top-level, phase targets, controller
@@ -5093,99 +5317,83 @@ function initEventDelegation() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Login screen — real authentication via POST /auth/login              */
+/* Login screen — real accounts, verified by the backend               */
 /*                                                                       */
-/* Username+password are verified by the backend (bcrypt hash check,    */
-/* see backend/app/features/auth/); the opaque token it returns is what */
-/* actually gates server-side actions from here on (see apiRequest()    */
-/* above, which attaches it to every call) — not just this UI. The role */
-/* the backend returns comes back lowercase ("agronomo"/"amministratore",*/
-/* see Role in backend/app/features/auth/models.py) and is capitalized  */
-/* here on the way into STATE.currentUser.role so the rest of this file */
-/* (isAdmin(), updateNavForRole(), …) keeps comparing against the same  */
-/* "Agronomo"/"Amministratore" strings it always has. "CAMBIA UTENTE"   */
-/* only forgets the token locally — the backend has no session-logout   */
-/* endpoint (out of scope for this pass), so the token stays valid      */
-/* server-side until the browser storage holding it is cleared.        */
+/* Only the session token is persisted (in this browser's localStorage);*/
+/* the account itself (username/display_name/role) is always re-fetched*/
+/* from GET /auth/me, both right after login and again on every page    */
+/* load — so a stale/expired/revoked token never silently lets someone  */
+/* back in with out-of-date information, it just falls back to the      */
+/* login screen (see init() below). "ESCI" calls POST /auth/logout to   */
+/* invalidate the token server-side too, not just forget it locally.    */
 /* ------------------------------------------------------------------ */
 
-const AUTH_SESSION_KEY = "smarthydro_auth_session";
+const SESSION_TOKEN_KEY = "smarthydro_session_token";
 
-function capitalizeRole(role) {
-  const value = String(role || "");
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function loadAuthSession() {
+function loadSessionToken() {
   try {
-    const raw = localStorage.getItem(AUTH_SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (
-      parsed &&
-      typeof parsed.token === "string" && parsed.token &&
-      typeof parsed.username === "string" && parsed.username &&
-      VALID_ROLES.includes(parsed.role)
-    ) {
-      return { token: parsed.token, username: parsed.username, role: parsed.role };
-    }
-  } catch (e) { /* malformed or inaccessible storage — treat as logged out */ }
-  return null;
+    return localStorage.getItem(SESSION_TOKEN_KEY) || null;
+  } catch (e) { /* storage unavailable — treat as logged out */ return null; }
 }
 
-function saveAuthSession(session) {
-  try { localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session)); } catch (e) { /* storage unavailable — session-only */ }
+function saveSessionToken(token) {
+  try { localStorage.setItem(SESSION_TOKEN_KEY, token); } catch (e) { /* session-only */ }
 }
 
-function clearAuthSession() {
-  try { localStorage.removeItem(AUTH_SESSION_KEY); } catch (e) {}
+function clearSessionToken() {
+  try { localStorage.removeItem(SESSION_TOKEN_KEY); } catch (e) {}
 }
 
-/** Read by apiRequest() to attach `Authorization: Bearer <token>` to every
- * call. A plain STATE read (not localStorage) so it stays in sync within a
- * tab without a round trip; loadAuthSession() at boot is what seeds it. */
-function getAuthToken() {
-  return (STATE.currentUser && STATE.currentUser.token) || null;
+/** Italian display label for a backend role value — the value itself
+ * ("admin"/"agronomo", see VALID_ROLES) stays the wire/comparison format
+ * used by isAdmin()/updateNavForRole(); this only affects what's shown. */
+function roleLabel(role) {
+  return role === "admin" ? "Amministratore" : "Agronomo";
 }
 
 function applySidebarUser(user) {
-  document.getElementById("sidebar-user-avatar").textContent = user.username.trim().charAt(0).toUpperCase() || "?";
-  document.getElementById("sidebar-user-name").textContent = user.username;
-  document.getElementById("sidebar-user-role").textContent = String(user.role).toUpperCase();
+  const name = user.display_name || user.username;
+  document.getElementById("sidebar-user-avatar").textContent = name.trim().charAt(0).toUpperCase() || "?";
+  document.getElementById("sidebar-user-name").textContent = name;
+  document.getElementById("sidebar-user-role").textContent = roleLabel(user.role).toUpperCase();
 }
 
 /** Shows/hides the "Controllo" sidebar item for the current role. Purely a
- * navigation/UX convenience — a non-Amministratore never sees the nav item
- * at all, and switchView() below independently refuses to enter that view
- * even if it were reached some other way — but unlike before, it is now
- * backed by a real server-side check too: the backend rejects
- * ChangeStrategy/ConfirmConfiguration from a non-amministratore token even
- * if this UI gate were bypassed entirely (see require_role() in
- * backend/app/features/commands/routes.py). */
+ * client-side navigation gate — switchView() below independently refuses to
+ * enter that view even if it were reached some other way, and the backend
+ * enforces the real restriction on /users itself (require_admin) — so the
+ * two checks don't rely on each other and neither is the only thing
+ * protecting the account-management endpoints. */
 function updateNavForRole(role) {
   const navItem = document.querySelector('.nav-item[data-view="control"]');
-  if (navItem) navItem.classList.toggle("hidden", role !== "Amministratore");
+  if (navItem) navItem.classList.toggle("hidden", role !== "admin");
 }
 
-/** Shows the login screen. `prefillUsername` (the just-cleared user, on
- * "cambia utente") pre-fills the username field so switching identity means
- * re-typing only a password, not both fields — never the password itself. */
-function showLoginScreen(prefillUsername) {
+/** Shows the login screen, clearing any previous input and — unlike the
+ * old demo login — never prefilling credentials. `message` (e.g. after a
+ * session expires or "ESCI") is shown as an inline notice instead of the
+ * blank error area. */
+function showLoginScreen(message) {
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("login-screen").classList.remove("hidden");
   const errorEl = document.getElementById("login-error");
-  errorEl.classList.add("hidden");
-  errorEl.textContent = "";
+  if (message) {
+    errorEl.textContent = message;
+    errorEl.classList.remove("hidden");
+  } else {
+    errorEl.classList.add("hidden");
+    errorEl.textContent = "";
+  }
   const usernameInput = document.getElementById("login-username");
-  usernameInput.value = prefillUsername || "";
+  usernameInput.value = "";
   document.getElementById("login-password").value = "";
   usernameInput.focus();
 }
 
 /** Reveals the already-built app behind the login gate and (re)starts it
  * fresh on Home — mirrors a normal first load, whether this is the very
- * first visit (user just submitted the form) or a re-entry after
- * switching identity. */
+ * first visit (user just submitted the form) or a re-entry after a
+ * previous session was verified on boot. */
 function enterApp(user) {
   STATE.currentUser = user;
   applySidebarUser(user);
@@ -5199,43 +5407,45 @@ async function submitLogin() {
   const usernameInput = document.getElementById("login-username");
   const passwordInput = document.getElementById("login-password");
   const submitBtn = document.getElementById("login-submit");
+  const errorEl = document.getElementById("login-error");
   const username = usernameInput.value.trim();
   const password = passwordInput.value;
-  const errorEl = document.getElementById("login-error");
-  errorEl.classList.add("hidden");
-  errorEl.textContent = "";
   if (!username || !password) {
     errorEl.textContent = "Inserisci utente e password per continuare.";
     errorEl.classList.remove("hidden");
     (username ? passwordInput : usernameInput).focus();
     return;
   }
+  errorEl.classList.add("hidden");
   submitBtn.disabled = true;
+  submitBtn.textContent = "Accesso…";
   try {
-    const result = await apiPost("/auth/login", { username, password });
-    const user = { token: result.token, username: result.username, role: capitalizeRole(result.role) };
-    saveAuthSession(user);
-    enterApp(user);
-  } catch (e) {
-    errorEl.textContent = e.status === 401
+    const { token, user } = await apiPost("/auth/login", { username, password });
+    saveSessionToken(token);
+    enterApp({ ...user, token });
+  } catch (err) {
+    errorEl.textContent = err.status === 401
       ? "Utente o password non validi."
-      : "Impossibile contattare il backend. Riprova tra poco.";
+      : `Accesso non riuscito: ${err.message}`;
     errorEl.classList.remove("hidden");
     passwordInput.value = "";
     passwordInput.focus();
   } finally {
     submitBtn.disabled = false;
+    submitBtn.textContent = "Accedi";
   }
 }
 
-/** "CAMBIA UTENTE": drops the stored session and whatever view state is
- * mid-flight (view polls, an in-progress batch simulation) before
- * returning to the login screen — the same discipline switchView()
- * already applies when navigating away from any single view, just for
- * the whole app at once. */
-function switchDemoUser() {
-  const previous = loadAuthSession();
-  clearAuthSession();
+/** "ESCI": invalidates the session on the backend (best-effort — an
+ * already-expired token 404/401ing here is not a reason to keep the user
+ * stuck on a page they've decided to leave), then drops the local token and
+ * whatever view state is mid-flight (view polls, an in-progress batch
+ * simulation, the "Gestione utenti" form) before returning to the login
+ * screen — the same discipline switchView() already applies when navigating
+ * away from any single view, just for the whole app at once. */
+async function logout() {
+  try { await apiPost("/auth/logout"); } catch (e) { /* token already invalid — fine, we're logging out anyway */ }
+  clearSessionToken();
   STATE.currentUser = null;
   clearPoll("zones");
   clearPoll("recipes-poll");
@@ -5244,31 +5454,49 @@ function switchDemoUser() {
   STATE.simulation = null;
   clearGlobalStrategyPolls();
   STATE.globalStrategy = { drafts: {}, status: {}, results: {} };
-  showLoginScreen(previous && previous.username);
+  STATE.users = {
+    list: [], loaded: false, loading: false, error: null,
+    form: { username: "", password: "", displayName: "", role: "agronomo" },
+    status: null,
+  };
+  showLoginScreen(null);
 }
 
 function initLoginScreen() {
   document.getElementById("login-submit").addEventListener("click", submitLogin);
-  document.getElementById("login-password").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submitLogin();
+  ["login-username", "login-password"].forEach((id) => {
+    document.getElementById(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitLogin();
+    });
   });
-  document.getElementById("sidebar-user-switch").addEventListener("click", switchDemoUser);
+  document.getElementById("sidebar-logout").addEventListener("click", logout);
 }
 
 /* ------------------------------------------------------------------ */
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
-function init() {
+async function init() {
   initLoginScreen();
   initEventDelegation();
   setPoll("system-status", tickSystemStatus, STATUS_POLL_MS);
 
-  const session = loadAuthSession();
-  if (session) {
-    enterApp(session);
-  } else {
+  const token = loadSessionToken();
+  if (!token) {
     showLoginScreen(null);
+    return;
+  }
+  // Tentatively set the token so apiRequest() attaches it to this very
+  // call, then verify it against the backend rather than trusting a
+  // possibly stale/expired/revoked value found in localStorage.
+  STATE.currentUser = { token };
+  try {
+    const user = await apiGet("/auth/me");
+    enterApp({ ...user, token });
+  } catch (e) {
+    STATE.currentUser = null;
+    clearSessionToken();
+    showLoginScreen("Sessione scaduta: accedi di nuovo.");
   }
 }
 

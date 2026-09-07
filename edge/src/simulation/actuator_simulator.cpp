@@ -209,6 +209,15 @@ void ActuatorSimulator::step(double delta_time_seconds) {
         output_.remaining_irrigation_volume_liters = 0.0;
         output_.water_pump_on = false;
         output_.water_pump_flow_liters_per_hour = 0.0;
+        // Come per le elettrovalvole dei concentrati: se non azzerassimo
+        // anche la richiesta d'acqua, command() continuerebbe a dichiarare
+        // "pompa richiesta" ben dopo che l'irrigazione e' fisicamente
+        // finita. Il ciclo di controllo successivo, con la pompa gia' spenta
+        // e nessun nuovo comando (acqua non necessaria), farebbe leggere al
+        // fault detector "comandata ma senza risposta" e isolerebbe il
+        // settore per un guasto mai avvenuto (osservato in simulazione:
+        // FaultDetector::observe_actuators, "commanded_without_response").
+        command_.requested_irrigation_volume_liters = 0.0;
         close_fertilizer_valves_preserving_last_step();
     }
 }

@@ -22,7 +22,7 @@
   --nominal-soft: rgba(31, 122, 81, .12);
   /* Simulatore page accent — intentionally the SAME green family as every
      other card in the app (--accent/--accent-dark/--nominal-soft), so the
-     Simulatore grid reads as one visual system with "Reparti della serra"
+     Simulatore grid reads as one visual system with "Serra"
      rather than a separate color language. */
   --sim: var(--accent);
   --sim-dark: var(--accent-dark);
@@ -122,6 +122,13 @@ a:hover { color: var(--accent-dark); }
 .login-error {
   font-size: 12px; color: var(--danger);
   background: var(--danger-soft); border: 1px solid rgba(193, 90, 74, .3);
+  border-radius: 10px; padding: 10px 12px;
+}
+/* Same shape as .login-error, positive colors — used by the "Gestione
+   utenti" panel to confirm an account was created. */
+.login-success {
+  font-size: 12px; color: var(--nominal);
+  background: var(--nominal-soft); border: 1px solid rgba(31, 122, 81, .3);
   border-radius: 10px; padding: 10px 12px;
 }
 
@@ -289,6 +296,10 @@ a:hover { color: var(--accent-dark); }
 .op-Degraded { color: var(--warn); background: var(--warn-soft); }
 .op-EmergencyLockdown { color: var(--danger); background: var(--danger-soft); }
 
+/* Account role badges — "Gestione utenti" panel (Controllo page). */
+.role-admin { color: var(--warn); background: var(--warn-soft); }
+.role-agronomo { color: var(--nominal); background: var(--nominal-soft); }
+
 .conn-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .conn-dot.online { background: #2f9e6b; }
 .conn-dot.offline { background: var(--danger); }
@@ -450,11 +461,117 @@ a:hover { color: var(--accent-dark); }
   min-width: 0;
 }
 
+/* "Piantina della serra" — the department grid sits inside a building-plan
+   frame instead of floating bare on the page: an outer wall, two little
+   entrance tabs straddling it (purely decorative — nothing behind them is
+   clickable), and a "Corridoio centrale" bar between the two rows of
+   reparti it naturally falls into (1-2-3 on top, 4-5 below). Reused as-is
+   by the Simulatore page (renderSimulatorView) — same wrapper, same
+   department layout, just a different intro banner above it. */
+.greenhouse-plan {
+  position: relative;
+  background: linear-gradient(180deg, #f3f7f4, #eef3ef);
+  border: 2px solid var(--line);
+  border-radius: 28px;
+  padding: 34px 22px 30px;
+  box-shadow: inset 0 0 0 6px #fff, inset 0 0 0 7px var(--line-soft);
+}
+.greenhouse-entrance {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font: 600 9.5px/1 var(--mono);
+  letter-spacing: .08em;
+  color: var(--ink-mute);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.greenhouse-entrance-top { top: -13px; }
+.greenhouse-entrance-bottom { bottom: -13px; }
+
+/* Base (mobile/narrow-first) layout: plain auto-flowing grid, no named
+   areas — the corridor/gap fillers are purely decorative "rooms off a
+   hallway" flourish that only makes sense once there's enough width for
+   two actual rows of reparti side by side, so they're hidden here rather
+   than fighting the auto-flow for a cell. The elaborate d1..d5/corridor/
+   dgap floor plan below is layered on top ONLY at that width — deliberately
+   NOT expressed as a max-width override that tries to "undo" per-item
+   grid-area assignments back to auto-flow: an unresolved named grid-area
+   (naming a line that grid-template-areas: none no longer defines) does
+   NOT reliably fall back to normal auto-placement across browsers, and
+   collapsing every dept-card into the same cell was exactly the bug that
+   taught us this the hard way. */
 .dept-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(210px, 1fr));
   gap: 20px;
-  grid-auto-rows: 1fr;
+}
+.greenhouse-corridor, .greenhouse-gap { display: none; }
+
+@media (min-width: 1181px) {
+  .dept-grid {
+    grid-template-rows: repeat(3, auto);
+    grid-template-areas:
+      "d1 d2 d3"
+      "corridor corridor corridor"
+      "d4 dgap d5";
+  }
+  .dept-grid > [data-dept="1"] { grid-area: d1; }
+  .dept-grid > [data-dept="2"] { grid-area: d2; }
+  .dept-grid > [data-dept="3"] { grid-area: d3; }
+  .dept-grid > [data-dept="4"] { grid-area: d4; }
+  .dept-grid > [data-dept="5"] { grid-area: d5; }
+  .greenhouse-corridor, .greenhouse-gap { display: flex; }
+}
+
+.greenhouse-corridor {
+  grid-area: corridor;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px;
+  background: var(--line-soft);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.greenhouse-corridor::before,
+.greenhouse-corridor::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Fourth grid cell in the bottom row, between Reparto 4 and Reparto 5 —
+   there is no real fifth production department to put there, so it stays
+   a non-interactive filler ("Attrezzi") that keeps the two rows visually
+   aligned as rooms off the same corridor rather than a lopsided grid. */
+.greenhouse-gap {
+  grid-area: dgap;
+  /* display stays governed by the responsive show/hide rules above (none
+     below 1181px, flex at/above it) — only alignment is added here. */
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+  background: repeating-linear-gradient(
+    135deg, transparent, transparent 8px, var(--line-soft) 8px, var(--line-soft) 16px
+  );
+}
+.greenhouse-gap span {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
 }
 
 .dept-card {
@@ -466,6 +583,11 @@ a:hover { color: var(--accent-dark); }
   flex-direction: column;
   gap: 14px;
 }
+
+/* Reparto 5 on the Simulatore floor plan (renderSimulatorQuarantineCard):
+   a real room, never a clickable one — quarantena has nothing to
+   simulate. Same dimming convention as .sector-row-disabled. */
+.dept-card-muted { opacity: .6; }
 
 .dept-card-head {
   display: flex;
@@ -580,6 +702,18 @@ a:hover { color: var(--accent-dark); }
 .add-sector-error { font-size: 11px; color: var(--danger); }
 .add-sector-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .add-sector-actions .btn { padding: 7px 11px; font-size: 12px; }
+
+/* "Gestione utenti" create-account form (Controllo page). Reuses the
+   .login-field/.login-input/.login-select primitives from the login screen
+   itself, just laid out as a row of fields instead of a stacked column. */
+.user-create-form {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+  padding: 16px; border: 1px solid var(--line-soft); border-radius: 13px;
+  background: #fff;
+}
+.user-create-form .login-field { flex: 1 1 160px; min-width: 140px; gap: 5px; }
+.user-create-form .login-input { padding: 9px 11px; font-size: 12.5px; }
+.user-create-form .btn { flex: none; }
 
 .dept-photo {
   height: 46px;
@@ -735,6 +869,7 @@ a:hover { color: var(--accent-dark); }
 .cols-control { grid-template-columns: .8fr 1.6fr 1.4fr 1fr .9fr 1.5fr .5fr; }
 .cols-advanced { grid-template-columns: 1.6fr .8fr .7fr .7fr 1.9fr; }
 .cols-global-strategy { grid-template-columns: 1.6fr 2.2fr 1.4fr; }
+.cols-users { grid-template-columns: 1.4fr 1.4fr 1fr 1.3fr; }
 
 .var-name { font-size: 13px; font-weight: 500; }
 .var-unit { font: 400 10.5px var(--mono); color: var(--ink-faint); margin-top: 2px; }
@@ -830,6 +965,13 @@ a:hover { color: var(--accent-dark); }
   max-width: 78ch;
 }
 .simulator-intro-text strong { color: var(--sim-dark); }
+
+/* "Simula l'intera serra" entry point, inside the page-level banner only
+   (renderSimulatorView) — the per-sector click-through below stays the
+   default way in, this is the alternative "il tempo passa per tutti allo
+   stesso modo" action, not a replacement. */
+.simulator-intro-action { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+.simulator-intro-action .hint { font-size: 11.5px; color: var(--ink-faint); }
 
 /* A production sector with no active_recipe_id (shouldn't happen with the
    current creation flow, but handled defensively — see
@@ -995,6 +1137,12 @@ a:hover { color: var(--accent-dark); }
 .chart-head .hint { font: 400 10.5px var(--mono); color: #9aada4; margin-left: auto; }
 .chart-head select { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 11.5px; }
 
+/* "Vedi tutti i grafici" toggle next to the Simulatore chart's variable
+   <select> — same visual weight as the select it sits beside, deliberately
+   smaller than the ordinary .btn used elsewhere on the page. */
+.chart-view-toggle { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 5px 10px; font: 500 11.5px var(--sans); color: var(--accent); cursor: pointer; }
+.chart-view-toggle:hover { background: #f2f8f4; }
+
 /* Legend row for the Simulatore result charts — explicit text + swatch for
    what each visual encoding means (simulated value line vs. target band on
    the sensor chart; active vs. inactive on the actuator timeline), since
@@ -1016,16 +1164,21 @@ a:hover { color: var(--accent-dark); }
 
 .chart-canvas-wrap { height: 196px; border-radius: 14px; background: #f9fbfa; position: relative; }
 
+/* "Vedi tutti i grafici" grid — every VARIABLES entry at once (2 columns,
+   see the 860px breakpoint below for the 1-column fallback) instead of the
+   single canvas + <select> above. Each cell repeats the same
+   drawSimulationSeriesChart canvas, just shorter, with its own small title
+   since there is no shared per-cell legend space (the one legend row above
+   the grid already explains line/band for all of them identically). */
+.sim-chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.sim-chart-grid-cell { background: #f9fbfa; border-radius: 14px; padding: 10px 10px 6px; }
+.sim-chart-grid-title { font: 500 11px var(--sans); color: var(--ink-soft); margin-bottom: 6px; }
+.sim-chart-grid-cell canvas { width: 100%; height: 128px; display: block; }
+
 /* Actuator Gantt-style timeline under the Simulatore result chart — same
    canvas-wrap treatment as .chart-canvas-wrap, just taller to fit 7
    labeled rows (one per actuator) comfortably. */
 .sim-actuator-canvas-wrap { height: 224px; border-radius: 14px; background: #f9fbfa; position: relative; }
-
-/* Toolbar above the Simulatore result charts offering the "Riproduci in
-   accelerato" / "Salta" playback toggle — see startSimulationPlayback in
-   script.js. */
-.sim-result-toolbar { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-.sim-playback-hint { font-size: 11.5px; color: var(--ink-faint); margin-right: auto; }
 
 .actuator-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-soft); }
 .actuator-row + .actuator-row { margin-top: 10px; }
@@ -1223,6 +1376,10 @@ a:hover { color: var(--accent-dark); }
 /* ---------- responsive ---------- */
 
 @media (max-width: 1180px) {
+  /* Below this width the named d1..d5/corridor/dgap floor plan (see the
+     min-width: 1181px layer on .dept-grid above) never applied in the
+     first place — this just narrows the plain auto-flowing base layout to
+     2 columns instead of 3. */
   .dept-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
   .home-summary { grid-template-columns: 1fr; }
 }
@@ -1239,10 +1396,12 @@ a:hover { color: var(--accent-dark); }
   .login-card { grid-template-columns: 1fr; }
   .login-brand-panel { padding: 26px 24px; }
   .dept-grid { grid-template-columns: 1fr; }
+  .greenhouse-plan { padding: 26px 14px 22px; border-radius: 20px; }
   .zone-body { grid-template-columns: 1fr; }
   .zone-section.span2 { grid-column: span 1; }
   .controls-grid { grid-template-columns: 1fr 1fr; }
   .chart-actuators-grid { grid-template-columns: 1fr; }
+  .sim-chart-grid { grid-template-columns: 1fr; }
   .data-table-head, .data-table-row { overflow-x: auto; }
   .alerts-grid { grid-template-columns: 1fr; }
   .event-row { flex-wrap: wrap; }

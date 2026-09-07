@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from ..commands.models import CommandStatus, RuntimeCommandCreate, RuntimeCommandResultCreate
-from ..commands.repository import create_command
+from ..commands.repository import complete_command, create_command, get_command
 from ..recipes.repository import get_recipe
 from ..zones.repository import get_zone
 from .models import Cultivation, CultivationAction, CultivationCreate, CultivationState
@@ -239,19 +239,77 @@ def resume_cultivation(connection: sqlite3.Connection, cultivation_id: str) -> C
     )
 
 
+def _finalize_stop_without_edge(
+    connection: sqlite3.Connection,
+    cultivation: Cultivation,
+) -> CultivationAction:
+    """Chiude uno StopCultivation il cui settore e' offline.
+
+    Nessun Edge collegato potra' mai confermare il comando, quindi la
+    coltivazione resterebbe bloccata in "stopping" per sempre (vedi lo
+    stuck state riprodotto in locale su r2-s2, mai risolto perche' il
+    comando restava 'pending' senza scadenza). Si completa qui lo stesso
+    comando gia' accodato con un esito sintetico, riusando
+    apply_command_result (via complete_command) cosi' l'archiviazione
+    della coltivazione e il reset della zona restano identici al percorso
+    online.
+    """
+    command_id = cultivation.last_command_id
+    command = get_command(connection, command_id) if command_id else None
+    if command is not None and command.status is CommandStatus.PENDING:
+        complete_command(
+            connection,
+            cultivation.zone_id,
+            command_id,
+            RuntimeCommandResultCreate(
+                status=CommandStatus.SUCCEEDED,
+                message=(
+                    "settore offline: stop confermato localmente, "
+                    "nessuna risposta attesa dall'Edge"
+                ),
+                replayed=False,
+            ),
+        )
+    updated = get_cultivation(connection, cultivation.id)
+    assert updated is not None
+    final_command = get_command(connection, command_id) if command_id else None
+    assert final_command is not None
+    return CultivationAction(cultivation=updated, command=final_command)
+
+
 def terminate_cultivation(connection: sqlite3.Connection, cultivation_id: str) -> CultivationAction:
-    return _enqueue_action(
+    cultivation = get_cultivation(connection, cultivation_id)
+    if cultivation is None:
+        raise CultivationInvalid(f"cultivation {cultivation_id!r} not found")
+
+    zone = get_zone(connection, cultivation.zone_id)
+    zone_offline = zone is not None and zone.status.value == "offline"
+    stoppable_states = {
+        CultivationState.ACTIVATING,
+        CultivationState.RUNNING,
+        CultivationState.PAUSED,
+        CultivationState.ERROR,
+    }
+
+    if cultivation.state is CultivationState.STOPPING:
+        if not zone_offline:
+            # Un Edge online sta ancora elaborando il comando gia' accodato:
+            # nessuna nuova transizione da qui, si aspetta la sua risposta.
+            raise CultivationConflict(
+                f"cultivation cannot execute StopCultivation while {cultivation.state.value}"
+            )
+        return _finalize_stop_without_edge(connection, cultivation)
+
+    action = _enqueue_action(
         connection,
         cultivation_id,
         command_type="StopCultivation",
         next_state=CultivationState.STOPPING,
-        allowed_states={
-            CultivationState.ACTIVATING,
-            CultivationState.RUNNING,
-            CultivationState.PAUSED,
-            CultivationState.ERROR,
-        },
+        allowed_states=stoppable_states,
     )
+    if zone_offline:
+        return _finalize_stop_without_edge(connection, action.cultivation)
+    return action
 
 
 def apply_command_result(

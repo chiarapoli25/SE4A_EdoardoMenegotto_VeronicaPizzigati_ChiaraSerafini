@@ -247,3 +247,92 @@ def test_history_is_associated_with_the_exact_cycle(client: TestClient) -> None:
     ).json()
     assert [item["sequence_number"] for item in first_history] == [1]
     assert [item["sequence_number"] for item in second_history] == [2]
+
+
+def test_terminate_on_offline_zone_finalizes_immediately_without_edge(
+    client: TestClient,
+) -> None:
+    """Un settore mai andato online non ricevera' mai una conferma reale:
+    terminate deve archiviare subito invece di restare in 'stopping' per
+    sempre (bug riprodotto in locale su r2-s2, comando pending da giorni)."""
+    started = create_cultivation(client)
+    cultivation_id = started["cultivation"]["id"]
+    complete_command(client, started["command"])
+    assert client.get("/zones/r1-s1").json()["status"] == "offline"
+
+    stopping = client.post(f"/cultivations/{cultivation_id}/terminate")
+    assert stopping.status_code == 202
+    assert stopping.json()["cultivation"]["state"] == "archived"
+    assert stopping.json()["cultivation"]["archived_at"] is not None
+
+    zone = client.get("/zones/r1-s1").json()
+    assert zone["active_cultivation_id"] is None
+    assert zone["lifecycle_state"] == "Idle"
+
+
+def test_terminate_recovers_a_cycle_stuck_stopping_on_an_offline_zone(
+    client: TestClient,
+) -> None:
+    """Se un vecchio StopCultivation e' rimasto pending (l'Edge non ha mai
+    risposto) e la zona e' offline, un nuovo terminate deve sbloccare la
+    coltivazione invece di rifiutare sempre con lo stesso 409."""
+    started = create_cultivation(client)
+    cultivation_id = started["cultivation"]["id"]
+    complete_command(client, started["command"])
+
+    first_attempt = client.post(f"/cultivations/{cultivation_id}/terminate")
+    assert first_attempt.status_code == 202
+    assert first_attempt.json()["cultivation"]["state"] == "archived"
+
+    # Fa retrocedere manualmente la coltivazione a "stopping" con un
+    # comando ancora pending, come sarebbe rimasta prima di questa
+    # correzione (senza toccare active_cultivation_id, che apply_command_
+    # result ha gia' azzerato: simula esattamente lo stato bloccato trovato
+    # nel DB locale).
+    connection = next(app.dependency_overrides[get_db]())
+    stuck_command_id = "stopcultivation-stuck-test"
+    connection.execute(
+        """
+        INSERT INTO runtime_commands (
+            command_id, zone_id, command_type, payload_data, status,
+            created_at
+        ) VALUES (?, 'r1-s1', 'StopCultivation', '{}', 'pending', ?)
+        """,
+        (stuck_command_id, "2020-01-01T00:00:00+00:00"),
+    )
+    connection.execute(
+        "UPDATE cultivations SET state = 'stopping', last_command_id = ? WHERE id = ?",
+        (stuck_command_id, cultivation_id),
+    )
+    connection.execute(
+        "UPDATE zones SET active_cultivation_id = ? WHERE id = 'r1-s1'",
+        (cultivation_id,),
+    )
+    connection.commit()
+    assert client.get(f"/cultivations/{cultivation_id}").json()["state"] == "stopping"
+
+    recovered = client.post(f"/cultivations/{cultivation_id}/terminate")
+    assert recovered.status_code == 202
+    assert recovered.json()["cultivation"]["state"] == "archived"
+    assert client.get("/zones/r1-s1").json()["active_cultivation_id"] is None
+
+
+def test_terminate_still_waits_for_an_online_edge_before_retrying(
+    client: TestClient,
+) -> None:
+    """La scorciatoia vale solo per settori offline: se l'Edge e' online e
+    sta ancora elaborando lo stop, un secondo terminate deve continuare a
+    rifiutare con 409 invece di forzare l'archiviazione sotto di lui."""
+    started = create_cultivation(client)
+    cultivation_id = started["cultivation"]["id"]
+    complete_command(client, started["command"])
+    client.post("/zones/r1-s1/telemetry", json=telemetry_payload(1, 900))
+    assert client.get("/zones/r1-s1").json()["status"] == "online"
+
+    stopping = client.post(f"/cultivations/{cultivation_id}/terminate")
+    assert stopping.status_code == 202
+    assert stopping.json()["cultivation"]["state"] == "stopping"
+
+    retry = client.post(f"/cultivations/{cultivation_id}/terminate")
+    assert retry.status_code == 409
+    assert "while stopping" in retry.json()["detail"]

@@ -173,6 +173,74 @@ def test_only_one_batch_can_be_queued_and_it_can_be_cancelled(
     assert manager.get(first.id).status.value == "cancelled"
 
 
+def test_greenhouse_batch_simulates_every_zone_with_an_assigned_recipe(
+    client_and_connection,
+) -> None:
+    """"Simula l'intera serra" (nessuna recipe_id nel POST): un job solo,
+    un settore-mese solo (il tempo passa uguale per tutti), un elemento del
+    risultato per ciascun settore con una ricetta assegnata."""
+    client, _ = client_and_connection
+    assert client.post(
+        "/zones",
+        json={
+            "id": "r1-s1",
+            "name": "Tropicali - Settore 1",
+            "department_number": 1,
+            "sector_number": 1,
+            "plant_species": "Calathea",
+            "active_recipe_id": "recipe-calathea",
+        },
+    ).status_code == 201
+    assert client.post(
+        "/zones",
+        json={
+            "id": "r2-s1",
+            "name": "Fiore - Settore 1",
+            "department_number": 2,
+            "sector_number": 1,
+            "plant_species": "Anturio",
+            "active_recipe_id": "recipe-anturio",
+        },
+    ).status_code == 201
+    # Un settore senza ricetta assegnata: non deve comparire nel risultato.
+    assert client.post(
+        "/zones",
+        json={
+            "id": "r2-s2",
+            "name": "Fiore - Settore 2",
+            "department_number": 2,
+            "sector_number": 2,
+            "plant_species": "Ibisco",
+        },
+    ).status_code == 201
+
+    created = client.post("/simulations", json={"duration_seconds": 7 * 86400})
+    assert created.status_code == 202
+    job_id = created.json()["id"]
+    assert created.json()["recipe_id"] is None
+    assert sorted(created.json()["zone_ids"]) == ["r1-s1", "r2-s1"]
+
+    job, result = wait_for_result(client, job_id)
+    assert job["progress_percent"] == 100.0
+    assert isinstance(result, list)
+    assert sorted(preview["zone_id"] for preview in result) == ["r1-s1", "r2-s1"]
+    by_zone = {preview["zone_id"]: preview for preview in result}
+    assert by_zone["r1-s1"]["recipe"]["id"] == "recipe-calathea"
+    assert by_zone["r2-s1"]["recipe"]["id"] == "recipe-anturio"
+    for preview in result:
+        assert preview["non_operational"] is True
+        assert preview["summary"]["control_cycles"] == 7 * 24 * 4
+
+
+def test_greenhouse_batch_rejects_when_no_zone_has_a_recipe(
+    client_and_connection,
+) -> None:
+    client, _ = client_and_connection
+    response = client.post("/simulations", json={"duration_seconds": 7 * 86400})
+    assert response.status_code == 409
+    assert "nothing to simulate" in response.json()["detail"]
+
+
 def test_batch_timeout_is_reported_as_failure(
     client_and_connection,
     monkeypatch: pytest.MonkeyPatch,
