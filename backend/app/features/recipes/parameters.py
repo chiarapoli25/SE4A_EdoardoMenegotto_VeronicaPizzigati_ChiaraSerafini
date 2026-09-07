@@ -33,6 +33,61 @@ from .models import (
 
 _INCREASES = ControlDirection.INCREASES_PROCESS_VALUE
 
+## @brief Limiti di comando del PID per le tre variabili non nutritive, nella
+## reale unita' fisica del rispettivo attuatore (edge_runtime_actuation.cpp):
+##  - soil_moisture: litri per singola erogazione della pompa
+##    (water_pump_.request_volume_liters) — mai negativa, la pompa puo' solo
+##    aggiungere acqua, mai toglierla.
+##  - light: percento di potenza dell'impianto (lighting_.set_command_percent,
+##    clampato [0,100]) — un livello assoluto continuo, puo' scendere quanto
+##    salire: l'unica delle tre con un attuatore davvero bidirezionale sopra
+##    lo zero.
+##  - ph: mL di correttore, pH+ se il comando e' positivo, pH- se negativo
+##    (apply_decisions) — bidirezionale anch'essa, ma su una scala di dose
+##    minuscola rispetto a litri/percento.
+## Usare 1.0 per tutte e tre, come prima di questo fix, ignorava che
+## "1 unita' di errore" significa cose radicalmente diverse (un punto
+## percentuale di umidita' contro un grado di potenza luminosa contro un
+## decimo di pH): il guadagno proporzionale calcolato sotto usa questi
+## limiti insieme alla banda della fase per restare significativo in ogni
+## unita', invece di saturare sempre al comando massimo.
+_PID_COMMAND_LIMITS: dict[ControlledVariable, tuple[float, float]] = {
+    ControlledVariable.SOIL_MOISTURE: (0.0, 0.5),
+    ControlledVariable.LIGHT: (0.0, 100.0),
+    ControlledVariable.PH: (-0.5, 0.5),
+}
+
+## @brief Tempo di integrazione del PID, in secondi: quanto a lungo un errore
+## persistente deve restare tale prima che il termine integrale pesi quanto
+## quello proporzionale. Un valore troppo piccolo insegue il rumore di ogni
+## singolo ciclo di controllo (900 s di norma); uno troppo grande lascia un
+## bias stazionario per ore prima di correggerlo (il difetto originale: con
+## guadagno integrale pressoche' nullo, la media restava sistematicamente
+## sopra il setpoint invece di convergerci, specialmente con un attuatore
+## mono-direzionale come la pompa che non puo' mai "tirare giu'" il valore).
+## Poche ore e' un compromesso ragionevole per cicli di irrigazione/dosaggio
+## che si ripetono tipicamente piu' volte al giorno.
+_INTEGRAL_TIME_SECONDS = 4.0 * 3600.0
+
+
+def _band_half_margin(setpoint: float, target: PhaseVariableTarget | None) -> float:
+    """@brief Meta' banda ammessa attorno al setpoint, nell'unita' della variabile.
+
+    @details Stessa idea gia' usata per `response_gain` nel Predictive
+    (vedi catalog.py::_predictive_parameters): un errore grande quanto il
+    margine della banda deve spingere il comando vicino al suo massimo,
+    cosi' il guadagno proporzionale resta significativo sull'intero
+    intervallo operativo della variabile invece di essere un numero fisso
+    scelto a caso. Non degenere: mai zero, altrimenti il guadagno esploderebbe.
+    """
+    if target is None:
+        return 1.0
+    return max(
+        target.allowed_range.maximum - setpoint,
+        setpoint - target.allowed_range.minimum,
+        1e-6,
+    )
+
 
 def default_parameters_for(
     strategy: StrategyType,
@@ -74,23 +129,31 @@ def default_parameters_for(
             bidirectional=False,
         )
     if strategy is StrategyType.PID:
-        if dose_only:
-            return PidConfig(
-                setpoint=setpoint,
-                proportional_gain=0.05,
-                integral_gain=0.0001,
-                derivative_gain=0.0,
-                command_minimum=0.0,
-                command_maximum=3.0,
-                direction=_INCREASES,
-            )
+        command_minimum, command_maximum = (
+            (0.0, 3.0) if dose_only else _PID_COMMAND_LIMITS[variable]
+        )
+        # Guadagno proporzionale scalato sulla banda della fase: un errore
+        # grande quanto la banda spinge il comando (quasi) al suo massimo,
+        # ma vicino al setpoint il comando si affievolisce di conseguenza —
+        # a differenza di un guadagno fisso, che con una variabile dalla
+        # banda stretta o dal comando ristretto (es. l'umidita' del
+        # terriccio: banda di decine di punti percentuali contro un massimo
+        # di 0.5 L per erogazione) restava saturato per qualunque errore non
+        # trascurabile, comportandosi come un bang-bang travestito da PID
+        # invece di una vera correzione proporzionale.
+        proportional_gain = command_maximum / _band_half_margin(setpoint, target)
+        # Guadagno integrale non piu' trascurabile: elimina nel tempo il
+        # bias stazionario che un P-solo lascia contro un disturbo costante
+        # (l'evapotraspirazione per l'umidita', il consumo dei nutrienti per
+        # N/P/K) — vedi _INTEGRAL_TIME_SECONDS.
+        integral_gain = proportional_gain / _INTEGRAL_TIME_SECONDS
         return PidConfig(
             setpoint=setpoint,
-            proportional_gain=1.0,
-            integral_gain=0.00001,
+            proportional_gain=proportional_gain,
+            integral_gain=integral_gain,
             derivative_gain=0.0,
-            command_minimum=-0.5,
-            command_maximum=0.5,
+            command_minimum=command_minimum,
+            command_maximum=command_maximum,
             direction=_INCREASES,
         )
     return PredictiveConfig(

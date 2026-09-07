@@ -805,6 +805,25 @@ function bandCalc(value, min, max) {
  * see output_limits.maximum_dose_per_command_milliliters), not the
  * L/W-scale magic numbers used for the other three.
  */
+// Limiti di comando del PID per le tre variabili non nutritive, nella reale
+// unita' fisica del rispettivo attuatore — vedi lo stesso _PID_COMMAND_LIMITS
+// in backend/app/features/recipes/parameters.py, di cui questa e' la
+// controparte JS: umidita' in litri per erogazione pompa (mai negativa),
+// luce in percento di potenza (0-100, l'unica davvero bidirezionale in
+// senso pieno), pH in mL di correttore (bidirezionale pH+/pH-).
+const PID_COMMAND_LIMITS = {
+  soil_moisture: [0.0, 0.5],
+  light: [0.0, 100.0],
+  ph: [-0.5, 0.5],
+};
+// Tempo di integrazione del PID in secondi — vedi la stessa costante e la
+// stessa spiegazione in parameters.py: troppo corto insegue il rumore di
+// ogni ciclo di controllo, troppo lungo lascia per ore un bias stazionario
+// che il solo termine proporzionale non elimina contro un disturbo costante
+// (es. l'evapotraspirazione, che un attuatore mono-direzionale come la
+// pompa non puo' mai contrastare "tirando giu'" il valore).
+const PID_INTEGRAL_TIME_SECONDS = 4 * 3600;
+
 function buildStrategyParameters(strategy, target, variableKey) {
   const setpoint = target ? target.setpoint : 0;
   const min = target ? target.allowed_range.minimum : 0;
@@ -818,9 +837,23 @@ function buildStrategyParameters(strategy, target, variableKey) {
     };
   }
   if (strategy === "PID") {
-    return doseOnly
-      ? { setpoint, proportional_gain: 0.05, integral_gain: 0.0001, derivative_gain: 0.0, command_minimum: 0.0, command_maximum: 3.0, direction: "increases" }
-      : { setpoint, proportional_gain: 1.0, integral_gain: 0.00001, derivative_gain: 0.0, command_minimum: -0.5, command_maximum: 0.5, direction: "increases" };
+    // Guadagno proporzionale scalato sulla meta' banda attorno al setpoint
+    // (stessa idea del response_gain del Predictive sotto): un errore
+    // grande quanto la banda spinge il comando (quasi) al suo massimo, ma
+    // vicino al setpoint il comando si affievolisce di conseguenza — un
+    // guadagno fisso, applicato a variabili con bande/comandi di scala
+    // enormemente diversa (umidita': decine di punti percentuali contro un
+    // massimo di 0.5 L), restava saturato per qualunque errore non
+    // trascurabile, comportandosi come un bang-bang travestito da PID.
+    const [commandMin, commandMax] = doseOnly ? [0.0, 3.0] : PID_COMMAND_LIMITS[variableKey];
+    const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
+    const proportionalGain = commandMax / margin;
+    const integralGain = proportionalGain / PID_INTEGRAL_TIME_SECONDS;
+    return {
+      setpoint, proportional_gain: proportionalGain, integral_gain: integralGain,
+      derivative_gain: 0.0, command_minimum: commandMin, command_maximum: commandMax,
+      direction: "increases",
+    };
   }
   // command_maximum e' una scala di comando (litri/watt/mL a seconda
   // dell'attuatore), non va confusa con `max` sopra — quella e' la banda
