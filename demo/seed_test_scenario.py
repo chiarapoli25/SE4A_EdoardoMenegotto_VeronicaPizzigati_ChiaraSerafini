@@ -33,12 +33,24 @@ COSA FA (a differenza di seed_dev_data.py):
   separato). Non c'è quindi alcuna differenza col comportamento reale da
   replicare qui: il valore che scriviamo è letteralmente quello che un
   Edge reale scriverebbe in current_strategies subito dopo l'adozione.
-- Una sola POST di telemetria per zona: lo stato "online" (calcolato da
+- Ogni zona online riceve una BREVE STORIA di HISTORY_SAMPLE_COUNT
+  campioni (non più uno solo): ogni campione rappresenta
+  HISTORY_STEP_SIMULATED_MINUTES minuti simulati di distanza dal
+  precedente (nei valori di timestamp_seconds/recorded_at che lo script
+  stesso decide di scrivere — non c'entra il campo time_scale del
+  payload, che il backend limita a un tetto di 60 e che qui resta
+  invariato, vedi TIME_SCALE_NOMINAL e la nota in
+  post_fake_telemetry_history()). Le POST verso il backend vengono pero'
+  spedite in sequenza a un ritmo reale di circa
+  HISTORY_SEND_INTERVAL_REAL_SECONDS l'una, cosi' chi guarda lo script
+  girare vede i dati "arrivare" a quel ritmo mentre i timestamp coprono
+  un intervallo simulato molto più lungo. I valori dei sei canali
+  controllati (e dei placeholder fisici) si muovono con un piccolo random
+  walk attorno al setpoint di fase, solo per un aspetto plausibile su un
+  grafico — non è una simulazione fisica. Lo stato "online" (calcolato da
   last_edge_contact, vedi backend/app/core/config.py
-  offline_threshold_seconds, default 60s) dura solo quella finestra da
-  quando lo script è stato eseguito, poi la zona torna "offline" come
-  farebbe una zona che ha davvero smesso di essere raggiunta. Per
-  rinfrescarla basta rilanciare lo script.
+  offline_threshold_seconds, default 60s) dura solo dall'ultimo campione
+  di questa storia in poi; per rinfrescarla basta rilanciare lo script.
 - r2-s2 viene creata e le viene comunque attivata una coltivazione (stessa
   ricetta/specie delle altre), ma non riceve MAI una POST di telemetria:
   resta "offline" di proposito, così la dashboard mostra anche un esempio
@@ -56,14 +68,27 @@ VINCOLO RISPETTATO: solo chiamate HTTP dirette (POST/GET/PATCH via
 urllib). Nessuna dipendenza dall'Edge C++, nessun processo esterno
 avviato da questo script.
 
-AUTENTICAZIONE: come primo passo lo script fa login su POST /auth/login con
-l'account amministratore di esempio (vedi demo/seed_users.py, che va
-eseguito almeno una volta prima di questo script) e allega il token
-ottenuto a ogni chiamata successiva. Nessuno dei comandi accodati qui è
-oggi ChangeStrategy/ConfirmConfiguration (l'unico gate protetto da ruolo,
-vedi backend/app/features/commands/routes.py), ma restare autenticati
-allo stesso modo evita rotture silenziose se lo scenario dovesse
-cambiare in futuro.
+AUTENTICAZIONE: come primo passo lo script prova il login su POST
+/auth/login con l'account amministratore di esempio (vedi
+demo/seed_users.py). Se il database e' ancora completamente vuoto (nessun
+utente, seed_users.py mai eseguito), ricorre invece a POST
+/auth/bootstrap-admin per crearsi al volo un amministratore usa-e-getta
+(vedi ensure_admin_token()) — sempre attraverso un endpoint reale, mai
+scrivendo nel database a mano. Il token ottenuto (in un modo o nell'altro)
+viene allegato a ogni chiamata successiva, incluse le POST /users che
+creano i quattro account agronomo nominati (vedi
+ensure_named_agronomo_accounts()) esattamente come farebbe un
+amministratore dal pannello "Utenti" della dashboard. Nessuno dei comandi
+accodati qui è oggi ChangeStrategy/ConfirmConfiguration (l'unico gate
+protetto da ruolo, vedi backend/app/features/commands/routes.py), ma
+restare autenticati allo stesso modo evita rotture silenziose se lo
+scenario dovesse cambiare in futuro.
+
+ACCOUNT AGRONOMO NOMINATI: oltre all'admin, lo script crea (o salta se
+già esistenti, in modo idempotente) quattro account agronomo con
+username/password fissi — vedi NAMED_AGRONOMO_ACCOUNTS — utili per
+provare la dashboard con più account "umani" invece del solo
+agronomo/pass123 di seed_users.py.
 
 Topologia (stessa forma di seed_dev_data.py, per coerenza fra i due
 script):
@@ -79,10 +104,11 @@ script):
 from __future__ import annotations
 
 import json
+import random
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Sibling module, non il pacchetto backend: Python mette la cartella dello
 # script (demo/) in sys.path[0] quando lo lanci direttamente, quindi questo
@@ -92,7 +118,28 @@ from seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
 
 BASE_URL = "http://127.0.0.1:8000"
 
-# Token di sessione ottenuto da login_as_admin() e allegato da request() a
+# Usato SOLO da ensure_admin_token() quando il database e' completamente
+# vuoto (seed_users.py non e' mai stato eseguito): permette allo script di
+# funzionare anche su un database vergine, creando un amministratore
+# usa-e-getta con POST /auth/bootstrap-admin invece di richiedere
+# l'esecuzione preventiva di seed_users.py. Password in chiaro qui per lo
+# stesso motivo di ADMIN_PASSWORD in seed_users.py: solo uso locale di
+# sviluppo.
+SEED_BOOTSTRAP_USERNAME = "seed-admin"
+SEED_BOOTSTRAP_PASSWORD = "SeedBootstrap!2026"
+
+# Quattro account agronomo "umani", creati (o saltati se già esistenti) via
+# POST /users con il token amministratore ottenuto da ensure_admin_token():
+# stesso percorso reale che userebbe un amministratore dal pannello
+# "Utenti" della dashboard, non un inserimento diretto nel database.
+NAMED_AGRONOMO_ACCOUNTS = [
+    ("mario", "1234frutta"),
+    ("elena", "1234verdura"),
+    ("antonio", "piantagrassa2"),
+    ("alice", "curatrice10"),
+]
+
+# Token di sessione ottenuto da ensure_admin_token() e allegato da request() a
 # ogni chiamata di scrittura (POST/PATCH/DELETE). Nessun comando emesso da
 # questo script tocca oggi ChangeStrategy/ConfirmConfiguration, ma il token
 # viene comunque allegato ovunque: e' innocuo verso gli endpoint che non lo
@@ -126,6 +173,30 @@ PLACEHOLDER_SOIL_BULK_EC_MS_CM = 0.7
 PLACEHOLDER_SOIL_EC_MS_CM = 1.6
 PLACEHOLDER_FERTILIZER_CONCENTRATION_MG_PER_LITER = 380.0
 
+# time_scale nel payload di telemetria: NON tocca la "velocita'" della
+# storia che generiamo qui sotto (quella la decide solo la spaziatura dei
+# timestamp, vedi HISTORY_STEP_SIMULATED_MINUTES) — resta lo stesso valore
+# usato oggi per le zone Nominal. TelemetryCreate
+# (backend/app/features/telemetry/models.py) lo valida con un tetto FISSO
+# di 60: un valore piu' alto (es. 600, per "1 secondo reale = 10 minuti
+# simulati") verrebbe sempre rifiutato con un errore di validazione,
+# qualunque cosa rappresenti concettualmente.
+TIME_SCALE_NOMINAL = 1.0
+
+# Quanti campioni "storici" per zona online, e quanti minuti SIMULATI
+# separano un campione dal successivo (nei valori di
+# timestamp_seconds/recorded_at che scriviamo noi in ciascun campione: non
+# hanno alcun tetto imposto dal backend, a differenza di time_scale sopra).
+# Con i valori di default: 12 campioni x 10 minuti simulati = 2 ore di
+# storia "simulata" per zona.
+HISTORY_SAMPLE_COUNT = 12
+HISTORY_STEP_SIMULATED_MINUTES = 10.0
+# Ritmo REALE (secondi di orologio) fra una POST e la successiva della
+# stessa storia: da' l'impressione di dati "in arrivo" mentre lo script
+# gira, anche se i timestamp dentro ai dati coprono un intervallo molto
+# più lungo.
+HISTORY_SEND_INTERVAL_REAL_SECONDS = 1.0
+
 
 def _parse_json_body(text: str) -> dict:
     """Interpreta il corpo di una risposta HTTP come JSON, senza mai
@@ -138,8 +209,8 @@ def _parse_json_body(text: str) -> dict:
     Error" in testo semplice, non JSON. Senza questa guardia, il vecchio
     `json.loads(body)` sollevava un JSONDecodeError non catturato QUI DENTRO
     request(), che si propagava fino a un traceback Python grezzo invece del
-    messaggio esplicito che login_as_admin()/ensure_cultivation()/
-    post_fake_telemetria() eccetera sono pensati per mostrare — mascherando
+    messaggio esplicito che ensure_admin_token()/ensure_cultivation()/
+    post_fake_telemetry_history() eccetera sono pensati per mostrare — mascherando
     la vera causa dell'errore in mezzo a righe di stack trace facili da
     perdere, specialmente se lo script è invocato da un lanciatore come
     avvia_demo.bat."""
@@ -175,22 +246,30 @@ def request(method: str, path: str, payload: dict | None = None) -> tuple[int, d
         ) from error
 
 
-def login_as_admin() -> None:
-    """Autentica lo script come l'account amministratore di seed e salva il
-    token in _AUTH_TOKEN, cosi' request() lo allega da qui in poi. Richiede
-    che demo/seed_users.py sia gia' stato eseguito almeno una volta contro
-    lo stesso database del backend."""
+def ensure_admin_token() -> None:
+    """Ottiene un token amministratore per il resto dello script e lo salva
+    in _AUTH_TOKEN, cosi' request() lo allega da qui in poi.
+
+    @details Prova prima il login con l'account seminato da
+    demo/seed_users.py (il caso comune). Se le credenziali vengono
+    rifiutate (401), NON assume subito che sia un errore: interroga GET
+    /auth/setup-required per distinguere "il database e' ancora vuoto"
+    (seed_users.py non e' mai stato eseguito) da "esiste gia' un account ma
+    con credenziali diverse" (un vero problema da segnalare). Nel primo
+    caso ricorre a POST /auth/bootstrap-admin per crearsi al volo un
+    amministratore usa-e-getta (SEED_BOOTSTRAP_USERNAME) — sempre
+    attraverso un endpoint reale, mai scrivendo nel database a mano — cosi'
+    lo script funziona anche senza aver prima lanciato seed_users.py."""
     global _AUTH_TOKEN
     status, body = request(
         "POST", "/auth/login", {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
     )
-    if status == 401:
-        raise SystemExit(
-            "[seed] impossibile autenticarsi come amministratore "
-            f"({ADMIN_USERNAME!r}): credenziali rifiutate (401) {body}. Hai gia' "
-            "eseguito `python demo/seed_users.py` contro questo stesso database?"
-        )
-    if status != 200:
+    if status == 200:
+        _AUTH_TOKEN = body["token"]
+        print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['user']['role']})")
+        return
+
+    if status != 401:
         raise SystemExit(
             "[seed] impossibile autenticarsi come amministratore "
             f"({ADMIN_USERNAME!r}): il backend ha risposto con un errore "
@@ -199,8 +278,77 @@ def login_as_admin() -> None:
             "del backend, es. un 'disk I/O error' o un altro problema di "
             "accesso al database)."
         )
-    _AUTH_TOKEN = body["token"]
-    print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['user']['role']})")
+
+    # 401: o le credenziali sono sbagliate, o il database e' ancora vuoto e
+    # seed_users.py non e' mai stato eseguito. Lo distinguiamo interrogando
+    # /auth/setup-required invece di indovinare dal messaggio del 401.
+    setup_status, setup_body = request("GET", "/auth/setup-required")
+    if setup_status != 200:
+        raise SystemExit(
+            f"[seed] impossibile autenticarsi come {ADMIN_USERNAME!r} (401) e "
+            "impossibile verificare se il database e' vuoto (GET "
+            f"/auth/setup-required: status {setup_status} {setup_body})."
+        )
+
+    if not setup_body.get("setup_required"):
+        raise SystemExit(
+            "[seed] impossibile autenticarsi come amministratore "
+            f"({ADMIN_USERNAME!r}): credenziali rifiutate (401) {body}, ma il "
+            "database non risulta vuoto (esiste gia' almeno un account, "
+            "probabilmente con un altro username/password). Hai gia' eseguito "
+            "`python demo/seed_users.py` contro questo stesso database, o e' "
+            "stato creato un amministratore con credenziali diverse?"
+        )
+
+    print(
+        f"[seed] nessun account trovato ({ADMIN_USERNAME!r} non esiste "
+        "ancora): il database e' vuoto. Creo un amministratore di seed al "
+        "volo con POST /auth/bootstrap-admin invece di richiedere "
+        "l'esecuzione preventiva di `python demo/seed_users.py`."
+    )
+    bootstrap_status, bootstrap_body = request(
+        "POST",
+        "/auth/bootstrap-admin",
+        {"username": SEED_BOOTSTRAP_USERNAME, "password": SEED_BOOTSTRAP_PASSWORD},
+    )
+    if bootstrap_status != 201:
+        raise SystemExit(
+            "[seed] impossibile creare l'amministratore iniziale via POST "
+            f"/auth/bootstrap-admin: status {bootstrap_status} {bootstrap_body}. "
+            "Puo' darsi che un'altra esecuzione concorrente lo abbia gia' "
+            "creato nel frattempo: riprova."
+        )
+    _AUTH_TOKEN = bootstrap_body["token"]
+    print(
+        f"[seed] autenticato come {SEED_BOOTSTRAP_USERNAME!r} "
+        f"(ruolo={bootstrap_body['user']['role']}, creato ora da questo script)"
+    )
+
+
+def ensure_named_agronomo_accounts() -> None:
+    """Crea i quattro account agronomo nominati (NAMED_AGRONOMO_ACCOUNTS),
+    sempre attraverso POST /users con il token amministratore corrente —
+    mai scrivendo nel database a mano: e' lo stesso percorso, con la stessa
+    validazione (UserCreate) e lo stesso controllo di ruolo (require_admin),
+    che userebbe un amministratore dal pannello "Utenti" della dashboard.
+
+    Idempotente: un 409 (username gia' esistente) salta quell'account e
+    stampa un avviso, senza fermare lo script ne' gli altri tre account."""
+    for username, password in NAMED_AGRONOMO_ACCOUNTS:
+        status, body = request(
+            "POST",
+            "/users",
+            {"username": username, "password": password, "role": "agronomo"},
+        )
+        if status == 201:
+            print(f"[seed] account agronomo creato: {username!r}")
+        elif status == 409:
+            print(f"[seed] account {username!r} gia' esistente, lo lascio com'è")
+        else:
+            raise SystemExit(
+                f"[seed] errore creando l'account agronomo {username!r}: "
+                f"status {status} {body}"
+            )
 
 
 def pick_recipes(department_number: int, how_many: int) -> list[dict]:
@@ -257,48 +405,140 @@ def ensure_cultivation(zone_id: str, recipe_id: str) -> dict | None:
     raise SystemExit(f"[seed] errore attivando la coltivazione su {zone_id}: {status} {body}")
 
 
-def post_fake_telemetry(zone_id: str, recipe: dict, recipe_version: int, boot_id: str) -> None:
-    """Simula in un colpo solo quello che un Edge reale riporterebbe subito
-    dopo aver adottato `recipe`: prima fase, Strategy auto-confermate
-    (identiche a recipe['controllers'][*]['selected_strategy'], come fa
-    davvero l'Edge da RecipeControlSystem::confirm_all_from_recipe — nessun
-    ConfirmConfiguration separato), setpoint della prima fase. Nessun dato
-    fisico viene simulato oltre questo singolo istante."""
+def _walk(value: float, step: float, min_value: float, max_value: float) -> float:
+    """Un passo di random walk limitato: sposta `value` di una quantita'
+    casuale in [-step, step], poi lo ricaccia dentro [min_value, max_value]
+    se ne esce. Serve solo a dare alla storia generata da
+    post_fake_telemetry_history() un aspetto plausibile su un grafico — non
+    e' una simulazione fisica, esattamente come il resto di questo script
+    (vedi nota in testa al file)."""
+    return min(max_value, max(min_value, value + random.uniform(-step, step)))
+
+
+def post_fake_telemetry_history(
+    zone_id: str, recipe: dict, recipe_version: int, boot_id: str,
+) -> None:
+    """Invia una BREVE STORIA di HISTORY_SAMPLE_COUNT campioni per la zona
+    (non piu' un singolo campione), simulando quello che un Edge reale
+    riporterebbe dopo aver adottato `recipe`: stessa fase, stesse Strategy
+    auto-confermate (identiche a
+    recipe['controllers'][*]['selected_strategy'], come fa davvero l'Edge
+    da RecipeControlSystem::confirm_all_from_recipe), setpoint della prima
+    fase come punto di partenza del random walk di ciascun canale.
+
+    @details DUE ritmi INDIPENDENTI, da non confondere:
+    - Nei DATI: ogni campione rappresenta HISTORY_STEP_SIMULATED_MINUTES
+      minuti simulati di distanza dal precedente. E' la spaziatura dei
+      valori di timestamp_seconds/recorded_at che scriviamo NOI in ogni
+      campione: non ha alcun limite imposto dal backend, perche' non e'
+      il campo time_scale del payload (quello resta fisso a
+      TIME_SCALE_NOMINAL, l'unico valore che TelemetryCreate valida con un
+      tetto di 60 — vedi backend/app/features/telemetry/models.py).
+    - Nell'INVIO: le POST verso il backend vengono spedite in sequenza a
+      un ritmo REALE di circa HISTORY_SEND_INTERVAL_REAL_SECONDS l'una
+      (un time.sleep() fra un campione e il successivo), cosi' chi guarda
+      lo script girare vede i dati "arrivare" a quel ritmo, anche se i
+      timestamp dentro ai dati coprono un intervallo molto piu' lungo.
+
+    L'ultimo campione (il piu' recente) e' datato "adesso": last_edge_contact
+    (e quindi lo stato "online" della zona) riflette il momento in cui
+    questa funzione termina, non l'inizio della storia simulata."""
     phase = recipe["phases"][0]
     setpoint_by_variable = {t["variable"]: t["setpoint"] for t in phase["targets"]}
     strategy_by_variable = {c["variable"]: c["selected_strategy"] for c in recipe["controllers"]}
 
-    telemetry = {
-        "sequence_number": 1,
-        "boot_id": boot_id,
-        "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "timestamp_seconds": 1.0,
-        "temperature_c": PLACEHOLDER_TEMPERATURE_C,
-        "air_humidity_percent": PLACEHOLDER_AIR_HUMIDITY_PERCENT,
-        "soil_moisture_percent": setpoint_by_variable["soil_moisture"],
-        "soil_bulk_ec_ms_cm": PLACEHOLDER_SOIL_BULK_EC_MS_CM,
-        "soil_ec_ms_cm": PLACEHOLDER_SOIL_EC_MS_CM,
-        "fertilizer_concentration_mg_per_liter": PLACEHOLDER_FERTILIZER_CONCENTRATION_MG_PER_LITER,
-        "nitrogen_estimate_mg_per_liter": setpoint_by_variable["nitrogen"],
-        "phosphorus_estimate_mg_per_liter": setpoint_by_variable["phosphorus"],
-        "potassium_estimate_mg_per_liter": setpoint_by_variable["potassium"],
-        "ph": setpoint_by_variable["ph"],
-        "light_ppfd_umol_m2_s": setpoint_by_variable["light"],
-        "active_recipe_id": recipe["id"],
-        "active_recipe_version": recipe_version,
-        "current_phase": phase["name"],
-        "operational_state": "Nominal",
-        "lifecycle_state": "Running",
-        "current_strategies": strategy_by_variable,
-        "current_setpoints": setpoint_by_variable,
-        "time_scale": 1.0,
-    }
-    status, body = request("POST", f"/zones/{zone_id}/telemetry", telemetry)
-    if status != 201:
-        raise SystemExit(f"[seed] errore inviando telemetria a {zone_id}: {status} {body}")
+    now = datetime.now(timezone.utc)
+    step_simulated_seconds = HISTORY_STEP_SIMULATED_MINUTES * 60.0
+    oldest_recorded_at = now - timedelta(
+        minutes=HISTORY_STEP_SIMULATED_MINUTES * (HISTORY_SAMPLE_COUNT - 1)
+    )
+
+    # Valore corrente di ciascun canale: parte dal setpoint/placeholder e
+    # cammina di campione in campione (vedi _walk()). I canali senza un
+    # tetto nello schema (azoto/fosforo/potassio/fertilizzante) usano un
+    # margine generoso attorno al valore INIZIALE come limite superiore,
+    # non un vincolo del backend.
+    soil_moisture = setpoint_by_variable["soil_moisture"]
+    nitrogen = setpoint_by_variable["nitrogen"]
+    phosphorus = setpoint_by_variable["phosphorus"]
+    potassium = setpoint_by_variable["potassium"]
+    ph = setpoint_by_variable["ph"]
+    light = setpoint_by_variable["light"]
+    temperature = PLACEHOLDER_TEMPERATURE_C
+    humidity = PLACEHOLDER_AIR_HUMIDITY_PERCENT
+    soil_bulk_ec = PLACEHOLDER_SOIL_BULK_EC_MS_CM
+    soil_ec = PLACEHOLDER_SOIL_EC_MS_CM
+    fertilizer = PLACEHOLDER_FERTILIZER_CONCENTRATION_MG_PER_LITER
+    nitrogen_cap = max(nitrogen * 3.0, 1.0)
+    phosphorus_cap = max(phosphorus * 3.0, 1.0)
+    potassium_cap = max(potassium * 3.0, 1.0)
+    fertilizer_cap = max(fertilizer * 3.0, 1.0)
+
+    last_recorded_at = oldest_recorded_at
+    for i in range(HISTORY_SAMPLE_COUNT):
+        if i > 0:
+            soil_moisture = _walk(soil_moisture, 2.0, 0.0, 100.0)
+            nitrogen = _walk(nitrogen, max(nitrogen * 0.06, 1.0), 0.0, nitrogen_cap)
+            phosphorus = _walk(phosphorus, max(phosphorus * 0.06, 1.0), 0.0, phosphorus_cap)
+            potassium = _walk(potassium, max(potassium * 0.06, 1.0), 0.0, potassium_cap)
+            ph = _walk(ph, 0.15, 0.0, 14.0)
+            light = _walk(light, 60.0, 0.0, 3000.0)
+            temperature = _walk(temperature, 0.3, -50.0, 80.0)
+            humidity = _walk(humidity, 1.5, 0.0, 100.0)
+            soil_bulk_ec = _walk(soil_bulk_ec, 0.05, 0.0, 8.0)
+            soil_ec = _walk(soil_ec, 0.08, 0.0, 8.0)
+            fertilizer = _walk(fertilizer, max(fertilizer * 0.05, 5.0), 0.0, fertilizer_cap)
+
+        setpoints_snapshot = {
+            "soil_moisture": soil_moisture,
+            "nitrogen": nitrogen,
+            "phosphorus": phosphorus,
+            "potassium": potassium,
+            "ph": ph,
+            "light": light,
+        }
+        last_recorded_at = oldest_recorded_at + timedelta(
+            minutes=HISTORY_STEP_SIMULATED_MINUTES * i
+        )
+        telemetry = {
+            "sequence_number": i + 1,
+            "boot_id": boot_id,
+            "recorded_at": last_recorded_at.isoformat().replace("+00:00", "Z"),
+            "timestamp_seconds": 1.0 + step_simulated_seconds * i,
+            "temperature_c": temperature,
+            "air_humidity_percent": humidity,
+            "soil_moisture_percent": soil_moisture,
+            "soil_bulk_ec_ms_cm": soil_bulk_ec,
+            "soil_ec_ms_cm": soil_ec,
+            "fertilizer_concentration_mg_per_liter": fertilizer,
+            "nitrogen_estimate_mg_per_liter": nitrogen,
+            "phosphorus_estimate_mg_per_liter": phosphorus,
+            "potassium_estimate_mg_per_liter": potassium,
+            "ph": ph,
+            "light_ppfd_umol_m2_s": light,
+            "active_recipe_id": recipe["id"],
+            "active_recipe_version": recipe_version,
+            "current_phase": phase["name"],
+            "operational_state": "Nominal",
+            "lifecycle_state": "Running",
+            "current_strategies": strategy_by_variable,
+            "current_setpoints": setpoints_snapshot,
+            "time_scale": TIME_SCALE_NOMINAL,
+        }
+        status, body = request("POST", f"/zones/{zone_id}/telemetry", telemetry)
+        if status != 201:
+            raise SystemExit(
+                f"[seed] errore inviando il campione storico {i + 1}/"
+                f"{HISTORY_SAMPLE_COUNT} a {zone_id}: {status} {body}"
+            )
+        if i < HISTORY_SAMPLE_COUNT - 1:
+            time.sleep(HISTORY_SEND_INTERVAL_REAL_SECONDS)
+
     print(
-        f"[seed] telemetria inviata a {zone_id}: fase {phase['name']!r}, "
-        f"strategie {strategy_by_variable}"
+        f"[seed] storia di {HISTORY_SAMPLE_COUNT} campioni inviata a {zone_id} "
+        f"(passo {HISTORY_STEP_SIMULATED_MINUTES:g} min simulati, ritmo reale "
+        f"~{HISTORY_SEND_INTERVAL_REAL_SECONDS:g}s/campione): fase "
+        f"{phase['name']!r}, ultimo campione datato {last_recorded_at.isoformat()}"
     )
 
 
@@ -331,8 +571,11 @@ def main() -> None:
     run_suffix = str(int(time.time() * 1000))
     boot_id = f"seed-test-{run_suffix}"
 
-    print("[seed] --- Passo 0: login come amministratore di seed ---")
-    login_as_admin()
+    print("[seed] --- Passo 0: ottenimento token amministratore ---")
+    ensure_admin_token()
+
+    print("\n[seed] --- Passo 0bis: account agronomo nominati (POST /users, idempotente) ---")
+    ensure_named_agronomo_accounts()
 
     print("\n[seed] --- Passo 1: registrazione zone (puro input) ---")
     by_department: dict[int, list[tuple]] = {}
@@ -368,12 +611,17 @@ def main() -> None:
             zone = request("GET", f"/zones/{zone_id}")[1]
             zone_recipe_version[zone_id] = zone.get("active_recipe_version") or zone_recipe[zone_id]["version"]
 
-    print("\n[seed] --- Passo 3: telemetria diretta (finta, coerente con la ricetta) ---")
+    print(
+        "\n[seed] --- Passo 3: storia di telemetria diretta (finta, coerente "
+        f"con la ricetta, {HISTORY_SAMPLE_COUNT} campioni a "
+        f"{HISTORY_STEP_SIMULATED_MINUTES:g} min simulati l'uno, ritmo reale "
+        f"~{HISTORY_SEND_INTERVAL_REAL_SECONDS:g}s/campione) ---"
+    )
     for zone_id, _name, _dept, _sector, receives_telemetry in PRODUCTION_ZONES:
         if not receives_telemetry:
             print(f"[seed] {zone_id}: nessuna telemetria inviata di proposito, resterà offline")
             continue
-        post_fake_telemetry(
+        post_fake_telemetry_history(
             zone_id, zone_recipe[zone_id], zone_recipe_version[zone_id], boot_id,
         )
 
