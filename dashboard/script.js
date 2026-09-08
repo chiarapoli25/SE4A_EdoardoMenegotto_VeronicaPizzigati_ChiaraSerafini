@@ -2509,18 +2509,24 @@ function varLegendLabel(v) {
 
 /** The single-chart-view legend's third item, describing the second
  * (blue) line drawn by drawSimulationSeriesChart — a 24h rolling average
- * for every variable, converted to the DLI-equivalent rate for light (see
- * lightRollingDli there): "se il ritmo delle ultime 24h continuasse per un
- * giorno intero, il DLI sarebbe questo" — un valore stabile, senza gli
- * azzeramenti notturni del dente di sega verde, sempre confrontabile col
- * target. Carries the id sim-chart-legend-average so the variable
- * dropdown's change handler can patch it in place, the same
+ * for every variable except light. For light that rolling average (see the
+ * git history of this function) turned out too noisy to read against the
+ * setpoint: the simulated weather makes raw PPFD swing a lot hour to hour,
+ * so a window recomputed at every bucket zigzagged well above/below the
+ * target with no stable meaning. DLI is BY DEFINITION a daily total, not a
+ * rolling average — so for light this line is instead lightCompletedDayTotal
+ * (see drawSimulationSeriesChart), a step line holding the most recently
+ * FINISHED solar day's total DLI constant until the next day finishes too:
+ * exactly the value the green sawtooth's tip reaches right before it resets,
+ * kept visible (not just for an instant) so it's actually readable against
+ * the dashed target line. Carries the id sim-chart-legend-average so the
+ * variable dropdown's change handler can patch it in place, the same
  * targeted-DOM-update pattern already used for sim-chart-legend-label —
  * switching variable never re-renders the whole modal, only redraws the
  * canvas. */
 function simAverageLegendItem(varMeta) {
   return varMeta.key === "light"
-    ? `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>DLI medio delle ultime 24h (proiezione al ritmo attuale, confronta questo col setpoint — la linea verde è il DLI maturato da inizio giornata, si azzera ogni notte)</span>`
+    ? `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>DLI totale dell'ultimo giorno concluso (a gradini, un salto per giorno — confronta questo col setpoint; la linea verde è il DLI maturato da inizio giornata odierna, si azzera ogni notte)</span>`
     : `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>Media mobile 24h (confronta questa col setpoint, non il valore istantaneo)</span>`;
 }
 
@@ -2819,27 +2825,32 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   const kSecondsPerDay = 86400;
   // Il dente di sega (sotto) resta indispensabile per seguire l'andamento
   // reale entro la giornata, ma da solo non da' un singolo valore stabile
-  // da confrontare col target: per quello serve una seconda linea. Usiamo
-  // la stessa media mobile 24h già calcolata per le altre variabili, ma sul
-  // PPFD GREZZO (prima di trasformare points sotto) convertita nel suo
-  // equivalente DLI (mol/m²/giorno) — "se il ritmo dell'ultimo giorno
-  // continuasse per un giorno intero, il DLI sarebbe questo": una stima
-  // continua, senza gli azzeramenti notturni, sempre confrontabile col
-  // target punto per punto.
-  const lightRollingDli = isLight
-    ? rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS).map(
-        (v) => (v * kSecondsPerDay) / 1e6)
-    : null;
+  // da confrontare col target: per quello serve una seconda linea — vedi
+  // pero' simAverageLegendItem per il perche' NON e' una media mobile 24h
+  // ricalcolata punto per punto (prima versione: troppo rumorosa contro un
+  // meteo simulato variabile, "non comprensibile rispetto al setpoint").
+  // Il DLI e' un totale giornaliero: la metrica giusta e' quindi il totale
+  // dell'ultimo giorno solare gia' CONCLUSO, calcolato nello stesso passaggio
+  // che costruisce il dente di sega sotto (stesso confine di giorno,
+  // floor(secondi/86400)) — lightCompletedDayTotal[i] e' quel totale,
+  // allineato per indice a points, null finche' nessun giorno e' ancora
+  // concluso (durante il primissimo giorno di simulazione).
+  const lightCompletedDayTotal = isLight ? new Array(points.length).fill(null) : null;
   if (isLight) {
     let dayIndex = null;
     let cumulative = 0;
-    points = points.map((p) => {
+    let previousDayTotal = null;
+    points = points.map((p, i) => {
       const pointDay = Math.floor(p.t0 / kSecondsPerDay);
-      if (dayIndex === null || pointDay !== dayIndex) {
+      if (dayIndex === null) {
+        dayIndex = pointDay;
+      } else if (pointDay !== dayIndex) {
+        previousDayTotal = cumulative;
         cumulative = 0;
         dayIndex = pointDay;
       }
       cumulative += (p.avg * (p.t1 - p.t0)) / 1e6;
+      lightCompletedDayTotal[i] = previousDayTotal;
       return { t0: p.t0, t1: p.t1, avg: cumulative, min: cumulative, max: cumulative };
     });
   }
@@ -2854,8 +2865,11 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
 
-  let minV = Math.min(...points.map((p) => p.min), ...(lightRollingDli || []));
-  let maxV = Math.max(...points.map((p) => p.max), ...(lightRollingDli || []));
+  const lightDailyTotalsForScale = isLight
+    ? lightCompletedDayTotal.filter((v) => v !== null)
+    : null;
+  let minV = Math.min(...points.map((p) => p.min), ...(lightDailyTotalsForScale || []));
+  let maxV = Math.max(...points.map((p) => p.max), ...(lightDailyTotalsForScale || []));
   // Solo le fasi che ricadono davvero nell'intervallo simulato [minT, maxT]
   // contano per la scala dell'asse — esattamente lo stesso controllo di
   // sovrapposizione usato sotto per decidere se disegnare la banda di una
@@ -2946,23 +2960,49 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     });
     ctx.stroke();
 
-    // Media mobile 24h — quella da confrontare col setpoint tratteggiato,
-    // non la linea grezza sopra (vedi SIM_ROLLING_AVERAGE_WINDOW_SECONDS).
-    // Per la luce e' lightRollingDli, gia' calcolata sul PPFD grezzo prima
-    // di trasformare points nel dente di sega: qui serve solo disegnarla,
-    // allineata per indice agli stessi punti (t0/t1 non cambiano).
-    const rolling = isLight
-      ? lightRollingDli
-      : rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
-    ctx.strokeStyle = "#3d6ea5";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    points.forEach((p, i) => {
-      const px = x((p.t0 + p.t1) / 2);
-      const py = y(rolling[i]);
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-    });
-    ctx.stroke();
+    if (isLight) {
+      // Linea a gradini (non una media mobile, vedi simAverageLegendItem):
+      // un salto netto per giorno concluso, mai una diagonale — necessario
+      // esplicitamente perche' su simulazioni lunghe e aggregate (bucket
+      // larghi, vedi _reduce_series lato backend) un semplice lineTo fra
+      // due punti su giorni diversi disegnerebbe una diagonale invece di
+      // un gradino netto.
+      ctx.strokeStyle = "#3d6ea5";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      let lastPy = null;
+      points.forEach((p, i) => {
+        const v = lightCompletedDayTotal[i];
+        if (v === null) return; // nessun giorno ancora concluso
+        const px = x((p.t0 + p.t1) / 2);
+        const py = y(v);
+        if (!started) {
+          ctx.moveTo(px, py);
+          started = true;
+        } else if (py !== lastPy) {
+          ctx.lineTo(px, lastPy);
+          ctx.lineTo(px, py);
+        } else {
+          ctx.lineTo(px, py);
+        }
+        lastPy = py;
+      });
+      if (started) ctx.stroke();
+    } else {
+      // Media mobile 24h — quella da confrontare col setpoint tratteggiato,
+      // non la linea grezza sopra (vedi SIM_ROLLING_AVERAGE_WINDOW_SECONDS).
+      const rolling = rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
+      ctx.strokeStyle = "#3d6ea5";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const px = x((p.t0 + p.t1) / 2);
+        const py = y(rolling[i]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
   }
 
   ctx.fillStyle = "#8aa39a";
