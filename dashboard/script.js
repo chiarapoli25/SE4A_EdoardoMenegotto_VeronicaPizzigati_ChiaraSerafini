@@ -2148,7 +2148,7 @@ function restartSimulationSetup() {
     error: null,
     chartVariable: sim.chartVariable || "soil_moisture",
     chartView: sim.chartView || "single",
-    chartVisibility: sim.chartVisibility || {},
+    chartLayers: sim.chartLayers || {},
     showActuatorStrips: sim.showActuatorStrips,
   };
   renderModal();
@@ -2392,7 +2392,7 @@ function openGreenhouseSimulatorModal(preferredZoneId) {
       error: null,
       chartVariable: "soil_moisture",
       chartView: "single",
-      chartVisibility: {},
+      chartLayers: {},
       showActuatorStrips: true,
     };
   } else if (preferredZoneId) {
@@ -2616,20 +2616,22 @@ function renderSimulationResult(sim) {
           : simBandLegendItem(varMeta)}
         ${gridView ? "" : simAverageLegendItem(varMeta)}
       </div>
+      <div class="sim-chart-toggles">
+        <span class="hint">Linee da mostrare:</span>
+        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="value" ${sim.chartLayers?.value === false ? "" : "checked"}> Valore misurato</label>
+        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="band" ${sim.chartLayers?.band === false ? "" : "checked"}> Banda</label>
+        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="setpoint" ${sim.chartLayers?.setpoint === false ? "" : "checked"}> Setpoint</label>
+        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="average" ${sim.chartLayers?.average === false ? "" : "checked"}> Valore medio</label>
+        ${gridView ? `<label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatori</label>` : ""}
+      </div>
       ${gridView
-        ? `<div class="sim-chart-toggles">
-            <span class="hint">Grafici:</span>
-            ${VARIABLES.map((v) => `<label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-visibility-toggle" data-variable="${v.key}" ${sim.chartVisibility?.[v.key] === false ? "" : "checked"}> ${escapeHtml(v.label)}</label>`).join("")}
-            <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatori nei grafici</label>
-          </div>
-          <div class="sim-chart-grid">
-            ${visibleSimVariables(sim).map((v) => `
+        ? `<div class="sim-chart-grid">
+            ${VARIABLES.map((v) => `
               <div class="sim-chart-grid-cell">
                 <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""}</div>
                 <canvas id="simulation-chart-${v.key}" class="sim-chart-grid-canvas"></canvas>
                 ${sim.showActuatorStrips === false ? "" : `<canvas id="simulation-actuator-strip-${v.key}" class="sim-chart-grid-strip"></canvas>`}
               </div>`).join("")}
-            ${visibleSimVariables(sim).length ? "" : '<div class="empty-note">Nessun grafico selezionato — spunta almeno una variabile qui sopra.</div>'}
           </div>`
         : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>`}
     </div>
@@ -2695,14 +2697,6 @@ const VARIABLE_ACTUATOR_KEYS = {
   potassium: ["valve_potassium"],
 };
 
-/** Which VARIABLES entries are currently shown in grid view — everything
- * not explicitly toggled off (sim.chartVisibility[key] === false) stays
- * visible, so a freshly opened/restarted simulation shows all 6 without
- * needing to pre-fill the map. */
-function visibleSimVariables(sim) {
-  return VARIABLES.filter((v) => sim.chartVisibility?.[v.key] !== false);
-}
-
 function renderSimulationSummary(summary) {
   const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
     .map(([k, v]) => `<div class="kv-row"><span class="k">${escapeHtml(SIM_FERTILIZER_LABELS[k] || k)}</span><b class="v">${fmtNum(v, 0)} mL</b></div>`)
@@ -2756,13 +2750,15 @@ function fmtDurationHM(totalSeconds) {
 }
 
 /** Draws either the single selected-variable canvas, or (chartView ===
- * "grid", see the "Vedi tutti i grafici" toggle) every currently-visible
- * VARIABLES entry into its own small canvas at once (visibleSimVariables —
- * a chart hidden via the toggle panel just isn't in the DOM, nothing to
- * draw) — same underlying drawSimulationSeriesChart either way, just once
- * per variable in grid mode. Grid mode also draws each variable's own
- * companion actuator strip right underneath, unless sim.showActuatorStrips
- * is off — see drawActuatorStrip. */
+ * "grid", see the "Vedi tutti i grafici" toggle) every one of the 6
+ * VARIABLES into its own small canvas at once — same underlying
+ * drawSimulationSeriesChart either way, just once per variable in grid
+ * mode, and both pass sim.chartLayers through so the "Linee da mostrare"
+ * toggle panel (value/band/setpoint/average — which LINES to draw inside
+ * every chart, not which charts to show) applies identically everywhere.
+ * Grid mode also draws each variable's own companion actuator strip right
+ * underneath, unless sim.showActuatorStrips is off — see
+ * drawActuatorStrip. */
 function drawSimulationChart() {
   const sim = STATE.simulation;
   const preview = activeSimulationPreview(sim);
@@ -2770,9 +2766,9 @@ function drawSimulationChart() {
   if (sim.chartView === "grid") {
     const minT = preview.series[0]?.start_seconds ?? 0;
     const maxT = preview.series[preview.series.length - 1]?.end_seconds ?? 0;
-    visibleSimVariables(sim).forEach((v) => {
+    VARIABLES.forEach((v) => {
       const canvas = document.getElementById(`simulation-chart-${v.key}`);
-      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v);
+      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v, sim.chartLayers);
       if (sim.showActuatorStrips === false) return;
       const stripCanvas = document.getElementById(`simulation-actuator-strip-${v.key}`);
       if (stripCanvas) {
@@ -2789,7 +2785,7 @@ function drawSimulationChart() {
   const canvas = document.getElementById("simulation-chart");
   if (!canvas) return;
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
-  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta);
+  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta, sim.chartLayers);
 }
 
 function drawActuatorTimelineChart() {
@@ -2854,7 +2850,20 @@ function rollingAverage(points, windowSeconds) {
  * last phase), so the last phase's band is extended to the end of the
  * simulated span rather than leaving a gap.
  */
-function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
+function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
+  // Quattro livelli disegnabili indipendentemente, ciascuno spentabile da
+  // sim.chartLayers (vedi il pannello di spunte "Linee da mostrare" sopra
+  // la griglia/il grafico singolo — non "quali variabili mostrare", che
+  // era il fraintendimento della versione precedente): value = valore
+  // misurato (linea verde + la sua fascia min/max osservata per bucket),
+  // band = banda/minimo target ombreggiato, setpoint = riga tratteggiata,
+  // average = il valore comparabile col setpoint (media mobile 24h, o per
+  // la luce il DLI a gradini — vedi isLight sotto). undefined = mostrata,
+  // stessa convenzione "assente = true" usata altrove in questo file.
+  const showValue = layers?.value !== false;
+  const showBand = layers?.band !== false;
+  const showSetpoint = layers?.setpoint !== false;
+  const showAverage = layers?.average !== false;
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -2984,26 +2993,30 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     const bx0 = x(segStart);
     const bx1 = x(segEnd);
     if (bx1 <= bx0) return;
-    ctx.fillStyle = "rgba(63,122,96,0.10)";
-    if (isLight) {
-      // Per la luce non esiste un tetto da rispettare (nessun attuatore
-      // riduce il sole, vedi control_system.cpp — solo un minimo da
-      // colmare): l'ombreggiatura "zona conforme" copre quindi tutto lo
-      // spazio SOPRA il minimo fino in cima al grafico, non un intervallo
-      // chiuso come per le altre variabili — coerente con la stessa
-      // convenzione "ombreggiato = conforme" usata sotto.
-      ctx.fillRect(bx0, pad.t, bx1 - bx0, y(target.allowed_minimum) - pad.t);
-    } else {
-      ctx.fillRect(bx0, y(target.allowed_maximum), bx1 - bx0, y(target.allowed_minimum) - y(target.allowed_maximum));
+    if (showBand) {
+      ctx.fillStyle = "rgba(63,122,96,0.10)";
+      if (isLight) {
+        // Per la luce non esiste un tetto da rispettare (nessun attuatore
+        // riduce il sole, vedi control_system.cpp — solo un minimo da
+        // colmare): l'ombreggiatura "zona conforme" copre quindi tutto lo
+        // spazio SOPRA il minimo fino in cima al grafico, non un intervallo
+        // chiuso come per le altre variabili — coerente con la stessa
+        // convenzione "ombreggiato = conforme" usata sotto.
+        ctx.fillRect(bx0, pad.t, bx1 - bx0, y(target.allowed_minimum) - pad.t);
+      } else {
+        ctx.fillRect(bx0, y(target.allowed_maximum), bx1 - bx0, y(target.allowed_minimum) - y(target.allowed_maximum));
+      }
     }
-    ctx.strokeStyle = "#c9803f";
-    ctx.setLineDash([4, 4]);
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(bx0, y(target.setpoint));
-    ctx.lineTo(bx1, y(target.setpoint));
-    ctx.stroke();
-    ctx.setLineDash([]);
+    if (showSetpoint) {
+      ctx.strokeStyle = "#c9803f";
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(bx0, y(target.setpoint));
+      ctx.lineTo(bx1, y(target.setpoint));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
     if (i > 0) {
       ctx.strokeStyle = "#d8e2da";
       ctx.lineWidth = 1;
@@ -3016,7 +3029,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
 
   // Observed min/max spread per bucket (visible mainly on aggregated,
   // long-duration simulations where each point covers many raw steps).
-  if (points.length) {
+  if (points.length && showValue) {
     ctx.fillStyle = "rgba(31,122,81,0.14)";
     ctx.beginPath();
     points.forEach((p, i) => {
@@ -3041,7 +3054,9 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
       if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
     });
     ctx.stroke();
+  }
 
+  if (points.length && showAverage) {
     if (isLight) {
       // Linea a gradini (non una media mobile, vedi simAverageLegendItem):
       // un salto netto per giorno concluso, mai una diagonale — necessario
@@ -5765,15 +5780,16 @@ function initEventDelegation() {
       return;
     }
 
-    const chartVisibilityToggle = e.target.closest('[data-action="sim-chart-visibility-toggle"]');
-    if (chartVisibilityToggle && STATE.simulation) {
-      // Adds/removes a whole grid cell (canvas + strip), not just a redraw
-      // — needs the full renderModal(), same as the grid/single view swap
-      // above.
-      if (!STATE.simulation.chartVisibility) STATE.simulation.chartVisibility = {};
-      STATE.simulation.chartVisibility[chartVisibilityToggle.dataset.variable] =
-        chartVisibilityToggle.checked;
-      renderModal();
+    const chartLayerToggle = e.target.closest('[data-action="sim-chart-layer-toggle"]');
+    if (chartLayerToggle && STATE.simulation) {
+      // Which LINES to draw inside every chart (value/band/setpoint/
+      // average) — no canvas is added or removed, just what gets drawn
+      // into the ones already there, so a direct redraw is enough (same
+      // as the variable <select> above, no full renderModal() needed).
+      if (!STATE.simulation.chartLayers) STATE.simulation.chartLayers = {};
+      STATE.simulation.chartLayers[chartLayerToggle.dataset.layer] =
+        chartLayerToggle.checked;
+      drawSimulationChart();
       return;
     }
 
