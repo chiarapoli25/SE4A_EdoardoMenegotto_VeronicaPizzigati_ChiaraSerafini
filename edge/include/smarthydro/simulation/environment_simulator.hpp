@@ -115,14 +115,28 @@ struct EnvironmentConfig {
     double mean_cloud_transmission = 0.82;
     /**
      * Deviazione standard non negativa del regime nuvoloso estratto all'inizio
-     * di ogni giorno simulato.
+     * di ogni giorno simulato. Alzata da 0.16 a 0.30 (mean_cloud_transmission
+     * resta 0.82): con la vecchia variabilita' il sole superava quasi sempre
+     * il fabbisogno minimo delle specie d'ombra (es. light_profiles "low"/
+     * "indirect" del catalogo), lasciando le lampade di supplemento quasi
+     * sempre spente nelle simulazioni — corretto in se', ma rendeva invisibile
+     * proprio il comportamento "le lampade intervengono solo quando il sole
+     * non basta" che questo sistema di controllo e' pensato per mostrare.
+     * Con stddev piu' alta, giornate molto nuvolose (transmission vicina al
+     * pavimento kMinimumCloudTransmission=0.20 in environment_simulator.cpp)
+     * diventano abbastanza frequenti da far scattare il deficit DLI, mentre
+     * la media resta la stessa — piu' variabilita' giorno per giorno, non un
+     * clima piu' povero in media.
      */
-    double daily_cloud_transmission_stddev = 0.16;
+    double daily_cloud_transmission_stddev = 0.30;
     /**
      * Deviazione standard non negativa delle oscillazioni nuvolose correlate
-     * su scala oraria.
+     * su scala oraria. Alzata da 0.10 a 0.16 in accompagnamento alla stddev
+     * giornaliera sopra, per un po' di nuvolosita' variabile anche entro una
+     * stessa giornata (passaggi di nuvole), non solo un regime fisso da un
+     * giorno all'altro.
      */
-    double hourly_cloud_transmission_stddev = 0.10;
+    double hourly_cloud_transmission_stddev = 0.16;
     /**
      * Tempo di persistenza positivo delle variazioni orarie, in ore. Valori
      * maggiori producono nuvole che cambiano piu lentamente.
