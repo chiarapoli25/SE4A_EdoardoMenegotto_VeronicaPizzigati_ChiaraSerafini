@@ -117,6 +117,17 @@ def main() -> int:
         )
         return seed.returncode
 
+    print(
+        "[avvia_demo] Nota: questa demo rapida (seed_test_scenario.py) non "
+        "avvia un Edge Controller reale — telemetria, fase e stato di ogni "
+        "settore sono POST dirette che imitano cio' che un Edge riporterebbe. "
+        "Comandi che richiedono un Edge davvero collegato (es. avanzare la "
+        "coltivazione alla fase successiva) restano quindi in coda e vanno "
+        "in timeout dopo 20s. Per una verifica con l'Edge C++ reale usa "
+        "invece 'python demo/seed_dev_data.py', che guida passo passo "
+        "anche all'avvio dell'eseguibile Edge."
+    )
+
     print(f"[avvia_demo] Apro {DASHBOARD_URL}")
     webbrowser.open(DASHBOARD_URL)
 

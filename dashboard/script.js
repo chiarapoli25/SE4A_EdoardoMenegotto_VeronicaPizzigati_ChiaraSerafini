@@ -4907,7 +4907,7 @@ function pollForPhaseChange(zoneId, previousPhase) {
       clearInterval(iv);
       STATE.phasePending = false;
       renderModalIfSafe();
-      showToast("Nessuna conferma dall'Edge Controller entro il timeout.", "warn");
+      showToast("Nessuna conferma dall'Edge Controller entro il timeout (verifica che sia in esecuzione).", "warn");
     }
   }, COMMAND_POLL_MS);
   STATE.adhocIntervals.push(iv);
