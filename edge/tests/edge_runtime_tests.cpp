@@ -170,6 +170,12 @@ TEST(EdgeRuntimeTest, ExecutesConfirmedRecipeOnPhysicalSimulators) {
 
     smarthydro::EnvironmentConfig environment_config;
     environment_config.initial_nitrogen_mg_per_liter = 100.0;
+    // Deficit di umidita' deliberato rispetto alla banda 80-90 impostata
+    // sopra (altrimenti environment_for_recipe() la campionerebbe vicina al
+    // setpoint di fase, vedi environment_simulator.hpp, e il comando atteso
+    // sotto — 0.5 L, una pompa che reagisce a un vero deficit — non
+    // scatterebbe).
+    environment_config.initial_soil_moisture_percent = 20.0;
     smarthydro::EdgeRuntime runtime(
         std::move(recipe),
         {},
@@ -544,10 +550,17 @@ TEST(EdgeRuntimeTest, StopsAllActuatorsWhenPhysicalCommandFails) {
 
     smarthydro::ActuatorConfig actuator_config;
     actuator_config.maximum_irrigation_volume_liters = 0.1;
+    smarthydro::EnvironmentConfig environment_config;
+    // Deficit di umidita' deliberato rispetto alla banda 80-90 impostata
+    // sopra, cosi' il controllore richiede piu' acqua del tetto minuscolo
+    // dell'attuatore (0.1L) e fa scattare il fallimento atteso sotto — senza
+    // questo, environment_for_recipe() campionerebbe l'umidita' iniziale
+    // vicina al setpoint di fase e nessun comando eccederebbe mai 0.1L.
+    environment_config.initial_soil_moisture_percent = 20.0;
     smarthydro::EdgeRuntime runtime(
         std::move(recipe),
         actuator_config,
-        {},
+        environment_config,
         deterministic_sensors());
     runtime.confirm_all_configurations();
 

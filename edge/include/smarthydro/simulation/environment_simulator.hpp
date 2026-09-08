@@ -78,6 +78,23 @@ struct EnvironmentConfig {
     /** Umidita relativa esterna diurna, nell'intervallo [0, 100]%. */
     double day_relative_humidity_percent = 65.0;
     /**
+     * Umidita iniziale del terriccio, in percentuale [0, 100], oppure -1.0
+     * (sentinella, valore di default) per usare il fallback fisico per
+     * substrato di soil_dynamics() — "terriccio appena preparato/innaffiato",
+     * tipicamente ben sopra la banda target di qualunque fase (es. 82% per
+     * ORGANIC_RETENTIVE contro una banda tipica 40-60%). Quel fallback resta
+     * il comportamento di default per chi costruisce EnvironmentConfig a
+     * mano (es. i test); solo environment_for_recipe() (edge_runtime_core.cpp)
+     * valorizza esplicitamente questo campo, campionandolo vicino al
+     * setpoint della prima fase con la stessa logica gia' usata per
+     * initial_ph/initial_nitrogen/eccetera — altrimenti la massa iniziale di
+     * nutrienti (calcolata da concentrazione * volume d'acqua iniziale) si
+     * ritrova concentrata in sempre meno acqua mentre il terriccio si
+     * asciuga verso il proprio equilibrio nei primi giorni, producendo un
+     * picco di N/P/K che non ha nulla a che fare col dosaggio.
+     */
+    double initial_soil_moisture_percent = -1.0;
+    /**
      * pH iniziale dell'acqua nei pori del terriccio, nell'intervallo [0, 14].
      * Funge anche da riferimento per l'equilibrio lento corretto dal terriccio.
      */

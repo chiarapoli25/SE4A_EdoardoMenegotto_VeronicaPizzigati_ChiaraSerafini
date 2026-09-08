@@ -64,6 +64,14 @@ void validate_config(const EnvironmentConfig& config) {
     require_finite(config.day_temperature_c, "day_temperature_c");
     validate_percentage(config.night_relative_humidity_percent, "night RH");
     validate_percentage(config.day_relative_humidity_percent, "day RH");
+    require_finite(
+        config.initial_soil_moisture_percent, "initial_soil_moisture_percent");
+    if (config.initial_soil_moisture_percent != -1.0 &&
+        (config.initial_soil_moisture_percent < 0.0 ||
+         config.initial_soil_moisture_percent > 100.0)) {
+        throw std::invalid_argument(
+            "initial_soil_moisture_percent must be -1.0 (sentinel) or in [0, 100]");
+    }
     require_finite(config.initial_ph, "initial_ph");
     require_finite(config.initial_ec_ms_cm, "initial_ec_ms_cm");
     validate_non_negative(
@@ -221,7 +229,9 @@ EnvironmentSimulator::EnvironmentSimulator(EnvironmentConfig config, std::uint32
     state_.phosphorus_mg_per_liter = config_.initial_phosphorus_mg_per_liter;
     state_.potassium_mg_per_liter = config_.initial_potassium_mg_per_liter;
     state_.soil_moisture_percent =
-        soil_dynamics(config_.soil_type).initial_soil_moisture_percent;
+        config_.initial_soil_moisture_percent != -1.0
+            ? config_.initial_soil_moisture_percent
+            : soil_dynamics(config_.soil_type).initial_soil_moisture_percent;
     const double initial_root_water_liters =
         soil_dynamics(config_.soil_type).available_water_capacity_liters *
         state_.soil_moisture_percent / 100.0;

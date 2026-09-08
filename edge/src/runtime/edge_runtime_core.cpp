@@ -67,6 +67,21 @@ EnvironmentConfig environment_for_recipe(
             return std::uniform_real_distribution<double>(
                 range.minimum, range.maximum)(initial_state_rng);
         };
+        // Come pH/N/P/K sotto: senza questo, l'umidita' iniziale userebbe il
+        // fallback fisico per substrato di soil_dynamics() ("terriccio
+        // appena innaffiato", tipicamente ben SOPRA la banda della prima
+        // fase) invece di un punto vicino al setpoint — e mentre il
+        // terriccio si asciuga verso il proprio equilibrio nei primi
+        // giorni, la stessa massa iniziale di N/P/K si ritroverebbe
+        // concentrata in sempre meno acqua, producendo un picco di
+        // concentrazione che non ha nulla a che fare col dosaggio reale
+        // (osservato empiricamente: umidita' 82%->54% e azoto 57->77 mg/L
+        // in perfetta correlazione inversa, comando del dosatore quasi
+        // sempre zero durante la salita).
+        config.initial_soil_moisture_percent = near_setpoint(
+            ControlledVariable::SOIL_MOISTURE,
+            config.initial_soil_moisture_percent,
+            defaults.initial_soil_moisture_percent);
         config.initial_ph = near_setpoint(
             ControlledVariable::PH, config.initial_ph, defaults.initial_ph);
         config.initial_nitrogen_mg_per_liter = near_setpoint(

@@ -314,6 +314,13 @@ TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
     soil_target.safety_range = {0.0, 100.0};
     smarthydro::ActuatorConfig actuator_config;
     actuator_config.maximum_irrigation_volume_liters = 0.1;
+    smarthydro::EnvironmentConfig environment_config;
+    // Deficit di umidita' deliberato rispetto alla banda 80-90 sopra, cosi'
+    // il controllore richiede piu' acqua del tetto minuscolo dell'attuatore
+    // (0.1L) e fa scattare CommandFailed/EmergencyTriggered attesi sotto
+    // (altrimenti environment_for_recipe() campionerebbe l'umidita'
+    // iniziale vicina al setpoint e nessun comando eccederebbe mai 0.1L).
+    environment_config.initial_soil_moisture_percent = 20.0;
 
     auto event_bus = std::make_shared<smarthydro::EventBus>();
     auto recorder = std::make_shared<RecordingObserver>();
@@ -321,7 +328,7 @@ TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
     smarthydro::EdgeRuntime runtime(
         std::move(recipe),
         actuator_config,
-        {},
+        environment_config,
         deterministic_sensors());
     runtime.attach_event_bus(event_bus, "greenhouse-fault");
     runtime.confirm_all_configurations();

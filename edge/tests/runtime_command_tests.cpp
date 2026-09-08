@@ -431,8 +431,15 @@ TEST(RuntimeCommandProcessorTest, DegradedIsolatesSharedPumpOnly) {
     soil_target.allowed_range = {80.0, 90.0};
     soil_target.safety_range = {0.0, 100.0};
 
+    smarthydro::EnvironmentConfig environment_config;
+    // Deficit di umidita' deliberato rispetto alla banda 80-90 sopra, cosi'
+    // il pump-fault iniettato sotto ha davvero un comando da bloccare
+    // (altrimenti environment_for_recipe() campionerebbe l'umidita'
+    // iniziale vicina al setpoint e la pompa non riceverebbe mai un
+    // comando diverso da zero da "bloccare").
+    environment_config.initial_soil_moisture_percent = 20.0;
     smarthydro::EdgeRuntime runtime(
-        std::move(recipe), {}, {}, deterministic_sensors());
+        std::move(recipe), {}, environment_config, deterministic_sensors());
     runtime.confirm_all_configurations();
     smarthydro::RuntimeCommandProcessor processor(runtime);
 
@@ -586,10 +593,17 @@ TEST(RuntimeCommandProcessorTest, PersistentLowActuatorResponseEscalates) {
     state_policy.recoverable_faults_before_lockdown = 2;
     smarthydro::FaultDetectorConfig detector_config;
     detector_config.actuator_low_response_cycles = 1;
+    smarthydro::EnvironmentConfig environment_config;
+    // Deficit di umidita' deliberato rispetto alla banda 80-90 sopra, cosi'
+    // la pompa riceve davvero un comando la cui risposta lenta iniettata
+    // sotto puo' far scattare l'escalation attesa (altrimenti
+    // environment_for_recipe() campionerebbe l'umidita' iniziale vicina al
+    // setpoint e la pompa non avrebbe mai nulla da fare).
+    environment_config.initial_soil_moisture_percent = 20.0;
     smarthydro::EdgeRuntime runtime(
         std::move(recipe),
         {},
-        {},
+        environment_config,
         deterministic_sensors(),
         1U,
         2U,
