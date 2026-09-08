@@ -2509,15 +2509,18 @@ function varLegendLabel(v) {
 
 /** The single-chart-view legend's third item, describing the second
  * (blue) line drawn by drawSimulationSeriesChart — a 24h rolling average
- * for every variable except light, where that function instead draws the
- * DLI maturato so far today (see the comment there). Carries the id
- * sim-chart-legend-average so the variable dropdown's change handler can
- * patch it in place, the same targeted-DOM-update pattern already used
- * for sim-chart-legend-label — switching variable never re-renders the
- * whole modal, only redraws the canvas. */
+ * for every variable, converted to the DLI-equivalent rate for light (see
+ * lightRollingDli there): "se il ritmo delle ultime 24h continuasse per un
+ * giorno intero, il DLI sarebbe questo" — un valore stabile, senza gli
+ * azzeramenti notturni del dente di sega verde, sempre confrontabile col
+ * target. Carries the id sim-chart-legend-average so the variable
+ * dropdown's change handler can patch it in place, the same
+ * targeted-DOM-update pattern already used for sim-chart-legend-label —
+ * switching variable never re-renders the whole modal, only redraws the
+ * canvas. */
 function simAverageLegendItem(varMeta) {
   return varMeta.key === "light"
-    ? `<span class="legend-item" id="sim-chart-legend-average">DLI maturato dall'inizio del giorno solare corrente — già confrontabile col setpoint, si azzera ogni notte</span>`
+    ? `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>DLI medio delle ultime 24h (proiezione al ritmo attuale, confronta questo col setpoint — la linea verde è il DLI maturato da inizio giornata, si azzera ogni notte)</span>`
     : `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>Media mobile 24h (confronta questa col setpoint, non il valore istantaneo)</span>`;
 }
 
@@ -2813,8 +2816,21 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   // da zero ogni notte e si confronta direttamente con la riga tratteggiata
   // del target giornaliero.
   const isLight = varMeta.key === "light";
+  const kSecondsPerDay = 86400;
+  // Il dente di sega (sotto) resta indispensabile per seguire l'andamento
+  // reale entro la giornata, ma da solo non da' un singolo valore stabile
+  // da confrontare col target: per quello serve una seconda linea. Usiamo
+  // la stessa media mobile 24h già calcolata per le altre variabili, ma sul
+  // PPFD GREZZO (prima di trasformare points sotto) convertita nel suo
+  // equivalente DLI (mol/m²/giorno) — "se il ritmo dell'ultimo giorno
+  // continuasse per un giorno intero, il DLI sarebbe questo": una stima
+  // continua, senza gli azzeramenti notturni, sempre confrontabile col
+  // target punto per punto.
+  const lightRollingDli = isLight
+    ? rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS).map(
+        (v) => (v * kSecondsPerDay) / 1e6)
+    : null;
   if (isLight) {
-    const kSecondsPerDay = 86400;
     let dayIndex = null;
     let cumulative = 0;
     points = points.map((p) => {
@@ -2838,8 +2854,8 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
 
-  let minV = Math.min(...points.map((p) => p.min));
-  let maxV = Math.max(...points.map((p) => p.max));
+  let minV = Math.min(...points.map((p) => p.min), ...(lightRollingDli || []));
+  let maxV = Math.max(...points.map((p) => p.max), ...(lightRollingDli || []));
   // Solo le fasi che ricadono davvero nell'intervallo simulato [minT, maxT]
   // contano per la scala dell'asse — esattamente lo stesso controllo di
   // sovrapposizione usato sotto per decidere se disegnare la banda di una
@@ -2932,21 +2948,21 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
 
     // Media mobile 24h — quella da confrontare col setpoint tratteggiato,
     // non la linea grezza sopra (vedi SIM_ROLLING_AVERAGE_WINDOW_SECONDS).
-    // Non per la luce: lì la linea verde sopra È già il DLI maturato oggi
-    // (si azzera ogni notte), una seconda media mobile sopra un dente di
-    // sega che riparte da zero ogni giorno aggiungerebbe solo confusione.
-    if (!isLight) {
-      const rolling = rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
-      ctx.strokeStyle = "#3d6ea5";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      points.forEach((p, i) => {
-        const px = x((p.t0 + p.t1) / 2);
-        const py = y(rolling[i]);
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-    }
+    // Per la luce e' lightRollingDli, gia' calcolata sul PPFD grezzo prima
+    // di trasformare points nel dente di sega: qui serve solo disegnarla,
+    // allineata per indice agli stessi punti (t0/t1 non cambiano).
+    const rolling = isLight
+      ? lightRollingDli
+      : rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
+    ctx.strokeStyle = "#3d6ea5";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const px = x((p.t0 + p.t1) / 2);
+      const py = y(rolling[i]);
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
   }
 
   ctx.fillStyle = "#8aa39a";
