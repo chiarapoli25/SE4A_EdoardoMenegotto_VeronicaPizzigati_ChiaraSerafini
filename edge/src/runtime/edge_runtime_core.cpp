@@ -2,7 +2,9 @@
 
 #include <smarthydro/simulation/sensor_simulator.hpp>
 
+#include <algorithm>
 #include <array>
+#include <functional>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -52,7 +54,22 @@ EnvironmentConfig environment_for_recipe(
     if (!recipe.phases.empty()) {
         const EnvironmentConfig defaults{};
         const auto& targets = recipe.phases.front().targets;
-        std::mt19937 initial_state_rng(environment_seed ^ 0x494E4954U);  // "INIT"
+        // Mescola l'id ricetta nel seed, non solo environment_seed: senza
+        // questo, uniform_real_distribution restituisce alla PRIMA
+        // estrazione (sempre la stessa posizione nella sequenza, dato che
+        // environment_seed e' fisso per ogni simulazione batch a settore
+        // singolo — vedi simulation_main.cpp) sempre la STESSA frazione
+        // relativa (~0.4-0.5) del suo intervallo, qualunque esso sia:
+        // il valore campionato finiva quindi sempre vicino al CENTRO
+        // dell'intervallo — vicino al setpoint anche allargando la
+        // finestra di campionamento sotto (segnalato dall'utente: la
+        // partenza sembrava "troppo corretta" per non lasciar apprezzare
+        // il controllore all'opera). Ricette diverse ora estraggono numeri
+        // diversi; la stessa ricetta resta comunque riproducibile a parita'
+        // di seed/id, come tutto il resto di questa simulazione.
+        std::mt19937 initial_state_rng(
+            environment_seed ^ 0x494E4954U ^  // "INIT"
+            static_cast<std::uint32_t>(std::hash<std::string>{}(recipe.id)));
         auto near_setpoint = [&](ControlledVariable variable,
                                   double current,
                                   double default_value) {
@@ -67,21 +84,48 @@ EnvironmentConfig environment_for_recipe(
             return std::uniform_real_distribution<double>(
                 range.minimum, range.maximum)(initial_state_rng);
         };
-        // Come pH/N/P/K sotto: senza questo, l'umidita' iniziale userebbe il
-        // fallback fisico per substrato di soil_dynamics() ("terriccio
-        // appena innaffiato", tipicamente ben SOPRA la banda della prima
-        // fase) invece di un punto vicino al setpoint — e mentre il
-        // terriccio si asciuga verso il proprio equilibrio nei primi
-        // giorni, la stessa massa iniziale di N/P/K si ritroverebbe
+        // Come pH/N/P/K sotto, ma con una finestra di campionamento PIU'
+        // AMPIA della sola banda target: senza questo, l'umidita' iniziale
+        // userebbe il fallback fisico per substrato di soil_dynamics()
+        // ("terriccio appena innaffiato", tipicamente ben SOPRA la banda
+        // della prima fase) invece di un punto vicino al setpoint — e
+        // mentre il terriccio si asciuga verso il proprio equilibrio nei
+        // primi giorni, la stessa massa iniziale di N/P/K si ritroverebbe
         // concentrata in sempre meno acqua, producendo un picco di
         // concentrazione che non ha nulla a che fare col dosaggio reale
         // (osservato empiricamente: umidita' 82%->54% e azoto 57->77 mg/L
         // in perfetta correlazione inversa, comando del dosatore quasi
         // sempre zero durante la salita).
-        config.initial_soil_moisture_percent = near_setpoint(
-            ControlledVariable::SOIL_MOISTURE,
-            config.initial_soil_moisture_percent,
-            defaults.initial_soil_moisture_percent);
+        //
+        // A differenza di near_setpoint() sotto (che campiona ESATTAMENTE
+        // dentro [minimum, maximum], quindi parte SEMPRE gia' in banda),
+        // qui la finestra e' allargata di meta' della sua ampiezza per
+        // lato: il punto di partenza cade spesso ma non sempre fuori dalla
+        // banda — un vero scostamento dal setpoint da correggere, non un
+        // avvio gia' comodo che non lascia vedere il controllore all'opera
+        // (segnalato dall'utente: "la partenza in condizioni iniziali gia'
+        // cosi' tanto corrette... non e' realistico"). Ristretto alla sola
+        // umidita': e' la variabile per cui e' stato segnalato, e le altre
+        // quattro (pH/N/P/K) partono comunque vicine al loro setpoint
+        // proprio in funzione di dove parte l'umidita' (vedi il commento
+        // sopra sulla concentrazione), quindi ereditano gia' una loro
+        // variabilita' realistica senza bisogno di allargare anche la loro
+        // finestra.
+        if (config.initial_soil_moisture_percent ==
+            defaults.initial_soil_moisture_percent) {
+            const auto& range = recipe.phases.front().targets[
+                controlled_variable_index(ControlledVariable::SOIL_MOISTURE)]
+                    .allowed_range;
+            if (range.minimum < range.maximum) {
+                const double half_width = (range.maximum - range.minimum) / 2.0;
+                config.initial_soil_moisture_percent = std::clamp(
+                    std::uniform_real_distribution<double>(
+                        range.minimum - half_width,
+                        range.maximum + half_width)(initial_state_rng),
+                    0.0,
+                    100.0);
+            }
+        }
         config.initial_ph = near_setpoint(
             ControlledVariable::PH, config.initial_ph, defaults.initial_ph);
         config.initial_nitrogen_mg_per_liter = near_setpoint(
