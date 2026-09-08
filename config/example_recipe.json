@@ -21,9 +21,9 @@
         },
         {
           "variable": "light",
-          "setpoint": 450,
-          "allowed_range": {"minimum": 400, "maximum": 500},
-          "safety_range": {"minimum": 0, "maximum": 1200},
+          "setpoint": 29.2,
+          "allowed_range": {"minimum": 25.9, "maximum": 32.4},
+          "safety_range": {"minimum": 0, "maximum": 77.8},
           "suggested_phase_dose_milliliters": 0
         },
         {
@@ -73,9 +73,9 @@
         },
         {
           "variable": "light",
-          "setpoint": 550,
-          "allowed_range": {"minimum": 500, "maximum": 600},
-          "safety_range": {"minimum": 0, "maximum": 1200},
+          "setpoint": 23.8,
+          "allowed_range": {"minimum": 21.6, "maximum": 25.9},
+          "safety_range": {"minimum": 0, "maximum": 51.8},
           "suggested_phase_dose_milliliters": 0
         },
         {
@@ -152,7 +152,7 @@
         "inactive_command": 0,
         "bidirectional": false
       },
-      "unit": "umol/(m2 s)",
+      "unit": "mol/(m2 day)",
       "output_limits": {
         "maximum_water_volume_liters": 1,
         "maximum_pump_duration_seconds": 1800,

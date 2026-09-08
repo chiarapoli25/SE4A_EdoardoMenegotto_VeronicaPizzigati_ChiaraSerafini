@@ -147,8 +147,15 @@ std::vector<DetectedFault> FaultDetector::observe_readings(
          safety_ranges[controlled_variable_index(ControlledVariable::POTASSIUM)]},
         {ObservedValue::PH, &readings.ph,
          safety_ranges[controlled_variable_index(ControlledVariable::PH)]},
-        {ObservedValue::LIGHT, &readings.light_ppfd_umol_m2_s,
-         safety_ranges[controlled_variable_index(ControlledVariable::LIGHT)]},
+        // Niente model_range per la luce: il target di fase
+        // (target.safety_range) e' ormai un DLI giornaliero (mol/m^2/giorno,
+        // vedi RecipeControlSystem::execute()), non piu' un livello PPFD
+        // istantaneo — confrontarlo con la lettura del momento (sempre
+        // nell'ordine delle centinaia di umol/(m2 s)) farebbe scattare una
+        // falsa violazione di sicurezza ad ogni ciclo. Resta comunque il
+        // controllo sul range fisico del sensore (policy.physical_range,
+        // sotto), che non e' cambiato.
+        {ObservedValue::LIGHT, &readings.light_ppfd_umol_m2_s, std::nullopt},
     }};
 
     std::vector<DetectedFault> faults;

@@ -11,6 +11,9 @@ namespace {
 
 constexpr double kSecondsPerHour = 3600.0;
 constexpr double kSecondsPerDay = 24.0 * kSecondsPerHour;
+// umol -> mol: la lettura ambientale e' in umol/(m2 s), il target di fase
+// (dopo la migrazione a DLI) e' in mol/m^2 per l'intera giornata.
+constexpr double kMicromolesPerMole = 1.0e6;
 
 double hour_of_day(double elapsed_hours) {
     double hour = std::fmod(elapsed_hours, 24.0);
@@ -103,6 +106,7 @@ void EdgeRuntime::reset_histories_if_needed() {
         std::floor(elapsed_seconds / kSecondsPerDay));
     if (current_day != history_day_index_) {
         daily_dose_milliliters_.fill(0.0);
+        daily_light_mol_m2_ = 0.0;
         history_day_index_ = current_day;
     }
 
@@ -243,6 +247,16 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             result.actuator_command = actuators_->command();
             result.actuator_output = effective_actuator_output_;
             result.environment_state = environment_->state();
+            // DLI maturato oggi: integrale alla Eulero del PPFD combinato
+            // (naturale+lampada) appena osservato per la durata di questo
+            // ciclo — sempre aggiornato, anche nei percorsi di emergenza:
+            // il sole non si ferma per un guasto del sensore. Letto dal
+            // ramo luce del PROSSIMO ciclo (vedi
+            // request.daily_light_mol_m2_so_far sopra), azzerato al
+            // cambio di giorno in reset_histories_if_needed().
+            daily_light_mol_m2_ +=
+                result.environment_state.light_ppfd_umol_m2_s *
+                delta_time_seconds / kMicromolesPerMole;
             publish_telemetry(result);
             return result;
         }
@@ -252,6 +266,15 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         result.actuator_command = actuators_->command();
         result.actuator_output = actuators_->output();
         result.environment_state = environment_->state();
+        // DLI maturato oggi: integrale alla Eulero del PPFD combinato
+        // (naturale+lampada) appena osservato per la durata di questo
+        // ciclo — sempre aggiornato, anche nei percorsi di emergenza:
+        // il sole non si ferma per un guasto del sensore. Letto dal ramo
+        // luce del PROSSIMO ciclo (vedi request.daily_light_mol_m2_so_far
+        // sopra), azzerato al cambio di giorno in reset_histories_if_needed().
+        daily_light_mol_m2_ +=
+            result.environment_state.light_ppfd_umol_m2_s *
+            delta_time_seconds / kMicromolesPerMole;
         publish_telemetry(result);
         return result;
     }
@@ -271,6 +294,11 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         result.readings.light_ppfd_umol_m2_s;
     request.source_valid =
         result.readings.light_ppfd_umol_m2_s.has_value();
+    // Quanto DLI (mol/m^2) e' gia' maturato oggi, PRIMA del contributo di
+    // questo stesso ciclo (accumulato solo a fine step, sotto) — la stessa
+    // sequenza "leggo il cumulativo di ieri/finora, poi lo aggiorno dopo
+    // l'attuazione" gia' usata per daily_dose_milliliters_.
+    request.daily_light_mol_m2_so_far = daily_light_mol_m2_;
     result.decisions[controlled_variable_index(
         ControlledVariable::LIGHT)] =
         control_system_.execute(ControlledVariable::LIGHT, request);
@@ -381,6 +409,14 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     result.actuator_command = actuators_->command();
     result.actuator_output = effective_actuator_output_;
     result.environment_state = environment_->state();
+    // DLI maturato oggi: integrale alla Eulero del PPFD combinato
+    // (naturale+lampada) appena osservato per la durata di questo ciclo —
+    // letto dal ramo luce del PROSSIMO ciclo (vedi
+    // request.daily_light_mol_m2_so_far sopra), azzerato al cambio di
+    // giorno in reset_histories_if_needed().
+    daily_light_mol_m2_ +=
+        result.environment_state.light_ppfd_umol_m2_s *
+        delta_time_seconds / kMicromolesPerMole;
     if (command_executed) {
         publish_command_executed(result);
     }

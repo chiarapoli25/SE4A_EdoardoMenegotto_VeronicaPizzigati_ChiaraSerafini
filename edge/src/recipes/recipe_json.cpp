@@ -149,7 +149,8 @@ Json parameters_to_json(const ControllerParameters& parameters) {
         {"direction", direction_to_string(predictive.direction)},
         {"water_dilution_gain", predictive.water_dilution_gain},
         {"cumulative_dose_gain", predictive.cumulative_dose_gain},
-        {"substrate_gain", predictive.substrate_gain}};
+        {"substrate_gain", predictive.substrate_gain},
+        {"integral_gain", predictive.integral_gain}};
 }
 
 ControllerParameters parameters_from_json(
@@ -184,7 +185,8 @@ ControllerParameters parameters_from_json(
                 direction_from_string(json.at("direction").get<std::string>()),
                 json.value("water_dilution_gain", 0.0),
                 json.value("cumulative_dose_gain", 0.0),
-                json.value("substrate_gain", 0.0)};
+                json.value("substrate_gain", 0.0),
+                json.value("integral_gain", 0.0)};
     }
     throw std::invalid_argument("unknown strategy parameters");
 }

@@ -435,6 +435,14 @@ ControlDecision RecipeControlSystem::execute(
         decision.message = "dose history is invalid";
         return decision;
     }
+    if (variable == ControlledVariable::LIGHT &&
+        (!std::isfinite(request.daily_light_mol_m2_so_far) ||
+         request.daily_light_mol_m2_so_far < 0.0)) {
+        decision.safety_critical = true;
+        decision.fault_severity = ControlFaultSeverity::CRITICAL;
+        decision.message = "daily light history is invalid";
+        return decision;
+    }
 
     const auto phase = phase_index(request.elapsed_recipe_hours);
     if (controller_phase_index_ != phase) {
@@ -457,8 +465,17 @@ ControlDecision RecipeControlSystem::execute(
         decision.message = "required sensor or model value is missing";
         return decision;
     }
-    if (*value < target.safety_range.minimum ||
-        *value > target.safety_range.maximum) {
+    // Per la luce il target (setpoint/allowed_range/safety_range) e' ormai
+    // un DLI giornaliero (mol/m^2/giorno), non piu' un livello PPFD
+    // istantaneo: confrontarci una lettura del momento non avrebbe senso
+    // (safety_range.maximum sarebbe quasi sempre superato di notte... no,
+    // sotto — ma anche di giorno il PPFD istantaneo naturale puo'
+    // benissimo superare un numero che rappresenta un totale giornaliero).
+    // Il controllo di sicurezza sul valore istantaneo resta invariato per
+    // tutte le altre variabili.
+    if (variable != ControlledVariable::LIGHT &&
+        (*value < target.safety_range.minimum ||
+         *value > target.safety_range.maximum)) {
         decision.safety_critical = true;
         decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "process value is outside safety limits";
@@ -469,6 +486,26 @@ ControlDecision RecipeControlSystem::execute(
         !hour_in_photoperiod(request.hour_of_day, active.photoperiod)) {
         decision.status = ControlDecisionStatus::APPLIED;
         decision.message = "outside photoperiod";
+        return decision;
+    }
+
+    if (variable == ControlledVariable::LIGHT) {
+        // Deficit DLI (Daily Light Integral): la lampada supplisce solo se
+        // oggi, fra sole e lampada, non e' ancora arrivata alla pianta la
+        // quantita' di luce richiesta dalla fase (target.setpoint, in
+        // mol/m^2/giorno) — non reagisce alla lettura istantanea del
+        // momento. Bypassa deliberatamente ControllerFactory/IController:
+        // selected_strategy resta un campo valido e mostrato (coerenza col
+        // resto del sistema — vedi control_strategy/ lato backend), ma per
+        // la luce il comando e' sempre questo, qualunque Strategy sia
+        // selezionata. MVP binario (acceso finche' il deficit non si
+        // chiude, non una rampa proporzionale che si affievolisce mano a
+        // mano che si avvicina al target) — vedi il piano per l'eventuale
+        // raffinamento.
+        const double remaining = std::max(
+            0.0, target.setpoint - request.daily_light_mol_m2_so_far);
+        decision.command = remaining > 0.0 ? 100.0 : 0.0;
+        decision.status = ControlDecisionStatus::APPLIED;
         return decision;
     }
 

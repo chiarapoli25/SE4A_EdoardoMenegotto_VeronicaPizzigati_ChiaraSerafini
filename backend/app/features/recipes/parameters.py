@@ -78,7 +78,26 @@ _NUTRIENT_PREDICTIVE_GAINS: dict[ControlledVariable, tuple[float, float]] = {
 ## mono-direzionale come la pompa che non puo' mai "tirare giu'" il valore).
 ## Poche ore e' un compromesso ragionevole per cicli di irrigazione/dosaggio
 ## che si ripetono tipicamente piu' volte al giorno.
-_INTEGRAL_TIME_SECONDS = 4.0 * 3600.0
+_PID_INTEGRAL_TIME_SECONDS = 4.0 * 3600.0
+
+## @brief Tempo di integrazione del Predictive per N/P/K, in secondi —
+## deliberatamente molto piu' lungo di quello del PID sopra. Il dosaggio dei
+## fertilizzanti e' molto piu' lento/raro di quello dell'acqua: le valvole si
+## aprono solo mentre la pompa sta irrigando (poche occasioni al giorno), con
+## un intervallo minimo di un'ora fra dosi (vedi
+## catalog.py::nutrient_limits). Dopo un salto di setpoint fra due fasi (es.
+## raddoppio del target di azoto), la concentrazione impiega percio' giorni,
+## non ore, a raggiungere il nuovo target anche con un dosaggio corretto — un
+## errore persistente per giorni durante una salita legittima non e' un bias
+## da correggere, e' il transitorio normale. Con la stessa costante breve del
+## PID l'integrale si accumulava per l'intera salita (giorni di errore allo
+## stesso segno) prima ancora che la concentrazione si avvicinasse al nuovo
+## setpoint, producendo un sovraccumulo (windup) che spingeva la media
+## OLTRE il setpoint invece di farla convergere — verificato in simulazione:
+## con 4h la media di fase saliva, non scendeva, rispetto a nessuna azione
+## integrale. Su una scala di giorni l'integrale interviene solo sul bias
+## stazionario di fine fase, non sul transitorio della salita.
+_PREDICTIVE_INTEGRAL_TIME_SECONDS = 3.0 * 24.0 * 3600.0
 
 
 def _band_half_margin(setpoint: float, target: PhaseVariableTarget | None) -> float:
@@ -155,9 +174,8 @@ def default_parameters_for(
         proportional_gain = command_maximum / _band_half_margin(setpoint, target)
         # Guadagno integrale non piu' trascurabile: elimina nel tempo il
         # bias stazionario che un P-solo lascia contro un disturbo costante
-        # (l'evapotraspirazione per l'umidita', il consumo dei nutrienti per
-        # N/P/K) — vedi _INTEGRAL_TIME_SECONDS.
-        integral_gain = proportional_gain / _INTEGRAL_TIME_SECONDS
+        # (l'evapotraspirazione) — vedi _PID_INTEGRAL_TIME_SECONDS.
+        integral_gain = proportional_gain / _PID_INTEGRAL_TIME_SECONDS
         return PidConfig(
             setpoint=setpoint,
             proportional_gain=proportional_gain,
@@ -185,6 +203,11 @@ def default_parameters_for(
     water_dilution_gain, substrate_gain = (
         _NUTRIENT_PREDICTIVE_GAINS[variable] if dose_only else (0.0, 0.0)
     )
+    # Stessa idea del PID sopra, ma con una costante di tempo molto piu'
+    # lunga — vedi _PREDICTIVE_INTEGRAL_TIME_SECONDS: il dosaggio dei
+    # fertilizzanti e' troppo lento/raro perche' un errore di qualche ora
+    # significhi un bias reale da correggere.
+    integral_gain = response_gain / _PREDICTIVE_INTEGRAL_TIME_SECONDS
     return PredictiveConfig(
         setpoint=setpoint,
         prediction_horizon_steps=1.0,
@@ -204,4 +227,5 @@ def default_parameters_for(
         # incollato sopra il setpoint invece di convergerci.
         cumulative_dose_gain=0.0,
         substrate_gain=substrate_gain,
+        integral_gain=integral_gain,
     )

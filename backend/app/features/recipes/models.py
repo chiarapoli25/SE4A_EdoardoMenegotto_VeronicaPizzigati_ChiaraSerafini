@@ -43,7 +43,11 @@ class ControlledVariable(str, Enum):
 
     ## @brief Umidita percentuale del terriccio.
     SOIL_MOISTURE = "soil_moisture"
-    ## @brief Intensita luminosa PPFD.
+    ## @brief Luce ricevuta dalla pianta, come DLI (Daily Light Integral,
+    ## mol/m^2/giorno) — non piu' un livello PPFD istantaneo: il target di
+    ## fase e' un minimo giornaliero, la lampada supplisce solo il deficit
+    ## rispetto alla luce naturale gia' ricevuta oggi (vedi
+    ## RecipeControlSystem::execute() lato Edge).
     LIGHT = "light"
     ## @brief pH dell'acqua presente nei pori del terriccio.
     PH = "ph"
@@ -211,6 +215,11 @@ class PredictiveConfig(BaseModel):
     cumulative_dose_gain: float = 0.0
     ## @brief Guadagno associato alla risposta del substrato.
     substrate_gain: float = 0.0
+    ## @brief Guadagno dell'azione integrale sull'errore previsto, accumulato
+    ## nel tempo (edge/src/control/controllers.cpp::PredictiveController::
+    ## compute, stesso anti-windup del PID). Zero di default: nessuna azione
+    ## integrale finche' non richiesta esplicitamente.
+    integral_gain: float = 0.0
 
 
 ## @brief Unione dei parametri ammessi dalle tre strategie.

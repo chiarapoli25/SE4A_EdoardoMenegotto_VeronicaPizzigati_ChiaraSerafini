@@ -383,7 +383,9 @@ TEST(RecipeControlSystemTest, NutrientsIgnoreMeasuredValuesAndRequireValidHistor
         std::string::npos);
 }
 
-TEST(RecipeControlSystemTest, BlocksInvalidSourcesAndHonorsPhotoperiod) {
+TEST(RecipeControlSystemTest, LightSuppliesDailyDeficitOnlyWithinPhotoperiod) {
+    // VegetativeGrowth's light target (config/example_recipe.json) e' un
+    // DLI di 29.2 mol/m^2/giorno, fotoperiodo 6h-24h.
     smarthydro::RecipeControlSystem system(load_demo_recipe());
     confirm_all(system);
     smarthydro::ControlRequest request;
@@ -399,24 +401,51 @@ TEST(RecipeControlSystemTest, BlocksInvalidSourcesAndHonorsPhotoperiod) {
         unavailable.fault_severity,
         smarthydro::ControlFaultSeverity::RECOVERABLE);
 
+    // Il vecchio controllo di sicurezza sull'istantaneo non esiste piu' per
+    // la luce (il target e' ormai un totale giornaliero, non un livello
+    // istantaneo): una lettura "estrema" non blocca piu' nulla di per se'.
     request.source_valid = true;
-    request.controller_input.measured_value = 1300.0;
     request.hour_of_day = 10.0;
-    const auto unsafe =
-        system.execute(smarthydro::ControlledVariable::LIGHT, request);
-    EXPECT_EQ(unsafe.status, smarthydro::ControlDecisionStatus::BLOCKED);
-    EXPECT_EQ(
-        unsafe.fault_severity,
-        smarthydro::ControlFaultSeverity::CRITICAL);
-    EXPECT_NE(unsafe.message.find("safety"), std::string::npos);
 
-    request.controller_input.measured_value = 300.0;
+    // Deficit ancora aperto (sole+lampada oggi sotto il target di fase):
+    // la lampada scatta al massimo, dentro il fotoperiodo.
+    request.daily_light_mol_m2_so_far = 10.0;
+    const auto behind =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(behind.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(behind.command, 100.0);
+
+    // Target di giornata gia' raggiunto: la lampada non supplisce oltre.
+    request.daily_light_mol_m2_so_far = 29.2;
+    const auto met =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(met.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(met.command, 0.0);
+
+    // Fuori fotoperiodo la lampada resta spenta anche con un deficit
+    // aperto: il fotoperiodo resta la finestra "di giorno" in cui e'
+    // ammesso supplire, non una decisione che il deficit puo' scavalcare.
+    request.daily_light_mol_m2_so_far = 0.0;
     request.hour_of_day = 2.0;
     const auto night =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(night.status, smarthydro::ControlDecisionStatus::APPLIED);
     EXPECT_DOUBLE_EQ(night.command, 0.0);
     EXPECT_EQ(night.message, "outside photoperiod");
+
+    // Un cumulativo giornaliero corrotto (negativo/non finito) resta un
+    // guasto critico, come per la cronologia di dose dei fertilizzanti.
+    request.hour_of_day = 10.0;
+    request.daily_light_mol_m2_so_far = -1.0;
+    const auto invalid_history =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(
+        invalid_history.status,
+        smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_EQ(
+        invalid_history.fault_severity,
+        smarthydro::ControlFaultSeverity::CRITICAL);
+    EXPECT_NE(invalid_history.message.find("light"), std::string::npos);
 }
 
 TEST(RecipeControlSystemTest, RejectsNonIncreasingRecipeReplacementVersion) {

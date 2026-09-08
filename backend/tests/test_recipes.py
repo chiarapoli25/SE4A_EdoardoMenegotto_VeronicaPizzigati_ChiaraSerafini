@@ -181,7 +181,9 @@ def test_catalog_uses_category_specific_phase_sequences(
 ) -> None:
     recipe = client.get(f"/recipes/{recipe_id}").json()
 
-    assert recipe["version"] == 5
+    # Relativa alla versione di catalogo corrente (non un numero fisso), che
+    # cambia a ogni bump — vedi _CatalogProfiles.schema_version.
+    assert recipe["version"] == 6
     assert len(recipe["phases"]) == 4
     assert recipe["phases"][0]["name"] == "Avvio e attecchimento"
     assert recipe["phases"][1]["name"] == "Crescita vegetativa"

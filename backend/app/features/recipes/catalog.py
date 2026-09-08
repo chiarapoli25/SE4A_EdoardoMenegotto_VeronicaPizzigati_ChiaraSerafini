@@ -124,12 +124,18 @@ class _CatalogProfiles(_CatalogModel):
     # default N/P/K al posto di Predictive (poi tornato indietro); v4 aveva
     # ricalcolato response_gain dalla banda della ricetta ma senza azzerare
     # cumulative_dose_gain, causando una fuga in avanti della stima una volta
-    # raggiunto il setpoint (vedi _predictive_parameters); v5 e' l'unica
-    # accettata ora. Il limite superiore va spostato a ogni nuovo bump: e'
-    # quello che fa scattare seed_recipe_catalog() a rimigrare le ricette
-    # gia' importate a una versione precedente (vedi la colonna
+    # raggiunto il setpoint (vedi _predictive_parameters); v6 ha convertito i
+    # light_profiles da PPFD istantaneo (umol/(m2 s)) a DLI giornaliero
+    # (mol/m2/giorno — vedi ControlledVariable.LIGHT e
+    # RecipeControlSystem::execute() lato Edge): senza questo bump, i
+    # database gia' seminati con la v5 sarebbero rimasti con target PPFD
+    # nell'ordine delle centinaia, interpretati come mol/m2/giorno —
+    # irraggiungibili, lampada sempre accesa. v6 e' l'unica accettata ora.
+    # Il limite superiore va spostato a ogni nuovo bump: e' quello che fa
+    # scattare seed_recipe_catalog() a rimigrare le ricette gia' importate a
+    # una versione precedente (vedi la colonna
     # recipe_catalog_imports.catalog_version).
-    schema_version: int = Field(ge=2, le=5)
+    schema_version: int = Field(ge=2, le=6)
     phase_sequences: dict[str, list[_PhaseProfile]] = Field(min_length=1)
     light_profiles: dict[str, _LightProfile] = Field(min_length=1)
     water_profiles: dict[str, _WaterProfile] = Field(min_length=1)
@@ -446,7 +452,7 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
                 light_minimum,
                 light_maximum,
                 0.0,
-                1500.0,
+                80.0,
             ),
             _target(
                 "ph",
@@ -534,7 +540,7 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
                 "inactive_command": 0.0,
                 "bidirectional": False,
             },
-            "umol/(m2 s)",
+            "mol/(m2 day)",
             _safety_limits(),
         ),
         _controller(

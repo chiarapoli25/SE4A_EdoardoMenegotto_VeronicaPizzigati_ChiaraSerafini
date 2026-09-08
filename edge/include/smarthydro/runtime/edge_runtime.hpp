@@ -271,6 +271,14 @@ private:
     std::size_t history_phase_index_ = kControlledVariableCount;
     std::optional<std::size_t> reported_phase_index_;
     std::uint64_t history_day_index_ = 0;
+    // Integrale (alla Eulero) del PPFD combinato naturale+lampada ricevuto
+    // dall'inizio del giorno solare corrente, in mol/m^2 — il DLI (Daily
+    // Light Integral) maturato finora. Azzerato nello stesso punto in cui
+    // si azzera daily_dose_milliliters_ (reset_histories_if_needed(), sullo
+    // stesso confine di giorno current_day != history_day_index_): la luce
+    // non ha una fase di riferimento come le dosi, il target e' sempre
+    // "oggi", quindi non serve un secondo indice di reset dedicato.
+    double daily_light_mol_m2_ = 0.0;
     std::uint64_t next_sequence_number_ = 0;
     OperationalState operational_state_ = OperationalState::NOMINAL;
     std::size_t consecutive_recoverable_faults_ = 0;

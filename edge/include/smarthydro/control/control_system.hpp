@@ -208,6 +208,16 @@ struct ControlRequest {
     double daily_dose_milliliters = 0.0;
     /** Secondi trascorsi dall'ultimo dosaggio del prodotto. */
     double seconds_since_last_dose = 1.0e30;
+    /**
+     * DLI (Daily Light Integral) gia' maturato oggi, PPFD combinato
+     * naturale+lampada integrato dall'inizio del giorno solare corrente,
+     * in mol/m^2. Usato solo dal ramo LIGHT di RecipeControlSystem::
+     * execute() per calcolare il deficit residuo rispetto al target di
+     * fase — non fa parte di ControllerInput perche', come
+     * daily_dose_milliliters sopra, e' consumato dalla logica di execute()
+     * e non da una Strategy generica.
+     */
+    double daily_light_mol_m2_so_far = 0.0;
     /** Indica che la valvola pH+ e fisicamente attiva. */
     bool ph_up_active = false;
     /** Indica che la valvola pH- e fisicamente attiva. */

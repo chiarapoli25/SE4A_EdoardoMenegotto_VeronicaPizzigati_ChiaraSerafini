@@ -294,6 +294,16 @@ struct PredictiveConfig {
     double cumulative_dose_gain = 0.0;
     /** Correzione applicata al fattore del substrato. */
     double substrate_gain = 0.0;
+    /**
+     * Guadagno dell'azione integrale sull'errore previsto, accumulato nel
+     * tempo — vedi PredictiveController::compute() in controllers.cpp.
+     * Aggiunto in coda alla struct (non tra i campi esistenti) apposta per
+     * non spostare la posizione di quelli successivi: recipe_json.cpp,
+     * http_backend_client.cpp e alcuni test costruiscono PredictiveConfig
+     * per posizione, non per nome. Zero di default: nessuna azione
+     * integrale finche' non viene esplicitamente richiesta.
+     */
+    double integral_gain = 0.0;
 };
 
 /**
@@ -319,8 +329,12 @@ struct PredictiveControlResult {
  *
  * `misura + trend * prediction_horizon_steps`.
  *
- * Il comando e ottenuto sommando al comando neutro l'errore previsto
- * moltiplicato per response_gain, quindi saturando il risultato nei limiti.
+ * Il comando (solo in compute(), che ha un delta_time reale — vedi update()
+ * per la variante senza azione integrale) e ottenuto sommando al comando
+ * neutro l'errore previsto moltiplicato per response_gain, un'azione
+ * integrale sullo stesso errore (integral_gain, con lo stesso anti-windup
+ * del PID: l'accumulo si congela quando il comando e gia saturo e l'errore
+ * spinge nella stessa direzione), quindi saturando il risultato nei limiti.
  * Non e un MPC e non usa un modello fisico dell'ambiente.
  */
 class PredictiveController : public IController {
@@ -374,6 +388,10 @@ private:
     // prima di una finestra di dosaggio valida: vedi PredictiveController::
     // compute() in controllers.cpp per la spiegazione completa.
     std::optional<double> smoothed_measurement_;
+    // Usato solo da compute() (che riceve un delta_time reale da
+    // ControllerInput), non da update() — quest'ultimo non ha una durata e
+    // resta percio' senza azione integrale, come documentato sopra.
+    double integral_ = 0.0;
 };
 
 /** @brief Parametri associati alla strategia selezionata. */

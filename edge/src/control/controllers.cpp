@@ -216,13 +216,14 @@ PredictiveController::PredictiveController(PredictiveConfig config)
     require_finite(config_.water_dilution_gain, "water dilution gain");
     require_finite(config_.cumulative_dose_gain, "cumulative dose gain");
     require_finite(config_.substrate_gain, "substrate gain");
+    require_finite(config_.integral_gain, "integral gain");
     validate_command_limits(config_.command_limits);
     if (config_.prediction_horizon_steps < 0.0) {
         throw std::invalid_argument("prediction horizon must not be negative");
     }
     if (config_.response_gain < 0.0 || config_.water_dilution_gain < 0.0 ||
         config_.cumulative_dose_gain < 0.0 ||
-        config_.substrate_gain < 0.0) {
+        config_.substrate_gain < 0.0 || config_.integral_gain < 0.0) {
         throw std::invalid_argument("predictive gains must not be negative");
     }
     if (config_.neutral_command < config_.command_limits.minimum ||
@@ -263,13 +264,15 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
         !std::isfinite(input.water_delivered_liters) ||
         !std::isfinite(input.cumulative_dose_milliliters) ||
         !std::isfinite(input.phase_target_dose_milliliters) ||
-        !std::isfinite(input.substrate_factor)) {
+        !std::isfinite(input.substrate_factor) ||
+        !std::isfinite(input.delta_time_seconds)) {
         return {false, 0.0, std::nullopt, "predictive context must be finite"};
     }
     if (input.water_delivered_liters < 0.0 ||
         input.cumulative_dose_milliliters < 0.0 ||
         input.phase_target_dose_milliliters < 0.0 ||
-        input.substrate_factor <= 0.0) {
+        input.substrate_factor <= 0.0 ||
+        input.delta_time_seconds <= 0.0) {
         return {
             false,
             0.0,
@@ -307,11 +310,43 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
         0.0,
         input.phase_target_dose_milliliters -
             input.cumulative_dose_milliliters);
-    const double command = std::clamp(
+    const double error =
+        directed_error(config_.setpoint, predicted, config_.direction);
+    const double feedforward =
         config_.neutral_command +
-            config_.response_gain *
-                directed_error(config_.setpoint, predicted, config_.direction) +
-            config_.cumulative_dose_gain * remaining_phase_dose,
+        config_.cumulative_dose_gain * remaining_phase_dose;
+
+    // Azione integrale: senza, il comando dipende solo dall'errore previsto
+    // in questo istante, quindi un attuatore che puo' solo aggiungere mai
+    // togliere (la valvola di un fertilizzante, la pompa dell'acqua) ripete
+    // sempre lo stesso errore ciclo dopo ciclo se le dosi tendono a
+    // eccedere leggermente il fabbisogno — il valore medio si stabilizza
+    // sopra il setpoint invece di convergerci, e response_gain da solo non
+    // lo corregge mai perche' non ha memoria di quanto e per quanto tempo
+    // si e' sbagliato finora. L'anti-windup e lo stesso del PID
+    // (PidController::update sopra): l'accumulo si congela quando il
+    // comando e gia' saturo e l'errore lo spingerebbe oltre lo stesso
+    // limite, altrimenti l'integrale continuerebbe a crescere mentre il
+    // comando resta comunque bloccato, ritardando la discesa quando
+    // l'errore cambia segno.
+    const double candidate_integral =
+        integral_ + error * input.delta_time_seconds;
+    double unconstrained_command = feedforward +
+        config_.response_gain * error +
+        config_.integral_gain * candidate_integral;
+    const bool winds_up_high =
+        unconstrained_command > config_.command_limits.maximum && error > 0.0;
+    const bool winds_up_low =
+        unconstrained_command < config_.command_limits.minimum && error < 0.0;
+    if (!winds_up_high && !winds_up_low) {
+        integral_ = candidate_integral;
+    } else {
+        unconstrained_command = feedforward +
+            config_.response_gain * error +
+            config_.integral_gain * integral_;
+    }
+    const double command = std::clamp(
+        unconstrained_command,
         config_.command_limits.minimum,
         config_.command_limits.maximum);
     smoothed_measurement_ = filtered_value;
@@ -321,6 +356,7 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
 void PredictiveController::reset() noexcept {
     previous_measurement_.reset();
     smoothed_measurement_.reset();
+    integral_ = 0.0;
 }
 
 std::unique_ptr<IController> ControllerFactory::create(

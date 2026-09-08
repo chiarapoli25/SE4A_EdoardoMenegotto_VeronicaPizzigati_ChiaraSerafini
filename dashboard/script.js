@@ -58,9 +58,17 @@ const QUARANTINE_ZONE_ID = "r5-s1";
 // "_estimate_" — see edge/src/simulation_main.cpp). The two pipelines are
 // genuinely different data sources with different field names; simKey
 // exists only for the "Simula questa ricetta" chart (drawSimulationChart).
+// L'unità della luce ("mol/m²/giorno", DLI) descrive il TARGET di fase
+// (setpoint/allowed_range — vedi il form ricette), non il dato grezzo dietro
+// sensorField/simKey: quello resta un PPFD istantaneo (µmol/m²s), invariato
+// — solo il Simulatore lo converte in DLI maturato oggi prima di
+// disegnarlo (drawSimulationSeriesChart), proprio per poterlo confrontare
+// col target. Il grafico telemetria live del singolo settore mostra invece
+// ancora il PPFD istantaneo sotto questa stessa etichetta: un'imprecisione
+// nota, non affrontata in questo giro.
 const VARIABLES = [
   { key: "soil_moisture", label: "Umidità del terriccio", unit: "%", sensorField: "soil_moisture_percent", simKey: "soil_moisture_percent", decimals: 1 },
-  { key: "light", label: "Luce (PPFD)", unit: "µmol/m²s", sensorField: "light_ppfd_umol_m2_s", simKey: "light_ppfd_umol_m2_s", decimals: 0 },
+  { key: "light", label: "Luce (DLI)", unit: "mol/m²/giorno", sensorField: "light_ppfd_umol_m2_s", simKey: "light_ppfd_umol_m2_s", decimals: 1 },
   { key: "ph", label: "pH", unit: "pH", sensorField: "ph", simKey: "ph", decimals: 2 },
   { key: "nitrogen", label: "Azoto (N)", unit: "mg/L", sensorField: "nitrogen_estimate_mg_per_liter", simKey: "nitrogen_mg_per_liter", decimals: 1 },
   { key: "phosphorus", label: "Fosforo (P)", unit: "mg/L", sensorField: "phosphorus_estimate_mg_per_liter", simKey: "phosphorus_mg_per_liter", decimals: 1 },
@@ -191,7 +199,9 @@ const REQUIRED_DEFAULT_STRATEGY = {
 };
 const VARIABLE_UNIT = {
   soil_moisture: "% soil moisture",
-  light: "umol/(m2 s)",
+  // DLI (Daily Light Integral) minimo giornaliero, non più un livello PPFD
+  // istantaneo — vedi ControlledVariable.LIGHT lato backend.
+  light: "mol/(m2 day)",
   ph: "pH",
   nitrogen: "mg/L",
   phosphorus: "mg/L",
@@ -230,7 +240,7 @@ function defaultOutputLimits(variableKey) {
 
 const DEFAULT_PHASE_TARGETS = {
   soil_moisture: { setpoint: 60, allowed_range: { minimum: 50, maximum: 70 }, safety_range: { minimum: 25, maximum: 90 }, suggested_phase_dose_milliliters: 0 },
-  light: { setpoint: 450, allowed_range: { minimum: 400, maximum: 500 }, safety_range: { minimum: 0, maximum: 1200 }, suggested_phase_dose_milliliters: 0 },
+  light: { setpoint: 17.3, allowed_range: { minimum: 13.0, maximum: 21.6 }, safety_range: { minimum: 0, maximum: 80 }, suggested_phase_dose_milliliters: 0 },
   ph: { setpoint: 6.2, allowed_range: { minimum: 6.0, maximum: 6.4 }, safety_range: { minimum: 4.5, maximum: 8.0 }, suggested_phase_dose_milliliters: 6 },
   nitrogen: { setpoint: 150, allowed_range: { minimum: 130, maximum: 170 }, safety_range: { minimum: 50, maximum: 300 }, suggested_phase_dose_milliliters: 30 },
   phosphorus: { setpoint: 50, allowed_range: { minimum: 40, maximum: 60 }, safety_range: { minimum: 10, maximum: 120 }, suggested_phase_dose_milliliters: 12 },
@@ -832,6 +842,13 @@ const NUTRIENT_PREDICTIVE_GAINS = {
 // (es. l'evapotraspirazione, che un attuatore mono-direzionale come la
 // pompa non puo' mai contrastare "tirando giu'" il valore).
 const PID_INTEGRAL_TIME_SECONDS = 4 * 3600;
+// Tempo di integrazione del Predictive per N/P/K — molto piu' lungo di
+// quello del PID: vedi _PREDICTIVE_INTEGRAL_TIME_SECONDS in parameters.py.
+// Il dosaggio dei fertilizzanti e' troppo lento/raro (gated dall'irrigazione,
+// minimo un'ora fra dosi) perche' un errore di poche ore — normale durante
+// la salita verso un nuovo setpoint di fase — vada scambiato per un bias
+// stazionario da correggere subito.
+const PREDICTIVE_INTEGRAL_TIME_SECONDS = 3 * 24 * 3600;
 
 function buildStrategyParameters(strategy, target, variableKey) {
   const setpoint = target ? target.setpoint : 0;
@@ -883,6 +900,12 @@ function buildStrategyParameters(strategy, target, variableKey) {
     const [waterDilutionGain, substrateGain] = doseOnly
       ? NUTRIENT_PREDICTIVE_GAINS[variableKey]
       : [0.0, 0.0];
+    // Stessa idea del PID sopra, ma con una costante di tempo molto più
+    // lunga (PREDICTIVE_INTEGRAL_TIME_SECONDS): il dosaggio dei fertilizzanti
+    // è troppo lento/raro perché un errore di poche ore significhi un bias
+    // reale da correggere, invece del normale transitorio di una salita
+    // verso un nuovo setpoint di fase.
+    const integralGain = responseGain / PREDICTIVE_INTEGRAL_TIME_SECONDS;
     return {
       setpoint, prediction_horizon_steps: 1.0, response_gain: responseGain, neutral_command: 0.0,
       command_minimum: commandMin, command_maximum: commandMax,
@@ -896,6 +919,7 @@ function buildStrategyParameters(strategy, target, variableKey) {
       // setpoint invece di convergerci.
       cumulative_dose_gain: 0.0,
       substrate_gain: substrateGain,
+      integral_gain: integralGain,
     };
   }
 }
@@ -2483,6 +2507,20 @@ function varLegendLabel(v) {
   return `${v.label} · ${v.unit}`;
 }
 
+/** The single-chart-view legend's third item, describing the second
+ * (blue) line drawn by drawSimulationSeriesChart — a 24h rolling average
+ * for every variable except light, where that function instead draws the
+ * DLI maturato so far today (see the comment there). Carries the id
+ * sim-chart-legend-average so the variable dropdown's change handler can
+ * patch it in place, the same targeted-DOM-update pattern already used
+ * for sim-chart-legend-label — switching variable never re-renders the
+ * whole modal, only redraws the canvas. */
+function simAverageLegendItem(varMeta) {
+  return varMeta.key === "light"
+    ? `<span class="legend-item" id="sim-chart-legend-average">DLI maturato dall'inizio del giorno solare corrente — già confrontabile col setpoint, si azzera ogni notte</span>`
+    : `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>Media mobile 24h (confronta questa col setpoint, non il valore istantaneo)</span>`;
+}
+
 /** The SimulationPreview currently on screen. For "Simula un settore" (the
  * original mode) sim.result is a single preview object, straight from
  * GET /simulations/{id}/result. For "Simula l'intera serra" (STATE.
@@ -2542,7 +2580,7 @@ function renderSimulationResult(sim) {
           ? `<span class="legend-item"><span class="legend-line"></span>Valore simulato</span>`
           : `<span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>`}
         <span class="legend-item"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>
-        <span class="legend-item"><span class="legend-average"></span>Media mobile 24h (confronta questa col setpoint, non il valore istantaneo)</span>
+        ${gridView ? "" : simAverageLegendItem(varMeta)}
       </div>
       ${gridView
         ? `<div class="sim-chart-grid">
@@ -2754,7 +2792,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
   }
 
   const key = varMeta.simKey;
-  const points = series
+  let points = series
     .map((s) => ({ t0: s.start_seconds, t1: s.end_seconds, avg: s.average[key], min: s.minimum[key], max: s.maximum[key] }))
     .filter((p) => isFinite(p.avg) && p.avg !== null && p.avg !== undefined);
   if (!points.length) {
@@ -2763,6 +2801,34 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     ctx.fillText("Variabile non disponibile in questa simulazione", 16, height / 2);
     return;
   }
+
+  // Il target della luce è ormai un DLI giornaliero (mol/m²/giorno, vedi
+  // ControlledVariable.LIGHT), non più un livello PPFD istantaneo: il PPFD
+  // grezzo (centinaia di µmol/m²s, zero di notte) e il target (poche
+  // decine di mol/m²) non sono confrontabili sulla stessa scala — è
+  // esattamente il problema segnalato. Per la luce disegniamo quindi il
+  // DLI maturato dall'inizio del giorno solare corrente (stesso confine
+  // "giorno" — floor(secondi/86400) — usato lato Edge per azzerare
+  // l'accumulo reale), non il PPFD: una curva a dente di sega che riparte
+  // da zero ogni notte e si confronta direttamente con la riga tratteggiata
+  // del target giornaliero.
+  const isLight = varMeta.key === "light";
+  if (isLight) {
+    const kSecondsPerDay = 86400;
+    let dayIndex = null;
+    let cumulative = 0;
+    points = points.map((p) => {
+      const pointDay = Math.floor(p.t0 / kSecondsPerDay);
+      if (dayIndex === null || pointDay !== dayIndex) {
+        cumulative = 0;
+        dayIndex = pointDay;
+      }
+      cumulative += (p.avg * (p.t1 - p.t0)) / 1e6;
+      return { t0: p.t0, t1: p.t1, avg: cumulative, min: cumulative, max: cumulative };
+    });
+  }
+  const displayUnit = isLight ? "mol/m²" : varMeta.unit;
+  const displayDecimals = isLight ? 1 : varMeta.decimals;
 
   const pad = { l: 46, r: 14, t: 14, b: 20 };
   const w = width - pad.l - pad.r;
@@ -2866,22 +2932,27 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
 
     // Media mobile 24h — quella da confrontare col setpoint tratteggiato,
     // non la linea grezza sopra (vedi SIM_ROLLING_AVERAGE_WINDOW_SECONDS).
-    const rolling = rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
-    ctx.strokeStyle = "#3d6ea5";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    points.forEach((p, i) => {
-      const px = x((p.t0 + p.t1) / 2);
-      const py = y(rolling[i]);
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-    });
-    ctx.stroke();
+    // Non per la luce: lì la linea verde sopra È già il DLI maturato oggi
+    // (si azzera ogni notte), una seconda media mobile sopra un dente di
+    // sega che riparte da zero ogni giorno aggiungerebbe solo confusione.
+    if (!isLight) {
+      const rolling = rollingAverage(points, SIM_ROLLING_AVERAGE_WINDOW_SECONDS);
+      ctx.strokeStyle = "#3d6ea5";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const px = x((p.t0 + p.t1) / 2);
+        const py = y(rolling[i]);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
   }
 
   ctx.fillStyle = "#8aa39a";
   ctx.font = "10px 'IBM Plex Mono', monospace";
-  ctx.fillText(`${maxV.toFixed(varMeta.decimals)} ${varMeta.unit}`, 2, pad.t + 8);
-  ctx.fillText(`${minV.toFixed(varMeta.decimals)} ${varMeta.unit}`, 2, pad.t + h);
+  ctx.fillText(`${maxV.toFixed(displayDecimals)} ${displayUnit}`, 2, pad.t + 8);
+  ctx.fillText(`${minV.toFixed(displayDecimals)} ${displayUnit}`, 2, pad.t + h);
   ctx.fillText(fmtElapsedSeconds(minT), pad.l, height - 4);
   ctx.textAlign = "right";
   ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
@@ -5494,6 +5565,8 @@ function initEventDelegation() {
       drawSimulationChart();
       const legendLabel = document.getElementById("sim-chart-legend-label");
       if (legendLabel) legendLabel.textContent = `${varLegendLabel(VARIABLES_BY_KEY[e.target.value])} — valore simulato`;
+      const legendAverage = document.getElementById("sim-chart-legend-average");
+      if (legendAverage) legendAverage.outerHTML = simAverageLegendItem(VARIABLES_BY_KEY[e.target.value]);
       return;
     }
 

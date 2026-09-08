@@ -462,6 +462,7 @@ ControllerParameters controller_parameters_from_json(
         json.value("water_dilution_gain", 0.0),
         json.value("cumulative_dose_gain", 0.0),
         json.value("substrate_gain", 0.0),
+        json.value("integral_gain", 0.0),
     };
 }
 

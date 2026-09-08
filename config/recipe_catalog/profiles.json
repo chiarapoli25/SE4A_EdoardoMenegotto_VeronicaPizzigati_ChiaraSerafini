@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "phase_sequences": {
     "foliage": [
       {"key": "establishment", "name": "Avvio e attecchimento", "duration_hours": 336, "start_hour": 7, "photoperiod_offset_hours": -2, "light_factor": 0.75, "water_offset_percent": 4, "nitrogen_factor": 0.55, "phosphorus_factor": 0.65, "potassium_factor": 0.65, "dose_factor": 0.5, "ph_offset": 0.1},
@@ -27,14 +27,14 @@
     ]
   },
   "light_profiles": {
-    "low": {"setpoint": 140, "minimum": 80, "maximum": 220, "photoperiod_hours": 10},
-    "indirect": {"setpoint": 250, "minimum": 150, "maximum": 350, "photoperiod_hours": 12},
-    "bright_indirect": {"setpoint": 400, "minimum": 300, "maximum": 500, "photoperiod_hours": 12},
-    "strong_indirect": {"setpoint": 500, "minimum": 380, "maximum": 620, "photoperiod_hours": 12},
-    "adaptable": {"setpoint": 300, "minimum": 120, "maximum": 520, "photoperiod_hours": 12},
-    "partial_sun": {"setpoint": 600, "minimum": 450, "maximum": 750, "photoperiod_hours": 13},
-    "direct_sun": {"setpoint": 800, "minimum": 650, "maximum": 950, "photoperiod_hours": 14},
-    "full_sun": {"setpoint": 950, "minimum": 800, "maximum": 1100, "photoperiod_hours": 14}
+    "low": {"setpoint": 5.0, "minimum": 2.9, "maximum": 7.9, "photoperiod_hours": 10},
+    "indirect": {"setpoint": 10.8, "minimum": 6.5, "maximum": 15.1, "photoperiod_hours": 12},
+    "bright_indirect": {"setpoint": 17.3, "minimum": 13.0, "maximum": 21.6, "photoperiod_hours": 12},
+    "strong_indirect": {"setpoint": 21.6, "minimum": 16.4, "maximum": 26.8, "photoperiod_hours": 12},
+    "adaptable": {"setpoint": 13.0, "minimum": 5.2, "maximum": 22.5, "photoperiod_hours": 12},
+    "partial_sun": {"setpoint": 28.1, "minimum": 21.1, "maximum": 35.1, "photoperiod_hours": 13},
+    "direct_sun": {"setpoint": 40.3, "minimum": 32.8, "maximum": 47.9, "photoperiod_hours": 14},
+    "full_sun": {"setpoint": 47.9, "minimum": 40.3, "maximum": 55.4, "photoperiod_hours": 14}
   },
   "water_profiles": {
     "minimal": {"setpoint": 18, "minimum": 8, "maximum": 28, "maximum_water_liters": 0.15},
