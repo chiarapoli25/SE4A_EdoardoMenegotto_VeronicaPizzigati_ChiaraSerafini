@@ -92,7 +92,9 @@ TEST(IoAdapterTest, ComponentActuatorAdaptersShareTheSameDriver) {
             smarthydro::fertilizer_index(
                 smarthydro::FertilizerType::NITROGEN)],
         5.0);
-    EXPECT_DOUBLE_EQ(lighting.power_watts(), 100.0);
+    // 50% di maximum_lighting_power_watts (ActuatorConfig, default 600.0 —
+    // vedi actuator_simulator.hpp per il perche' non piu' 200.0).
+    EXPECT_DOUBLE_EQ(lighting.power_watts(), 300.0);
 }
 
 TEST(IoAdapterTest, EnvironmentAdapterImplementsTheAbstractContract) {

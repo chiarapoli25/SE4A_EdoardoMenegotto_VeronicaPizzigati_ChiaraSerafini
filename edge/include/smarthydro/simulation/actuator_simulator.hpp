@@ -58,8 +58,25 @@ struct ActuatorConfig {
      */
     FertilizerValues<double> fertilizer_flow_milliliters_per_hour{
         20.0, 20.0, 20.0, 20.0, 20.0};
-    /** Potenza elettrica massima delle lampade, in watt. */
-    double maximum_lighting_power_watts = 200.0;
+    /**
+     * Potenza elettrica massima delle lampade, in watt. Alzata da 200 a
+     * 600: con lamp_ppfd_umol_m2_s_per_watt=2.0 (EnvironmentConfig), 200W
+     * davano solo 400 umol/(m2 s) di picco lampada — a piena potenza per
+     * l'intero fotoperiodo piu' lungo (15h) fanno appena ~21.6 mol/m2/
+     * giorno, INSUFFICIENTI da soli a coprire il fabbisogno delle specie a
+     * luce alta del catalogo (es. pomodoro, fino a 58.17 mol/m2/giorno —
+     * vedi light_profiles "full_sun" in config/recipe_catalog/
+     * profiles.json): anche col controllo a ritmo che tiene la lampada
+     * accesa quasi sempre per quelle specie (osservato empiricamente), il
+     * totale giornaliero restava sempre sotto il MINIMO di banda, non
+     * solo sotto il setpoint — un tetto di capacita' dell'attuatore, non
+     * un problema di meteo o di logica di controllo. A 600W (1200
+     * umol/(m2 s) di picco) la lampada da sola in un fotoperiodo di 15h
+     * arriva a ~64.8 mol/m2/giorno, sopra il target piu' alto del
+     * catalogo con margine anche in assenza pressoche' totale di sole
+     * naturale.
+     */
+    double maximum_lighting_power_watts = 600.0;
 };
 
 /** @brief Richieste logiche prodotte manualmente o da un controllore. */
