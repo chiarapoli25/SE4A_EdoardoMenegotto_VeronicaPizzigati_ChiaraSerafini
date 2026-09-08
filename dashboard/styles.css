@@ -1187,19 +1187,18 @@ a:hover { color: var(--accent-dark); }
    its own chart canvas — much shorter than the chart itself, the height
    rule above is generic to any canvas in the cell so this needs the more
    specific selector to override it. */
-.sim-chart-grid-cell canvas.sim-chart-grid-strip { height: 20px; margin-top: 4px; }
+.sim-chart-grid-cell canvas.sim-chart-grid-strip { height: 24px; margin-top: 4px; }
+/* Same strip, single-chart view — sits right under .chart-canvas-wrap
+   instead of inside a grid cell, so it gets its own top-level class. */
+.sim-actuator-strip-single { width: 100%; height: 24px; display: block; margin-top: 6px; border-radius: 6px; overflow: hidden; }
 
-/* Checkbox row above the grid to choose which of the 6 charts show, plus
-   the shared actuator-strip toggle — same chart-legend row rhythm as the
-   legend directly below it. */
+/* Checkbox row above the chart(s): which LINES to draw inside every one
+   (value/band/setpoint/average — not which of the 6 to show, see
+   sim-chart-layer-toggle), plus the actuator-strip toggle — same
+   chart-legend row rhythm as the legend directly above it. */
 .sim-chart-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-bottom: 10px; font-size: 12px; color: var(--ink-soft); }
 .sim-chart-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .sim-chart-toggle input { margin: 0; }
-
-/* Actuator Gantt-style timeline under the Simulatore result chart — same
-   canvas-wrap treatment as .chart-canvas-wrap, just taller to fit 7
-   labeled rows (one per actuator) comfortably. */
-.sim-actuator-canvas-wrap { height: 224px; border-radius: 14px; background: #f9fbfa; position: relative; }
 
 .actuator-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-soft); }
 .actuator-row + .actuator-row { margin-top: 10px; }

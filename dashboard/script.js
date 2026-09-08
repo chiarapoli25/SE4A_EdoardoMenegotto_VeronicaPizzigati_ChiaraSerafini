@@ -2455,7 +2455,7 @@ function renderSimulatorModal() {
       ${body}
     </div>
   `;
-  if (sim.result) { drawSimulationChart(); drawActuatorTimelineChart(); }
+  if (sim.result) { drawSimulationChart(); }
 }
 
 function renderSimulationSetup(sim) {
@@ -2622,7 +2622,7 @@ function renderSimulationResult(sim) {
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="band" ${sim.chartLayers?.band === false ? "" : "checked"}> Banda</label>
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="setpoint" ${sim.chartLayers?.setpoint === false ? "" : "checked"}> Setpoint</label>
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="average" ${sim.chartLayers?.average === false ? "" : "checked"}> Valore medio</label>
-        ${gridView ? `<label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatori</label>` : ""}
+        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatori<span class="legend-glyph active" style="margin-left:5px">■</span> attivo <span class="legend-glyph inactive">□</span> spento</label>
       </div>
       ${gridView
         ? `<div class="sim-chart-grid">
@@ -2633,18 +2633,8 @@ function renderSimulationResult(sim) {
                 ${sim.showActuatorStrips === false ? "" : `<canvas id="simulation-actuator-strip-${v.key}" class="sim-chart-grid-strip"></canvas>`}
               </div>`).join("")}
           </div>`
-        : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>`}
-    </div>
-    <div class="zone-section" style="margin-top:16px">
-      <div class="chart-head">
-        <span class="title">Attuatori nel tempo</span>
-        <span class="hint">stesso asse temporale del grafico sopra</span>
-      </div>
-      <div class="chart-legend">
-        <span class="legend-item"><span class="legend-glyph active">■</span> attivo</span>
-        <span class="legend-item"><span class="legend-glyph inactive">□</span> spento</span>
-      </div>
-      <div class="sim-actuator-canvas-wrap"><canvas id="simulation-actuator-chart" style="width:100%;height:100%;display:block"></canvas></div>
+        : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
+          ${sim.showActuatorStrips === false ? "" : `<canvas id="simulation-actuator-strip-single" class="sim-actuator-strip-single"></canvas>`}`}
     </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="zone-section-title">Riepilogo</div>
@@ -2667,27 +2657,12 @@ const SIM_ACTUATOR_LABELS = {
   "valve_ph-down": "Elettrovalvola pH−",
 };
 
-/** Row order (top→bottom) for the actuator timeline chart, with a short
- * gutter label — the full SIM_ACTUATOR_LABELS names don't fit inside the
- * same 46px left margin the sensor chart above uses, and reusing that
- * exact margin is what keeps the two canvases' time axes pixel-aligned. */
-const SIM_ACTUATOR_ROWS = [
-  { key: "water_pump", short: "Acqua" },
-  { key: "lighting", short: "Luce" },
-  { key: "valve_nitrogen", short: "N" },
-  { key: "valve_phosphorus", short: "P" },
-  { key: "valve_potassium", short: "K" },
-  { key: "valve_ph-up", short: "pH+" },
-  { key: "valve_ph-down", short: "pH−" },
-];
-
 /** Which actuator_intervals[*].actuator key(s) belong to each VARIABLES
- * entry — used by the per-variable companion strip in grid view (see
- * drawActuatorStrip) to filter the same interval data SIM_ACTUATOR_ROWS
- * already uses for the combined Gantt below, scoped to just that one
- * variable. pH lists both valves: a mini strip has no room for a
- * per-direction breakdown (the full Gantt still has it), so "active" there
- * means "either ph-up or ph-down was open". */
+ * entry — used by that variable's own companion actuator strip (see
+ * drawActuatorStrip) to filter the full actuator_intervals list down to
+ * just the actuator(s) that affect this one variable. pH lists both
+ * valves: a single thin row has no room for a per-direction breakdown, so
+ * "active" there means "either ph-up or ph-down was open". */
 const VARIABLE_ACTUATOR_KEYS = {
   soil_moisture: ["water_pump"],
   light: ["lighting"],
@@ -2695,6 +2670,18 @@ const VARIABLE_ACTUATOR_KEYS = {
   nitrogen: ["valve_nitrogen"],
   phosphorus: ["valve_phosphorus"],
   potassium: ["valve_potassium"],
+};
+
+/** Short gutter label drawn on each variable's own actuator strip —
+ * distinct from VARIABLE_ACTUATOR_KEYS' backend interval keys, this is
+ * just the human-readable short name shown on the canvas itself. */
+const VARIABLE_ACTUATOR_LABEL = {
+  soil_moisture: "Acqua",
+  light: "Luce",
+  ph: "pH+/pH−",
+  nitrogen: "N",
+  phosphorus: "P",
+  potassium: "K",
 };
 
 function renderSimulationSummary(summary) {
@@ -2756,16 +2743,20 @@ function fmtDurationHM(totalSeconds) {
  * mode, and both pass sim.chartLayers through so the "Linee da mostrare"
  * toggle panel (value/band/setpoint/average — which LINES to draw inside
  * every chart, not which charts to show) applies identically everywhere.
- * Grid mode also draws each variable's own companion actuator strip right
- * underneath, unless sim.showActuatorStrips is off — see
- * drawActuatorStrip. */
+ * Every chart (grid AND the single selected one) also gets its own
+ * companion actuator strip right underneath, unless sim.showActuatorStrips
+ * is off — see drawActuatorStrip. There is no combined multi-row Gantt
+ * anymore (removed): each chart's own strip is now the only place
+ * actuator activity shows up, one row scoped to exactly that variable
+ * instead of a shared 7-row timeline you had to scroll to and cross-
+ * reference by eye. */
 function drawSimulationChart() {
   const sim = STATE.simulation;
   const preview = activeSimulationPreview(sim);
   if (!preview) return;
+  const minT = preview.series[0]?.start_seconds ?? 0;
+  const maxT = preview.series[preview.series.length - 1]?.end_seconds ?? 0;
   if (sim.chartView === "grid") {
-    const minT = preview.series[0]?.start_seconds ?? 0;
-    const maxT = preview.series[preview.series.length - 1]?.end_seconds ?? 0;
     VARIABLES.forEach((v) => {
       const canvas = document.getElementById(`simulation-chart-${v.key}`);
       if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v, sim.chartLayers);
@@ -2776,6 +2767,7 @@ function drawSimulationChart() {
           stripCanvas,
           preview.actuator_intervals || [],
           VARIABLE_ACTUATOR_KEYS[v.key] || [],
+          VARIABLE_ACTUATOR_LABEL[v.key] || "",
           minT,
           maxT);
       }
@@ -2783,17 +2775,21 @@ function drawSimulationChart() {
     return;
   }
   const canvas = document.getElementById("simulation-chart");
-  if (!canvas) return;
-  const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
-  drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta, sim.chartLayers);
-}
-
-function drawActuatorTimelineChart() {
-  const canvas = document.getElementById("simulation-actuator-chart");
-  const sim = STATE.simulation;
-  const preview = activeSimulationPreview(sim);
-  if (!canvas || !preview) return;
-  drawActuatorTimeline(canvas, preview.actuator_intervals || [], preview.series, preview.phases);
+  if (canvas) {
+    const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
+    drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta, sim.chartLayers);
+  }
+  if (sim.showActuatorStrips === false) return;
+  const stripCanvas = document.getElementById("simulation-actuator-strip-single");
+  if (stripCanvas) {
+    drawActuatorStrip(
+      stripCanvas,
+      preview.actuator_intervals || [],
+      VARIABLE_ACTUATOR_KEYS[sim.chartVariable] || [],
+      VARIABLE_ACTUATOR_LABEL[sim.chartVariable] || "",
+      minT,
+      maxT);
+  }
 }
 
 // Finestra della media mobile mostrata sopra la curva grezza — un giorno
@@ -3113,111 +3109,19 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
 }
 
 /**
- * Horizontal Gantt-style timeline, one row per actuator (7 total, see
- * SIM_ACTUATOR_ROWS) — deliberately reuses the exact same pad.l/pad.r and
- * the exact same minT/maxT source (series[0]/series[last]) as
- * drawSimulationSeriesChart above, so this canvas's plot area lines up
- * pixel-for-pixel under the sensor chart's and a valve opening visibly
- * lines up with whatever sensor reading triggered it.
- */
-function drawActuatorTimeline(canvas, intervals, series, phases) {
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(rect.width, 1);
-  const height = Math.max(rect.height, 1);
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-
-  if (!series.length) {
-    ctx.fillStyle = "#8aa39a";
-    ctx.font = "11px Poppins, sans-serif";
-    ctx.fillText("Nessun dato nella simulazione", 16, height / 2);
-    return;
-  }
-
-  const pad = { l: 46, r: 14, t: 6, b: 20 };
-  const w = width - pad.l - pad.r;
-  const h = height - pad.t - pad.b;
-  const rowH = h / SIM_ACTUATOR_ROWS.length;
-
-  const minT = series[0].start_seconds;
-  const maxT = series[series.length - 1].end_seconds;
-  const spanT = Math.max(maxT - minT, 1);
-
-  const x = (t) => pad.l + ((t - minT) / spanT) * w;
-
-  // Row separators + short gutter labels.
-  ctx.strokeStyle = "#eef3ef";
-  ctx.lineWidth = 1;
-  ctx.font = "10px 'IBM Plex Mono', monospace";
-  ctx.fillStyle = "#8aa39a";
-  ctx.textBaseline = "middle";
-  SIM_ACTUATOR_ROWS.forEach((row, i) => {
-    const ry = pad.t + rowH * i;
-    if (i > 0) {
-      ctx.beginPath();
-      ctx.moveTo(pad.l, ry);
-      ctx.lineTo(pad.l + w, ry);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "#8aa39a";
-    ctx.fillText(row.short, 2, ry + rowH / 2);
-  });
-  ctx.textBaseline = "alphabetic";
-
-  // Phase boundary lines — same source/positions as the sensor chart
-  // above, so a phase change lines up visually between the two stacked
-  // canvases.
-  ctx.strokeStyle = "#d8e2da";
-  ctx.lineWidth = 1;
-  phases.forEach((ph, i) => {
-    if (i === 0 || ph.start_seconds > maxT) return;
-    const bx = x(Math.min(Math.max(ph.start_seconds, minT), maxT));
-    ctx.beginPath();
-    ctx.moveTo(bx, pad.t);
-    ctx.lineTo(bx, pad.t + h);
-    ctx.stroke();
-  });
-
-  // One bar per active interval.
-  ctx.fillStyle = "rgba(31,122,81,0.55)";
-  const inset = rowH * 0.28;
-  SIM_ACTUATOR_ROWS.forEach((row, i) => {
-    const ry = pad.t + rowH * i;
-    const barH = Math.max(rowH - inset * 2, 2);
-    intervals
-      .filter((iv) => iv.actuator === row.key && iv.start_seconds <= maxT)
-      .forEach((iv) => {
-        const end = Math.min(iv.end_seconds, maxT);
-        if (end <= iv.start_seconds) return;
-        const bx0 = x(iv.start_seconds);
-        const bx1 = x(end);
-        if (bx1 <= bx0) return;
-        ctx.fillRect(bx0, ry + inset, Math.max(bx1 - bx0, 1.5), barH);
-      });
-  });
-
-  ctx.fillStyle = "#8aa39a";
-  ctx.font = "10px 'IBM Plex Mono', monospace";
-  ctx.fillText(fmtElapsedSeconds(minT), pad.l, height - 4);
-  ctx.textAlign = "right";
-  ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
-  ctx.textAlign = "left";
-}
-
-/**
- * Compact one-row companion strip drawn directly under a single grid-view
- * variable chart (see drawSimulationChart/sim.showActuatorStrips), showing
- * when THAT variable's own actuator(s) were active — same interval data as
- * the combined "Attuatori nel tempo" Gantt below (drawActuatorTimeline),
- * just scoped to one variable via actuatorKeys (VARIABLE_ACTUATOR_KEYS) so
- * you don't have to scroll down and cross-reference by eye which row
- * belongs to which chart. A pH strip lists two actuator keys (ph-up,
- * ph-down): "active" here means "either one", since a single thin row has
- * no room for a per-direction breakdown — the full Gantt still has it.
+ * Compact one-row companion strip drawn directly under a variable chart
+ * (grid cell or the single selected one — see drawSimulationChart/
+ * sim.showActuatorStrips), showing when THAT variable's own actuator(s)
+ * were active. There used to also be one combined 7-row Gantt shared by
+ * every chart (removed — redundant now that every chart has its own row,
+ * and it forced scrolling down + cross-referencing by eye which row
+ * belonged to which chart). actuatorKeys (VARIABLE_ACTUATOR_KEYS) selects
+ * which actuator_intervals[*].actuator values count as "active" for this
+ * one strip — a pH strip lists two keys (ph-up, ph-down): "active" means
+ * "either one", since a single thin row has no room for a per-direction
+ * breakdown. `label` (VARIABLE_ACTUATOR_LABEL) is the short gutter text
+ * identifying which actuator this row is, since there is no shared row
+ * gutter to label it once the way the old combined Gantt did.
  *
  * minT/maxT are passed in by the caller (not derived from `series` here)
  * so this stays pixel-aligned with the chart canvas immediately above it,
@@ -3225,7 +3129,7 @@ function drawActuatorTimeline(canvas, intervals, series, phases) {
  * pad.l/pad.r match drawSimulationSeriesChart's for the same reason, even
  * though this strip has no y-axis labels of its own to make room for.
  */
-function drawActuatorStrip(canvas, intervals, actuatorKeys, minT, maxT) {
+function drawActuatorStrip(canvas, intervals, actuatorKeys, label, minT, maxT) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(rect.width, 1);
   const height = Math.max(rect.height, 1);
@@ -3259,7 +3163,7 @@ function drawActuatorStrip(canvas, intervals, actuatorKeys, minT, maxT) {
   ctx.fillStyle = "#8aa39a";
   ctx.font = "9px 'IBM Plex Mono', monospace";
   ctx.textBaseline = "middle";
-  ctx.fillText("attuatore", 2, height / 2);
+  ctx.fillText(label, 2, height / 2);
   ctx.textBaseline = "alphabetic";
 }
 
