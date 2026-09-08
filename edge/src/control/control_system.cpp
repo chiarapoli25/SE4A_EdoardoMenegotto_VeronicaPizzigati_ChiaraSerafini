@@ -501,40 +501,79 @@ ControlDecision RecipeControlSystem::execute(
         // selezionata.
         const double remaining = std::max(
             0.0, target.setpoint - request.daily_light_mol_m2_so_far);
-        // A RITMO, non piu' un binario "accesa finche' il deficit non si
-        // chiude" scattato al primissimo minuto di fotoperiodo (MVP
-        // originale): quella versione accendeva la lampada a piena potenza
-        // dall'inizio del fotoperiodo ogni volta che il residuo era > 0,
-        // anche con l'intera giornata ancora davanti al sole per colmarlo
-        // da solo — osservato empiricamente che il deficit si chiudeva
-        // spesso entro meta' mattina, e tutto il sole ricevuto nelle ore
-        // RESTANTI del fotoperiodo si sommava comunque sopra (nessun
-        // attuatore riduce il sole in eccesso), portando il totale
-        // giornaliero anche al doppio del target.
+        // A RITMO E PROPORZIONALE, non piu' un binario "accesa finche' il
+        // deficit non si chiude" scattato al primissimo minuto di
+        // fotoperiodo (MVP originale): quella versione accendeva la
+        // lampada a piena potenza dall'inizio del fotoperiodo ogni volta
+        // che il residuo era > 0, anche con l'intera giornata ancora
+        // davanti al sole per colmarlo da solo — osservato empiricamente
+        // che il deficit si chiudeva spesso entro meta' mattina, e tutto
+        // il sole ricevuto nelle ore RESTANTI del fotoperiodo si sommava
+        // comunque sopra (nessun attuatore riduce il sole in eccesso),
+        // portando il totale giornaliero anche al doppio del target.
         //
-        // Qui la lampada resta spenta finche' l'accumulo e' in pari o
-        // avanti rispetto a un ritmo LINEARE verso il target lungo l'intero
-        // fotoperiodo — pace_threshold e' quanto resterebbe da colmare a
-        // questo punto della giornata se il DLI si accumulasse a ritmo
-        // costante dall'inizio alla fine del fotoperiodo. Si accende solo
-        // quando il residuo supera quella soglia, cioe' quando si e'
-        // davvero indietro (il sole non sta bastando). La soglia tende a
-        // zero verso la fine del fotoperiodo, quindi qualunque residuo
-        // positivo accende comunque la lampada in tempo — la garanzia del
-        // minimo entro fine giornata resta intatta, cambia solo QUANDO
-        // interviene.
+        // Un primo tentativo binario "a ritmo" (accesa al 100% solo se
+        // indietro rispetto a un ritmo lineare, spenta appena si e' di
+        // nuovo in pari) chiudeva il problema sopra ma ne apriva un altro:
+        // con una lampada abbastanza potente da coprire da sola le specie
+        // a fabbisogno alto (vedi maximum_lighting_power_watts), bastava
+        // una nuvola che si apriva per un attimo a far scattare/rientrare
+        // il 100% ad ogni ciclo di controllo — osservato empiricamente sul
+        // Pomodorino: 40 accensioni/spegnimenti in un solo giorno, non
+        // realistico per una lampada da centinaia di watt vera. Un secondo
+        // tentativo con isteresi (resta accesa una finestra minima prima
+        // di rivalutare) risolveva lo sfarfallio ma non c'era una singola
+        // finestra buona per tutte le specie: abbastanza lunga da non far
+        // scattare il pomodoro troppo spesso, chiudeva pero' l'INTERO
+        // target giornaliero del Pothos in 1-2 ore, lasciando poi tutte le
+        // ore restanti di fotoperiodo libere di sommare sole naturale
+        // sopra un target gia' chiuso (media giornaliera Pothos salita da
+        // 11.7 a 18.5 mol/m^2/giorno).
+        //
+        // Qui il comando e' PROPORZIONALE a quanto si e' indietro rispetto
+        // al ritmo lineare (pace_threshold sotto), non piu' un interruttore
+        // 100%/0%: per un piccolo scostamento la lampada spinge poco (una
+        // specie a fabbisogno basso come il Pothos, quasi sempre appena
+        // indietro, non riceve mai un getto pieno che chiude da solo tutta
+        // la giornata), per un grande scostamento spinge fino al massimo
+        // (una specie a fabbisogno alto come il pomodoro, quasi sempre
+        // molto indietro perche' il sole da solo non basta, ottiene
+        // comunque un comando vicino al 100% quasi tutto il giorno). Niente
+        // isteresi a stato: la modulazione continua del comando smorza da
+        // sola le oscillazioni cicliche senza bisogno di "ricordare" se
+        // era gia' accesa.
         const double elapsed_in_photoperiod = std::max(
             0.0, request.hour_of_day - active.photoperiod.start_hour);
         const double photoperiod_progress =
             active.photoperiod.duration_hours > 0.0
                 ? std::clamp(
-                      elapsed_in_photoperiod / active.photoperiod.duration_hours,
+                      elapsed_in_photoperiod /
+                          active.photoperiod.duration_hours,
                       0.0,
                       1.0)
                 : 1.0;
+        // pace_threshold e' quanto resterebbe da colmare a questo punto
+        // della giornata se il DLI si accumulasse a ritmo LINEARE costante
+        // dall'inizio alla fine del fotoperiodo. La soglia tende a zero
+        // verso la fine del fotoperiodo, quindi qualunque residuo ancora
+        // aperto a quel punto spinge comunque il comando verso il massimo
+        // in tempo — la garanzia del minimo entro fine giornata resta
+        // intatta, cambia solo QUANTO spinge e QUANDO.
         const double pace_threshold =
             target.setpoint * (1.0 - photoperiod_progress);
-        decision.command = remaining > pace_threshold ? 100.0 : 0.0;
+        const double behind_by = std::max(0.0, remaining - pace_threshold);
+        // Scala di riferimento: il comando raggiunge il 100% quando si e'
+        // indietro di piu' di un quarto del target dell'intera giornata
+        // rispetto al ritmo — una frazione del target invece di un valore
+        // assoluto fisso, cosi' la stessa logica si adatta da sola a
+        // target di ordini di grandezza diversi (8 vs 58 mol/m^2/giorno)
+        // senza bisogno di conoscere la potenza reale della lampada, che
+        // il controllo non conosce ne' deve conoscere (bypassa
+        // deliberatamente ControllerFactory/IController, vedi sopra).
+        const double scale = target.setpoint * 0.25;
+        decision.command = scale > 0.0
+            ? std::clamp(100.0 * behind_by / scale, 0.0, 100.0)
+            : (behind_by > 0.0 ? 100.0 : 0.0);
         decision.status = ControlDecisionStatus::APPLIED;
         return decision;
     }

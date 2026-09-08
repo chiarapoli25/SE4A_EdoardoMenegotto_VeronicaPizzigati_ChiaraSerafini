@@ -411,15 +411,32 @@ TEST(RecipeControlSystemTest, LightSuppliesDailyDeficitOnlyWithinPhotoperiod) {
     // lineare verso il target lungo l'intero fotoperiodo (6h-24h, quindi
     // a ore 10 e' trascorso il 22% del fotoperiodo: un ritmo costante
     // avrebbe gia' accumulato il 22% di 29.2 = 6.5 mol/m^2, contro i soli
-    // 3.0 raggiunti qui): la lampada scatta al massimo, dentro il
-    // fotoperiodo. Il controllo e' "a ritmo", non piu' un binario
-    // "accesa appena c'e' un deficit qualunque" — vedi il commento su
-    // pace_threshold in control_system.cpp.
+    // 3.0 raggiunti qui): la lampada spinge, dentro il fotoperiodo. Il
+    // controllo e' "a ritmo E proporzionale" (vedi il commento su
+    // pace_threshold/behind_by/scale in control_system.cpp) — un piccolo
+    // scostamento dal ritmo (qui behind_by = remaining - pace_threshold =
+    // 26.2 - 22.71... = 3.49) da' un comando PARZIALE (100 * behind_by /
+    // scale, scale = 29.2*0.25 = 7.3), non piu' un binario 100%/0%.
     request.daily_light_mol_m2_so_far = 3.0;
     const auto behind =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(behind.status, smarthydro::ControlDecisionStatus::APPLIED);
-    EXPECT_DOUBLE_EQ(behind.command, 100.0);
+    EXPECT_GT(behind.command, 0.0);
+    EXPECT_LT(behind.command, 100.0);
+    EXPECT_NEAR(behind.command, 47.79, 0.1);
+
+    // Molto piu' indietro (niente accumulato affatto, e siamo gia' a ore
+    // 20 su un fotoperiodo che finisce a ore 24): behind_by supera la
+    // scala di saturazione, il comando arriva al massimo — la garanzia
+    // del minimo entro fine fotoperiodo resta intatta anche col comando
+    // proporzionale.
+    request.daily_light_mol_m2_so_far = 0.0;
+    request.hour_of_day = 20.0;
+    const auto very_behind =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(very_behind.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(very_behind.command, 100.0);
+    request.hour_of_day = 10.0;
 
     // Target di giornata gia' raggiunto: la lampada non supplisce oltre.
     request.daily_light_mol_m2_so_far = 29.2;
