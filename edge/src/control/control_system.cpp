@@ -498,13 +498,43 @@ ControlDecision RecipeControlSystem::execute(
         // selected_strategy resta un campo valido e mostrato (coerenza col
         // resto del sistema — vedi control_strategy/ lato backend), ma per
         // la luce il comando e' sempre questo, qualunque Strategy sia
-        // selezionata. MVP binario (acceso finche' il deficit non si
-        // chiude, non una rampa proporzionale che si affievolisce mano a
-        // mano che si avvicina al target) — vedi il piano per l'eventuale
-        // raffinamento.
+        // selezionata.
         const double remaining = std::max(
             0.0, target.setpoint - request.daily_light_mol_m2_so_far);
-        decision.command = remaining > 0.0 ? 100.0 : 0.0;
+        // A RITMO, non piu' un binario "accesa finche' il deficit non si
+        // chiude" scattato al primissimo minuto di fotoperiodo (MVP
+        // originale): quella versione accendeva la lampada a piena potenza
+        // dall'inizio del fotoperiodo ogni volta che il residuo era > 0,
+        // anche con l'intera giornata ancora davanti al sole per colmarlo
+        // da solo — osservato empiricamente che il deficit si chiudeva
+        // spesso entro meta' mattina, e tutto il sole ricevuto nelle ore
+        // RESTANTI del fotoperiodo si sommava comunque sopra (nessun
+        // attuatore riduce il sole in eccesso), portando il totale
+        // giornaliero anche al doppio del target.
+        //
+        // Qui la lampada resta spenta finche' l'accumulo e' in pari o
+        // avanti rispetto a un ritmo LINEARE verso il target lungo l'intero
+        // fotoperiodo — pace_threshold e' quanto resterebbe da colmare a
+        // questo punto della giornata se il DLI si accumulasse a ritmo
+        // costante dall'inizio alla fine del fotoperiodo. Si accende solo
+        // quando il residuo supera quella soglia, cioe' quando si e'
+        // davvero indietro (il sole non sta bastando). La soglia tende a
+        // zero verso la fine del fotoperiodo, quindi qualunque residuo
+        // positivo accende comunque la lampada in tempo — la garanzia del
+        // minimo entro fine giornata resta intatta, cambia solo QUANDO
+        // interviene.
+        const double elapsed_in_photoperiod = std::max(
+            0.0, request.hour_of_day - active.photoperiod.start_hour);
+        const double photoperiod_progress =
+            active.photoperiod.duration_hours > 0.0
+                ? std::clamp(
+                      elapsed_in_photoperiod / active.photoperiod.duration_hours,
+                      0.0,
+                      1.0)
+                : 1.0;
+        const double pace_threshold =
+            target.setpoint * (1.0 - photoperiod_progress);
+        decision.command = remaining > pace_threshold ? 100.0 : 0.0;
         decision.status = ControlDecisionStatus::APPLIED;
         return decision;
     }

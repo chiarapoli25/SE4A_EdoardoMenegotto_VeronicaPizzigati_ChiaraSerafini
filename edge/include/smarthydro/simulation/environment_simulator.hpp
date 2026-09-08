@@ -122,9 +122,23 @@ struct EnvironmentConfig {
     double maximum_nutrient_concentration_mg_per_liter = 2000.0;
     /**
      * PPFD naturale non negativo al picco della semionda solare prima
-     * dell'attenuazione dovuta alle nuvole, in umol/(m2 s).
+     * dell'attenuazione dovuta alle nuvole, in umol/(m2 s). Abbassato da
+     * 700 a 400 (pieno sole esterno diretto) per rappresentare la luce
+     * filtrata/indiretta tipica di una serra al chiuso (coerente con
+     * "Reparto 1 — Piante Tropicali e da Fogliame", non un campo aperto):
+     * con 700 anche nella giornata piu' nuvolosa possibile (transmission
+     * al pavimento kMinimumCloudTransmission=0.20 in environment_simulator
+     * .cpp) il DLI restava quasi sempre sopra il minimo delle specie
+     * d'ombra (es. Pothos, target ~8 mol/m2/giorno), lasciando la
+     * dinamica "le lampade suppliscono un deficit" visibile solo per le
+     * specie a fabbisogno di luce molto alto (segnalato piu' volte
+     * dall'utente). A 400, anche una giornata di trasmissione MEDIA (non
+     * solo le piu' nuvolose) porta il totale vicino o sotto quel genere
+     * di target, quindi il totale oscilla visibilmente sopra e sotto il
+     * setpoint tratteggiato di giorno in giorno invece di restarci quasi
+     * sempre sopra.
      */
-    double natural_light_peak_ppfd = 700.0;
+    double natural_light_peak_ppfd = 400.0;
     /**
      * Trasmissione atmosferica media, tra 0 e 1. Costituisce il centro della
      * distribuzione del regime nuvoloso giornaliero.

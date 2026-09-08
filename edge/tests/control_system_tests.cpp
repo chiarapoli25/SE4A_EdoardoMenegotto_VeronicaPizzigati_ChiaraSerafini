@@ -407,9 +407,15 @@ TEST(RecipeControlSystemTest, LightSuppliesDailyDeficitOnlyWithinPhotoperiod) {
     request.source_valid = true;
     request.hour_of_day = 10.0;
 
-    // Deficit ancora aperto (sole+lampada oggi sotto il target di fase):
-    // la lampada scatta al massimo, dentro il fotoperiodo.
-    request.daily_light_mol_m2_so_far = 10.0;
+    // Deficit ancora aperto E si e' gia' indietro rispetto a un ritmo
+    // lineare verso il target lungo l'intero fotoperiodo (6h-24h, quindi
+    // a ore 10 e' trascorso il 22% del fotoperiodo: un ritmo costante
+    // avrebbe gia' accumulato il 22% di 29.2 = 6.5 mol/m^2, contro i soli
+    // 3.0 raggiunti qui): la lampada scatta al massimo, dentro il
+    // fotoperiodo. Il controllo e' "a ritmo", non piu' un binario
+    // "accesa appena c'e' un deficit qualunque" — vedi il commento su
+    // pace_threshold in control_system.cpp.
+    request.daily_light_mol_m2_so_far = 3.0;
     const auto behind =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(behind.status, smarthydro::ControlDecisionStatus::APPLIED);

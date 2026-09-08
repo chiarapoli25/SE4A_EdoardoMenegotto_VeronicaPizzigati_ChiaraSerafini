@@ -388,7 +388,15 @@ TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
     EXPECT_NE(
         first_failure.decisions[light_index].status,
         smarthydro::ControlDecisionStatus::BLOCKED);
-    EXPECT_GT(
+    // La lampada resta spenta a questo primo istante (t~0 nel fotoperiodo
+    // 0-24h impostato sopra): il controllo della luce ora e' "a ritmo"
+    // (vedi control_system.cpp, RecipeControlSystem::execute) invece del
+    // vecchio MVP binario "accesa appena c'e' un deficit" — con l'intero
+    // fotoperiodo ancora davanti, il residuo non supera ancora la soglia
+    // di ritmo, quindi non e' un segno di guasto: il canale luce resta
+    // comunque "non bloccato" (verificato sopra), solo non ha ancora
+    // motivo di accendersi.
+    EXPECT_DOUBLE_EQ(
         first_failure.actuator_output.lighting_power_watts,
         0.0);
     const auto* degraded_event = transition_event(
