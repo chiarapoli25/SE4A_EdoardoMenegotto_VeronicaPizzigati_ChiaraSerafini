@@ -2148,6 +2148,8 @@ function restartSimulationSetup() {
     error: null,
     chartVariable: sim.chartVariable || "soil_moisture",
     chartView: sim.chartView || "single",
+    chartVisibility: sim.chartVisibility || {},
+    showActuatorStrips: sim.showActuatorStrips,
   };
   renderModal();
 }
@@ -2390,6 +2392,8 @@ function openGreenhouseSimulatorModal(preferredZoneId) {
       error: null,
       chartVariable: "soil_moisture",
       chartView: "single",
+      chartVisibility: {},
+      showActuatorStrips: true,
     };
   } else if (preferredZoneId) {
     STATE.simulation.activeZoneId = preferredZoneId;
@@ -2530,6 +2534,25 @@ function simAverageLegendItem(varMeta) {
     : `<span class="legend-item" id="sim-chart-legend-average"><span class="legend-average"></span>Media mobile 24h (confronta questa col setpoint, non il valore istantaneo)</span>`;
 }
 
+/** The single-chart-view legend's second item, describing the shaded band
+ * drawn by drawSimulationSeriesChart. For every variable except light it's
+ * a closed range (fill from allowed_minimum to allowed_maximum) — "stay
+ * inside this". For light there is no ceiling to respect (no actuator
+ * reduces natural sunlight, only lamps that can supplement a deficit — see
+ * control_system.cpp's LIGHT branch, which only ever compares against
+ * target.setpoint, never allowed_maximum): the fill there instead covers
+ * everything ABOVE the minimum up to the top of the chart (see the isLight
+ * branch of the phases.forEach band-drawing loop), so the caption needs to
+ * say "minimum", not "band", or a value sitting comfortably above target
+ * reads as if it broke out of a range it was supposed to stay inside.
+ * Carries the id sim-chart-legend-band for the same targeted-DOM-patch
+ * pattern as sim-chart-legend-label/-average. */
+function simBandLegendItem(varMeta) {
+  return varMeta.key === "light"
+    ? `<span class="legend-item" id="sim-chart-legend-band"><span class="legend-band"></span>Minimo richiesto di fase (tratteggio = setpoint) — sopra va sempre bene, non esiste un tetto</span>`
+    : `<span class="legend-item" id="sim-chart-legend-band"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>`;
+}
+
 /** The SimulationPreview currently on screen. For "Simula un settore" (the
  * original mode) sim.result is a single preview object, straight from
  * GET /simulations/{id}/result. For "Simula l'intera serra" (STATE.
@@ -2588,16 +2611,25 @@ function renderSimulationResult(sim) {
         ${gridView
           ? `<span class="legend-item"><span class="legend-line"></span>Valore simulato</span>`
           : `<span class="legend-item"><span class="legend-line"></span><span id="sim-chart-legend-label">${escapeHtml(varLegendLabel(varMeta))} — valore simulato</span></span>`}
-        <span class="legend-item"><span class="legend-band"></span>Banda target di fase (tratteggio = setpoint)</span>
+        ${gridView
+          ? `<span class="legend-item"><span class="legend-band"></span>Banda/minimo target di fase (tratteggio = setpoint; per la Luce sopra va sempre bene, vedi il titolo del riquadro)</span>`
+          : simBandLegendItem(varMeta)}
         ${gridView ? "" : simAverageLegendItem(varMeta)}
       </div>
       ${gridView
-        ? `<div class="sim-chart-grid">
-            ${VARIABLES.map((v) => `
+        ? `<div class="sim-chart-toggles">
+            <span class="hint">Grafici:</span>
+            ${VARIABLES.map((v) => `<label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-visibility-toggle" data-variable="${v.key}" ${sim.chartVisibility?.[v.key] === false ? "" : "checked"}> ${escapeHtml(v.label)}</label>`).join("")}
+            <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatori nei grafici</label>
+          </div>
+          <div class="sim-chart-grid">
+            ${visibleSimVariables(sim).map((v) => `
               <div class="sim-chart-grid-cell">
-                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}</div>
-                <canvas id="simulation-chart-${v.key}" style="width:100%;height:100%;display:block"></canvas>
+                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""}</div>
+                <canvas id="simulation-chart-${v.key}" class="sim-chart-grid-canvas"></canvas>
+                ${sim.showActuatorStrips === false ? "" : `<canvas id="simulation-actuator-strip-${v.key}" class="sim-chart-grid-strip"></canvas>`}
               </div>`).join("")}
+            ${visibleSimVariables(sim).length ? "" : '<div class="empty-note">Nessun grafico selezionato — spunta almeno una variabile qui sopra.</div>'}
           </div>`
         : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>`}
     </div>
@@ -2646,6 +2678,30 @@ const SIM_ACTUATOR_ROWS = [
   { key: "valve_ph-up", short: "pH+" },
   { key: "valve_ph-down", short: "pH−" },
 ];
+
+/** Which actuator_intervals[*].actuator key(s) belong to each VARIABLES
+ * entry — used by the per-variable companion strip in grid view (see
+ * drawActuatorStrip) to filter the same interval data SIM_ACTUATOR_ROWS
+ * already uses for the combined Gantt below, scoped to just that one
+ * variable. pH lists both valves: a mini strip has no room for a
+ * per-direction breakdown (the full Gantt still has it), so "active" there
+ * means "either ph-up or ph-down was open". */
+const VARIABLE_ACTUATOR_KEYS = {
+  soil_moisture: ["water_pump"],
+  light: ["lighting"],
+  ph: ["valve_ph-up", "valve_ph-down"],
+  nitrogen: ["valve_nitrogen"],
+  phosphorus: ["valve_phosphorus"],
+  potassium: ["valve_potassium"],
+};
+
+/** Which VARIABLES entries are currently shown in grid view — everything
+ * not explicitly toggled off (sim.chartVisibility[key] === false) stays
+ * visible, so a freshly opened/restarted simulation shows all 6 without
+ * needing to pre-fill the map. */
+function visibleSimVariables(sim) {
+  return VARIABLES.filter((v) => sim.chartVisibility?.[v.key] !== false);
+}
 
 function renderSimulationSummary(summary) {
   const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
@@ -2700,17 +2756,33 @@ function fmtDurationHM(totalSeconds) {
 }
 
 /** Draws either the single selected-variable canvas, or (chartView ===
- * "grid", see the "Vedi tutti i grafici" toggle) every VARIABLES entry into
- * its own small canvas at once — same underlying drawSimulationSeriesChart
- * either way, just once per variable in grid mode. */
+ * "grid", see the "Vedi tutti i grafici" toggle) every currently-visible
+ * VARIABLES entry into its own small canvas at once (visibleSimVariables —
+ * a chart hidden via the toggle panel just isn't in the DOM, nothing to
+ * draw) — same underlying drawSimulationSeriesChart either way, just once
+ * per variable in grid mode. Grid mode also draws each variable's own
+ * companion actuator strip right underneath, unless sim.showActuatorStrips
+ * is off — see drawActuatorStrip. */
 function drawSimulationChart() {
   const sim = STATE.simulation;
   const preview = activeSimulationPreview(sim);
   if (!preview) return;
   if (sim.chartView === "grid") {
-    VARIABLES.forEach((v) => {
+    const minT = preview.series[0]?.start_seconds ?? 0;
+    const maxT = preview.series[preview.series.length - 1]?.end_seconds ?? 0;
+    visibleSimVariables(sim).forEach((v) => {
       const canvas = document.getElementById(`simulation-chart-${v.key}`);
       if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v);
+      if (sim.showActuatorStrips === false) return;
+      const stripCanvas = document.getElementById(`simulation-actuator-strip-${v.key}`);
+      if (stripCanvas) {
+        drawActuatorStrip(
+          stripCanvas,
+          preview.actuator_intervals || [],
+          VARIABLE_ACTUATOR_KEYS[v.key] || [],
+          minT,
+          maxT);
+      }
     });
     return;
   }
@@ -2913,7 +2985,17 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta) {
     const bx1 = x(segEnd);
     if (bx1 <= bx0) return;
     ctx.fillStyle = "rgba(63,122,96,0.10)";
-    ctx.fillRect(bx0, y(target.allowed_maximum), bx1 - bx0, y(target.allowed_minimum) - y(target.allowed_maximum));
+    if (isLight) {
+      // Per la luce non esiste un tetto da rispettare (nessun attuatore
+      // riduce il sole, vedi control_system.cpp — solo un minimo da
+      // colmare): l'ombreggiatura "zona conforme" copre quindi tutto lo
+      // spazio SOPRA il minimo fino in cima al grafico, non un intervallo
+      // chiuso come per le altre variabili — coerente con la stessa
+      // convenzione "ombreggiato = conforme" usata sotto.
+      ctx.fillRect(bx0, pad.t, bx1 - bx0, y(target.allowed_minimum) - pad.t);
+    } else {
+      ctx.fillRect(bx0, y(target.allowed_maximum), bx1 - bx0, y(target.allowed_minimum) - y(target.allowed_maximum));
+    }
     ctx.strokeStyle = "#c9803f";
     ctx.setLineDash([4, 4]);
     ctx.lineWidth = 1.2;
@@ -3109,6 +3191,61 @@ function drawActuatorTimeline(canvas, intervals, series, phases) {
   ctx.textAlign = "right";
   ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
   ctx.textAlign = "left";
+}
+
+/**
+ * Compact one-row companion strip drawn directly under a single grid-view
+ * variable chart (see drawSimulationChart/sim.showActuatorStrips), showing
+ * when THAT variable's own actuator(s) were active — same interval data as
+ * the combined "Attuatori nel tempo" Gantt below (drawActuatorTimeline),
+ * just scoped to one variable via actuatorKeys (VARIABLE_ACTUATOR_KEYS) so
+ * you don't have to scroll down and cross-reference by eye which row
+ * belongs to which chart. A pH strip lists two actuator keys (ph-up,
+ * ph-down): "active" here means "either one", since a single thin row has
+ * no room for a per-direction breakdown — the full Gantt still has it.
+ *
+ * minT/maxT are passed in by the caller (not derived from `series` here)
+ * so this stays pixel-aligned with the chart canvas immediately above it,
+ * which computes the exact same values from the exact same series — and
+ * pad.l/pad.r match drawSimulationSeriesChart's for the same reason, even
+ * though this strip has no y-axis labels of its own to make room for.
+ */
+function drawActuatorStrip(canvas, intervals, actuatorKeys, minT, maxT) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(rect.width, 1);
+  const height = Math.max(rect.height, 1);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { l: 46, r: 14 };
+  const w = width - pad.l - pad.r;
+  const spanT = Math.max(maxT - minT, 1);
+  const x = (t) => pad.l + ((t - minT) / spanT) * w;
+
+  ctx.fillStyle = "#eef3ef";
+  ctx.fillRect(pad.l, 0, w, height);
+
+  ctx.fillStyle = "rgba(31,122,81,0.55)";
+  intervals
+    .filter((iv) => actuatorKeys.includes(iv.actuator) && iv.start_seconds <= maxT)
+    .forEach((iv) => {
+      const end = Math.min(iv.end_seconds, maxT);
+      if (end <= iv.start_seconds) return;
+      const bx0 = x(iv.start_seconds);
+      const bx1 = x(end);
+      if (bx1 <= bx0) return;
+      ctx.fillRect(bx0, 1, Math.max(bx1 - bx0, 1.5), height - 2);
+    });
+
+  ctx.fillStyle = "#8aa39a";
+  ctx.font = "9px 'IBM Plex Mono', monospace";
+  ctx.textBaseline = "middle";
+  ctx.fillText("attuatore", 2, height / 2);
+  ctx.textBaseline = "alphabetic";
 }
 
 /* ------------------------------------------------------------------ */
@@ -5621,8 +5758,29 @@ function initEventDelegation() {
       drawSimulationChart();
       const legendLabel = document.getElementById("sim-chart-legend-label");
       if (legendLabel) legendLabel.textContent = `${varLegendLabel(VARIABLES_BY_KEY[e.target.value])} — valore simulato`;
+      const legendBand = document.getElementById("sim-chart-legend-band");
+      if (legendBand) legendBand.outerHTML = simBandLegendItem(VARIABLES_BY_KEY[e.target.value]);
       const legendAverage = document.getElementById("sim-chart-legend-average");
       if (legendAverage) legendAverage.outerHTML = simAverageLegendItem(VARIABLES_BY_KEY[e.target.value]);
+      return;
+    }
+
+    const chartVisibilityToggle = e.target.closest('[data-action="sim-chart-visibility-toggle"]');
+    if (chartVisibilityToggle && STATE.simulation) {
+      // Adds/removes a whole grid cell (canvas + strip), not just a redraw
+      // — needs the full renderModal(), same as the grid/single view swap
+      // above.
+      if (!STATE.simulation.chartVisibility) STATE.simulation.chartVisibility = {};
+      STATE.simulation.chartVisibility[chartVisibilityToggle.dataset.variable] =
+        chartVisibilityToggle.checked;
+      renderModal();
+      return;
+    }
+
+    const actuatorStripToggle = e.target.closest('[data-action="sim-actuator-strip-toggle"]');
+    if (actuatorStripToggle && STATE.simulation) {
+      STATE.simulation.showActuatorStrips = actuatorStripToggle.checked;
+      renderModal();
       return;
     }
 
