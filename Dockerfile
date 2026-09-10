@@ -49,6 +49,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ backend/
 COPY dashboard/ dashboard/
 COPY config/ config/
+COPY demo/ demo/
 COPY --from=edge-builder /src/edge/build/bin/edge_simulator edge/build/bin/edge_simulator
 
 ENV PYTHONUNBUFFERED=1
