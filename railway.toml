@@ -1,0 +1,14 @@
+# Config-as-code per Railway: rende esplicito il Dockerfile alla radice
+# (Railway lo rileverebbe comunque in automatico, vedi il commento in
+# cima al Dockerfile) e soprattutto fissa il comando di avvio a
+# start.sh, che fa partire insieme Edge reale + backend. La
+# configurazione qui vince sempre su eventuali valori impostati a mano
+# nella dashboard Railway (vedi https://docs.railway.com/config-as-code).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "./start.sh"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
