@@ -61,7 +61,7 @@ from backend.app.features.users.security import hash_password
 # credenziale (demo/seed_dev_data.py, demo/seed_test_scenario.py, la persona
 # che testa la dashboard) la importa da qui.
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "V3IkzqpWRh2Hfc"
+ADMIN_PASSWORD = "pass123"
 
 # L'account agronomo generico ("agronomo"/pass) e' stato rimosso: i quattro
 # account agronomo nominati (mario/elena/antonio/alice, vedi

@@ -116,17 +116,7 @@ from datetime import datetime, timedelta, timezone
 # sia da dentro demo/, senza bisogno di manipolare sys.path.
 from seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
 
-BASE_URL = "http://127.0.0.1:8000"
-
-# Usato SOLO da ensure_admin_token() quando il database e' completamente
-# vuoto (seed_users.py non e' mai stato eseguito): permette allo script di
-# funzionare anche su un database vergine, creando un amministratore
-# usa-e-getta con POST /auth/bootstrap-admin invece di richiedere
-# l'esecuzione preventiva di seed_users.py. Password in chiaro qui per lo
-# stesso motivo di ADMIN_PASSWORD in seed_users.py: solo uso locale di
-# sviluppo.
-SEED_BOOTSTRAP_USERNAME = "seed-admin"
-SEED_BOOTSTRAP_PASSWORD = "SeedBootstrap!2026"
+BASE_URL = "https://smarthydro-production-2a53.up.railway.app"
 
 # Quattro account agronomo "umani", creati (o saltati se già esistenti) via
 # POST /users con il token amministratore ottenuto da ensure_admin_token():
@@ -246,20 +236,13 @@ def request(method: str, path: str, payload: dict | None = None) -> tuple[int, d
         ) from error
 
 
+# Rimuovi queste due righe all'inizio del file:
+# SEED_BOOTSTRAP_USERNAME = "seed-admin"
+# SEED_BOOTSTRAP_PASSWORD = "SeedBootstrap!2026"
+
 def ensure_admin_token() -> None:
     """Ottiene un token amministratore per il resto dello script e lo salva
-    in _AUTH_TOKEN, cosi' request() lo allega da qui in poi.
-
-    @details Prova prima il login con l'account seminato da
-    demo/seed_users.py (il caso comune). Se le credenziali vengono
-    rifiutate (401), NON assume subito che sia un errore: interroga GET
-    /auth/setup-required per distinguere "il database e' ancora vuoto"
-    (seed_users.py non e' mai stato eseguito) da "esiste gia' un account ma
-    con credenziali diverse" (un vero problema da segnalare). Nel primo
-    caso ricorre a POST /auth/bootstrap-admin per crearsi al volo un
-    amministratore usa-e-getta (SEED_BOOTSTRAP_USERNAME) — sempre
-    attraverso un endpoint reale, mai scrivendo nel database a mano — cosi'
-    lo script funziona anche senza aver prima lanciato seed_users.py."""
+    in _AUTH_TOKEN, cosi' request() lo allega da qui in poi."""
     global _AUTH_TOKEN
     status, body = request(
         "POST", "/auth/login", {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
@@ -279,9 +262,6 @@ def ensure_admin_token() -> None:
             "accesso al database)."
         )
 
-    # 401: o le credenziali sono sbagliate, o il database e' ancora vuoto e
-    # seed_users.py non e' mai stato eseguito. Lo distinguiamo interrogando
-    # /auth/setup-required invece di indovinare dal messaggio del 401.
     setup_status, setup_body = request("GET", "/auth/setup-required")
     if setup_status != 200:
         raise SystemExit(
@@ -302,15 +282,17 @@ def ensure_admin_token() -> None:
 
     print(
         f"[seed] nessun account trovato ({ADMIN_USERNAME!r} non esiste "
-        "ancora): il database e' vuoto. Creo un amministratore di seed al "
-        "volo con POST /auth/bootstrap-admin invece di richiedere "
-        "l'esecuzione preventiva di `python demo/seed_users.py`."
+        "ancora): il database e' vuoto. Creo l'amministratore di default al "
+        "volo con POST /auth/bootstrap-admin."
     )
+    
+    # Payload modificato per usare le credenziali di seed_users.py
     bootstrap_status, bootstrap_body = request(
         "POST",
         "/auth/bootstrap-admin",
-        {"username": SEED_BOOTSTRAP_USERNAME, "password": SEED_BOOTSTRAP_PASSWORD},
+        {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
     )
+    
     if bootstrap_status != 201:
         raise SystemExit(
             "[seed] impossibile creare l'amministratore iniziale via POST "
@@ -320,7 +302,7 @@ def ensure_admin_token() -> None:
         )
     _AUTH_TOKEN = bootstrap_body["token"]
     print(
-        f"[seed] autenticato come {SEED_BOOTSTRAP_USERNAME!r} "
+        f"[seed] autenticato come {ADMIN_USERNAME!r} "
         f"(ruolo={bootstrap_body['user']['role']}, creato ora da questo script)"
     )
 
