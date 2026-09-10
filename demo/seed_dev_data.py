@@ -142,13 +142,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-# Sibling module, non il pacchetto backend: Python mette la cartella dello
-# script (demo/) in sys.path[0] quando lo lanci direttamente, quindi questo
-# import funziona sia da `python demo/seed_dev_data.py` (dalla radice) sia
-# da dentro demo/, senza bisogno di manipolare sys.path.
-from seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "pass123"
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "https://smarthydro-production-2a53.up.railway.app"
 EDGE_ID = "edge-serra-1"
 
 # Token di sessione ottenuto da login_as_admin() e allegato da request() a
