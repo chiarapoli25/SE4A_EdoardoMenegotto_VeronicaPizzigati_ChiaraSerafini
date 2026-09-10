@@ -116,7 +116,7 @@ from datetime import datetime, timedelta, timezone
 # sia da dentro demo/, senza bisogno di manipolare sys.path.
 from seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
 
-BASE_URL = "[https://smarthydro-production-2a53.up.railway.app](https://smarthydro-production-2a53.up.railway.app)"
+BASE_URL = "https://smarthydro-production-2a53.up.railway.app"
 
 # Quattro account agronomo "umani", creati (o saltati se già esistenti) via
 # POST /users con il token amministratore ottenuto da ensure_admin_token():
