@@ -141,6 +141,54 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+import sqlite3
+import sys
+from pathlib import Path
+
+# Aggiungi la radice del repository al path per poter importare il backend
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from backend.app.core.database import get_connection, init_db
+from backend.app.features.users.models import UserRole
+from backend.app.features.users.repository import UsernameConflict, create_user
+from backend.app.features.users.security import hash_password
+
+def _upsert_user(
+    connection: sqlite3.Connection,
+    username: str,
+    password: str,
+    role: UserRole,
+    display_name: str,
+) -> None:
+    """Crea l'utente o lo aggiorna se esiste già, scrivendo direttamente nel DB."""
+    try:
+        create_user(connection, username, password, role, display_name)
+        print(f"[seed] utente creato nel database: {username} (ruolo={role.value})")
+    except UsernameConflict:
+        connection.execute(
+            "UPDATE users SET password_hash = ?, role = ?, display_name = ? WHERE username = ?",
+            (hash_password(password), role.value, display_name, username),
+        )
+        connection.commit()
+        print(f"[seed] utente gia' esistente, password/ruolo aggiornati: {username}")
+
+
+def init_admin_in_db() -> None:
+    """Inizializza il DB e assicura l'esistenza dell'admin prima del login HTTP."""
+    connection = get_connection()
+    try:
+        init_db(connection)
+        _upsert_user(
+            connection, 
+            ADMIN_USERNAME, 
+            ADMIN_PASSWORD, 
+            UserRole.ADMIN, 
+            "Amministratore"
+        )
+    finally:
+        connection.close()
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "pass123"
@@ -1023,6 +1071,16 @@ def verify_state_sequence(
 
 
 def main() -> None:
+    run_suffix = str(int(time.time() * 1000))
+
+    #seedare il database:
+    print("[seed] --- Passo 0 (pre-setup): Creazione utente amministratore nel DB ---")
+    init_admin_in_db()
+
+    print("\n[seed] --- Passo 0: login come amministratore di seed ---")
+    login_as_admin()
+    
+
     run_suffix = str(int(time.time() * 1000))
 
     print("[seed] --- Passo 0: login come amministratore di seed ---")
