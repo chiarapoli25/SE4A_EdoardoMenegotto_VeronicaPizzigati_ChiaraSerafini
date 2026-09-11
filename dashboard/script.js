@@ -40,6 +40,32 @@ const COMMAND_TIMEOUT_MS = 20000;
 // operational poll above, see the dedicated section near
 // openGreenhouseSimulatorModal().
 const SIMULATION_POLL_MS = 1500;
+// Riproduzione live: un tick piu' frequente del batch qui sopra — e' il
+// polling che fa "muovere" la griglia dei settori e la barra di
+// avanzamento, quindi conta piu' la reattività percepita che il costo di
+// una GET in più al secondo (vedi tickLiveSimulationJob()).
+const LIVE_SIMULATION_POLL_MS = 1000;
+// Deve combaciare con DEFAULT_LIVE_SPEED_MULTIPLIER lato backend (models.py):
+// il valore di default finche' l'utente non sceglie un altro preset — vedi
+// LIVE_SPEED_PRESETS. La riproduzione live non chiede piu' una durata (gira
+// all'infinito finche' non si lascia la pagina Simulatore, vedi
+// discardActiveLiveSimulationIfAny): l'unica scelta rimasta e' la velocita'.
+const DEFAULT_LIVE_SPEED_MULTIPLIER = 600.0;
+// Preset di velocita' della riproduzione live: secondi simulati che passano
+// per ogni secondo reale. `short` e' l'etichetta compatta del pulsante
+// (pensata per stare in fila accanto al tasto "Tempo reale", vedi
+// renderLiveControlCluster) — il dettaglio in minuti/ore vive solo nel
+// `title` (tooltip), non piu' nell'etichetta stessa: prima "1× · 10 min/s"
+// affiancato agli altri preset era illeggibile in poco spazio. Il primo
+// preset (1×) e' la richiesta originale del tasto play — "un secondo reale
+// sono 10 minuti simulati" — gli altri sono suoi multipli, fino al tetto
+// lato backend (MAX_LIVE_SPEED_MULTIPLIER).
+const LIVE_SPEED_PRESETS = [
+  { multiplier: 600, short: "1×", title: "1× — 10 minuti simulati ogni secondo reale" },
+  { multiplier: 3000, short: "5×", title: "5× — 50 minuti simulati ogni secondo reale" },
+  { multiplier: 6000, short: "10×", title: "10× — 100 minuti simulati ogni secondo reale" },
+  { multiplier: 36000, short: "60×", title: "60× — 10 ore simulate ogni secondo reale" },
+];
 
 // Frontend-only rule (not enforced by the backend): "Fai uscire" stays
 // disabled until at least this much time has passed since quarantined_at.
@@ -344,6 +370,36 @@ const STATE = {
   // single global batch slot via discardActiveSimulationIfAny if a job is
   // still queued/running) resets it.
   simulation: null,
+
+  // Riproduzione live dell'intera serra (STATE.modalKind = "live-simulator",
+  // pop-up separato da "simulator" sopra — vedi openLiveSimulatorModal()).
+  // Stessa forma di STATE.simulation (job/result/activeZoneId/chartVariable/
+  // chartView/chartLayers/showActuatorStrips/error/starting) più
+  // speedMultiplier — NIENTE durationDays: la riproduzione live non chiede
+  // piu' una durata, l'orizzonte calcolato CRESCE DA SOLO man mano che la
+  // riproduzione lo raggiunge (raddoppia in background, vedi
+  // LiveSimulationJob.horizon_seconds e LiveSimulationManager._maybe_extend
+  // lato backend) finche' non si lascia la pagina Simulatore o si preme
+  // "⟲ Reset" — non si ferma mai da sola, e mai un salto visibile quando
+  // l'orizzonte si estende (stesso seed meteo, il prefisso gia' mostrato
+  // resta identico). A differenza del batch, qui job.status e
+  // job.elapsed_seconds sono AUTORITATIVI SUL BACKEND (vedi live_manager.py)
+  // — questo oggetto e' solo cio' che l'ultimo poll ha restituito, non uno
+  // stato di riproduzione calcolato lato client. result e' la STESSA forma
+  // del batch (un array di SimulationPreview, una per settore) così
+  // renderSimulationResult/drawSimulationChart/activeSimulationPreview
+  // funzionano identici per entrambi (vedi currentSim()) — solo che qui
+  // cresce ad ogni poll, senza mai azzerarsi, invece di comparire tutto
+  // insieme a fine calcolo. Tutti i
+  // controlli (play/pausa/velocità/reset) vivono nel banner della pagina
+  // Simulatore (#live-control-cluster), non in un pop-up: il pop-up
+  // (openLiveSimulatorModal) e' solo una vista di sola lettura sul
+  // grafico. null finche' non si preme "▶ Tempo reale" almeno una volta in
+  // questa visita alla pagina Simulatore; non viene azzerato chiudendo il
+  // pop-up (stessa eccezione di STATE.simulation), solo lasciando la
+  // pagina Simulatore o premendo Reset (vedi
+  // discardActiveLiveSimulationIfAny/resetLiveSimulation).
+  liveSimulation: null,
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
 
@@ -1226,7 +1282,7 @@ async function submitAddSector() {
  * below updates every matching element via querySelectorAll instead of
  * getElementById.
  */
-function renderSectorRowInner(z, { showConnection = true } = {}) {
+function renderSectorRowInner(z, { showConnection = true, liveStripZoneId = null } = {}) {
   const online = z.status === "online";
   const species = z.plant_species || (z.department_number === 5 ? "Zona mista (quarantena)" : "—");
   return `
@@ -1242,6 +1298,7 @@ function renderSectorRowInner(z, { showConnection = true } = {}) {
         <span class="pill op-${z.operational_state}">${z.operational_state}</span>
         <span class="tag-phase" data-plant-count="${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
       </div>
+      ${liveStripZoneId ? `<div class="sector-live-strip" data-live-strip="${escapeAttr(liveStripZoneId)}"></div>` : ""}
     </div>
   `;
 }
@@ -2244,6 +2301,264 @@ async function tickSimulationJob() {
   } catch (e) { /* transient network error, keep polling */ }
 }
 
+/* ------------------------------------------------------------------ */
+/* Riproduzione live — /simulations/live/...                           */
+/*                                                                       */
+/* Stessa fisica del batch qui sopra (stessa chiamata Edge, stesso       */
+/* "non tocca mai la telemetria, i comandi o le coltivazioni reali"),    */
+/* ma la posizione nel tempo simulato, se e' in play/pausa e a che       */
+/* velocita' sono stato AUTORITATIVO SUL BACKEND (vedi live_manager.py): */
+/* chiudere il pop-up o ricaricare la pagina non la resetta. Non chiede  */
+/* piu' una durata: l'orizzonte calcolato cresce da solo (raddoppia in   */
+/* background, vedi LiveSimulationJob.horizon_seconds) man mano che la   */
+/* riproduzione lo raggiunge, mai un salto visibile — non si ferma mai   */
+/* da sola finche' non si lascia la pagina Simulatore (switchView ->     */
+/* discardActiveLiveSimulationIfAny) o non si preme Reset. Play/pausa/   */
+/* velocita'/reset vivono nel banner della                               */
+/* pagina stessa (#live-control-cluster, vedi renderLiveControlCluster e */
+/* renderSimulatorView), non in un pop-up di setup separato: il pop-up   */
+/* (openLiveSimulatorModal) resta solo per guardare il grafico. Un solo  */
+/* run live alla volta, indipendente dallo slot del batch (i due sistemi */
+/* non condividono nulla) — vedi SimulationBusy lato /simulations/live.  */
+/* ------------------------------------------------------------------ */
+
+/** Oggetto STATE.liveSimulation "vuoto" — usato sia per inizializzarlo la
+ * prima volta che si preme play, sia da resetLiveSimulation() per
+ * ripartire da capo mantenendo le sole preferenze di visualizzazione del
+ * grafico (variabile/vista/layer) da una sessione all'altra. */
+function freshLiveSimulationState(previous) {
+  return {
+    speedMultiplier: (previous && previous.speedMultiplier) || DEFAULT_LIVE_SPEED_MULTIPLIER,
+    starting: false,
+    job: null,
+    result: null,
+    activeZoneId: null,
+    error: null,
+    chartVariable: (previous && previous.chartVariable) || "soil_moisture",
+    chartView: (previous && previous.chartView) || "single",
+    chartLayers: (previous && previous.chartLayers) || {},
+    showActuatorStrips: previous ? previous.showActuatorStrips : true,
+  };
+}
+
+/** Libera lo slot live globale se il run corrente e' ancora attivo
+ * (computing/playing/paused) quando si lascia la pagina Simulatore
+ * (switchView) — fire-and-forget, stesso schema di
+ * discardActiveSimulationIfAny() per il batch. A differenza del batch pero'
+ * un run live resta "attivo" indefinitamente (non finisce mai da solo, vedi
+ * il commento in cima a questa sezione): SENZA questo, un run live
+ * continuerebbe a girare sul server anche dopo aver lasciato la pagina. */
+function discardActiveLiveSimulationIfAny() {
+  const sim = STATE.liveSimulation;
+  clearPoll("live-simulation-job");
+  if (!sim || !sim.job) return;
+  if (["computing", "playing", "paused"].includes(sim.job.status)) {
+    apiDelete(`/simulations/live/${encodeURIComponent(sim.job.id)}`).catch(() => {});
+  }
+}
+
+/** Tasto "⟲ Reset" del cluster live: abbandona il run corrente (se ne
+ * esiste uno, in qualunque stato) e ne avvia immediatamente uno nuovo,
+ * stessa velocita' di prima — nessuna schermata di conferma, e' un
+ * ambiente di sola anteprima senza dati reali coinvolti. */
+async function resetLiveSimulation() {
+  const sim = STATE.liveSimulation;
+  clearPoll("live-simulation-job");
+  if (sim && sim.job) {
+    try {
+      await apiDelete(`/simulations/live/${encodeURIComponent(sim.job.id)}`);
+    } catch (e) { /* best effort — startLiveSimulation ripartira' comunque */ }
+  }
+  if (STATE.liveSimulation === sim) {
+    STATE.liveSimulation = freshLiveSimulationState(sim);
+  }
+  startLiveSimulation();
+}
+
+/** Avvia una riproduzione live — chiamato sia dal primo click su
+ * "▶ Tempo reale" (STATE.liveSimulation ancora null) sia da
+ * resetLiveSimulation(). Non e' piu' legato al pop-up (STATE.modalKind):
+ * il cluster sul banner della pagina Simulatore lo controlla anche a
+ * pop-up chiuso, vedi renderLiveControlCluster. */
+async function startLiveSimulation() {
+  if (!STATE.liveSimulation) STATE.liveSimulation = freshLiveSimulationState(null);
+  const sim = STATE.liveSimulation;
+  if (sim.starting || (sim.job && ["computing", "playing", "paused"].includes(sim.job.status))) return;
+  sim.starting = true;
+  sim.error = null;
+  renderLiveControlCluster();
+  if (STATE.modalKind === "live-simulator") renderModal();
+  try {
+    const job = await apiPost("/simulations/live", { speed_multiplier: sim.speedMultiplier });
+    if (STATE.liveSimulation !== sim) return; // resetLiveSimulation() lo ha gia' sostituito nel frattempo
+    sim.starting = false;
+    sim.job = job;
+    sim.result = null;
+    renderLiveControlCluster();
+    if (STATE.view === "simulator") renderLiveZoneStrips();
+    if (STATE.modalKind === "live-simulator") renderModal();
+    pollLiveSimulationJob();
+  } catch (err) {
+    if (STATE.liveSimulation !== sim) return;
+    sim.starting = false;
+    sim.error = err.status === 409
+      ? ((err.message || "").includes("nothing to simulate")
+          ? "Nessun settore ha una ricetta assegnata: non c'è nulla da simulare."
+          : "È già in corso un'altra riproduzione live nel sistema, riprova tra poco.")
+      : err.message;
+    renderLiveControlCluster();
+    if (STATE.modalKind === "live-simulator") renderModal();
+  }
+}
+
+/** Il tasto "▶ Tempo reale"/"⏸ Pausa" del cluster e' lo STESSO pulsante in
+ * ogni stato — richiesta esplicita: ripremerlo mette in pausa invece di
+ * aprire un'altra schermata. Nessun effetto mentre sta ancora calcolando
+ * (non c'e' ancora nulla da mettere in pausa). */
+function toggleLiveSimulation() {
+  const sim = STATE.liveSimulation;
+  const status = sim && sim.job && sim.job.status;
+  if (!status || status === "failed" || status === "cancelled") { startLiveSimulation(); return; }
+  if (status === "computing") return;
+  if (status === "playing") { controlLiveSimulation("pause"); return; }
+  if (status === "paused") { controlLiveSimulation("play"); return; }
+}
+
+/** Cambia la velocita' dal cluster — se una riproduzione e' gia' in
+ * play/pausa la applica subito lato server (mandando anche l'azione
+ * CORRENTE: cambiare velocita' non deve mai far ripartire da sola una
+ * riproduzione in pausa, vedi controlLiveSimulation), altrimenti la
+ * ricorda solo per il prossimo avvio. */
+function selectLiveSpeed(multiplier) {
+  if (!STATE.liveSimulation) STATE.liveSimulation = freshLiveSimulationState(null);
+  const sim = STATE.liveSimulation;
+  sim.speedMultiplier = multiplier;
+  const status = sim.job && sim.job.status;
+  if (status === "playing" || status === "paused") {
+    controlLiveSimulation(status, multiplier);
+  } else {
+    renderLiveControlCluster();
+  }
+}
+
+/** Play/pausa e cambio velocita' — sempre un'unica chiamata POST .../control:
+ * il backend congela/riprende la posizione nel tempo simulato lui stesso
+ * (vedi LiveSimulationManager._elapsed_seconds), qui non si fa altro che
+ * mandare l'intenzione e applicare il LiveSimulationJob che torna indietro. */
+async function controlLiveSimulation(action, speedMultiplier) {
+  const sim = STATE.liveSimulation;
+  if (!sim || !sim.job) return;
+  const runId = sim.job.id;
+  try {
+    const job = await apiPost(`/simulations/live/${encodeURIComponent(runId)}/control`, {
+      action,
+      ...(speedMultiplier !== undefined ? { speed_multiplier: speedMultiplier } : {}),
+    });
+    if (STATE.liveSimulation && STATE.liveSimulation.job && STATE.liveSimulation.job.id === runId) {
+      STATE.liveSimulation.job = job;
+      STATE.liveSimulation.speedMultiplier = job.speed_multiplier;
+      renderLiveControlCluster();
+      if (STATE.modalKind === "live-simulator") renderModal();
+    }
+  } catch (e) { /* transient — the next poll tick resyncs the real state */ }
+}
+
+function pollLiveSimulationJob() {
+  setPoll("live-simulation-job", tickLiveSimulationJob, LIVE_SIMULATION_POLL_MS);
+}
+
+async function tickLiveSimulationJob() {
+  const sim = STATE.liveSimulation;
+  if (!sim || !sim.job) { clearPoll("live-simulation-job"); return; }
+  if (!["computing", "playing", "paused"].includes(sim.job.status)) { clearPoll("live-simulation-job"); return; }
+  const runId = sim.job.id;
+  try {
+    const job = await apiGet(`/simulations/live/${encodeURIComponent(runId)}`);
+    if (!STATE.liveSimulation || !STATE.liveSimulation.job || STATE.liveSimulation.job.id !== runId) return; // stale
+    STATE.liveSimulation.job = job;
+    // Griglia dei settori e cluster di controllo (play/pausa/velocita'):
+    // patch mirati, non un intero re-render — aggiornati anche a pop-up
+    // chiuso, finche' si resta sulla pagina Simulatore.
+    if (STATE.view === "simulator") { renderLiveZoneStrips(); renderLiveControlCluster(); }
+    if (job.status !== "computing" && STATE.modalKind === "live-simulator") {
+      // Il grafico del pop-up (se aperto) cresce insieme alla riproduzione,
+      // senza mai azzerarsi (l'orizzonte si estende invece di ripartire,
+      // vedi il modulo docstring lato live_manager.py): un fetch in piu'
+      // per tick, ma la serie ridotta resta <=1000 punti per settore —
+      // economico anche a un tick/secondo.
+      try {
+        const result = await apiGet(`/simulations/live/${encodeURIComponent(runId)}/result`);
+        if (STATE.liveSimulation && STATE.liveSimulation.job && STATE.liveSimulation.job.id === runId) {
+          STATE.liveSimulation.result = result;
+        }
+      } catch (err) { /* riprova al prossimo tick */ }
+    }
+    if (STATE.modalKind === "live-simulator") renderModalIfSafe();
+    // Mai "finished" (la riproduzione non finisce da sola, si ripete) —
+    // solo un errore o un annullamento fermano davvero il poll.
+    if (["failed", "cancelled"].includes(job.status)) clearPoll("live-simulation-job");
+  } catch (e) { /* transient network error, keep polling */ }
+}
+
+/** Apre il pop-up di sola LETTURA della riproduzione live (grafico +
+ * riepilogo) — non avvia/riavvia nulla: play/pausa/velocita'/reset restano
+ * sul cluster della pagina (vedi il commento in cima a questa sezione),
+ * cosi' i due non possono mai raccontare stati diversi. Raggiungibile sia
+ * cliccando il badge LIVE del cluster sia (via openSimulatorSectorModal)
+ * cliccando un settore coperto dalla riproduzione live — in entrambi i
+ * casi STATE.liveSimulation.job esiste sempre a questo punto. */
+function openLiveSimulatorModal() {
+  if (!STATE.liveSimulation) return;
+  STATE.modalKind = "live-simulator";
+  document.getElementById("modal-overlay").classList.remove("hidden");
+  renderModal();
+}
+
+/** True se una riproduzione live attiva (computing/playing/paused) copre
+ * questo settore — usata da openSimulatorSectorModal per decidere se un
+ * click sulla card del settore deve aprire il grafico LIVE invece del
+ * consueto pop-up batch "Simula l'intera serra": mentre una riproduzione
+ * gira, la griglia mostra i suoi valori (vedi renderLiveZoneStrips), quindi
+ * cliccare la card deve portare al SUO grafico che si aggiorna, non a uno
+ * screen di setup per un run batch separato. */
+function isLiveSimulationCovering(zoneId) {
+  return !!(STATE.liveSimulation && STATE.liveSimulation.job
+    && ["computing", "playing", "paused"].includes(STATE.liveSimulation.job.status)
+    && STATE.liveSimulation.job.zone_ids
+    && STATE.liveSimulation.job.zone_ids.includes(zoneId));
+}
+
+/** Punto di ingresso unico per il click su una card settore della griglia
+ * Simulatore (data-action="open-greenhouse-simulator" con uno zoneId) —
+ * instrada al pop-up live se una riproduzione in corso copre quel settore,
+ * altrimenti al consueto pop-up batch. Il tasto di pagina "Simula l'intera
+ * serra" (stesso data-action, ma senza zoneId) passa undefined: non
+ * corrisponde mai a un settore coperto, quindi finisce sempre nel ramo
+ * batch — comportamento invariato per quel tasto. */
+function openSimulatorSectorModal(zoneId) {
+  if (isLiveSimulationCovering(zoneId)) {
+    STATE.liveSimulation.activeZoneId = zoneId;
+    openLiveSimulatorModal();
+  } else {
+    openGreenhouseSimulatorModal(zoneId);
+  }
+}
+
+/** Which simulation state object the code shared between the batch
+ * preview and the live playback (drawSimulationChart, the sim-* event
+ * handlers below) should read and write — STATE.liveSimulation while the
+ * live pop-up is open, STATE.simulation otherwise. Both share the exact
+ * same result shape (an array of SimulationPreview) and chart-preference
+ * fields (chartVariable/chartView/chartLayers/activeZoneId/lightDetailDay/
+ * showActuatorStrips), so every function already written against "sim"
+ * works unchanged for either — only starting/stopping a run differs (the
+ * network calls and state machines are genuinely different), which is why
+ * those stay as separate functions (startLiveSimulation, resetLiveSimulation,
+ * toggleLiveSimulation…) instead of also going through this helper. */
+function currentSim() {
+  return STATE.modalKind === "live-simulator" ? STATE.liveSimulation : STATE.simulation;
+}
+
 /**
  * Simulatore page: the department-card grid, restricted to production
  * departments (1-4) and — within those — sectors that actually have a
@@ -2284,6 +2599,7 @@ function renderSimulatorView() {
       ${simulable.length > 0 ? `
       <div class="simulator-intro-action">
         <button type="button" class="btn btn-primary" data-action="open-greenhouse-simulator">Simula l'intera serra</button>
+        <div class="live-control-cluster" id="live-control-cluster">${renderLiveControlClusterHtml()}</div>
         <span class="hint">un'unica simulazione per tutti i ${simulable.length} settor${simulable.length === 1 ? "e" : "i"} con ricetta assegnata — stesso arco temporale per tutti</span>
       </div>` : ""}
     </div>
@@ -2293,6 +2609,96 @@ function renderSimulatorView() {
       : ""}
   `;
   maybeFetchHomeExtras(); // plant counts shown on each tile — same throttled fetch Home uses
+  renderLiveZoneStrips(); // repaint immediately from whatever the last poll already knows, don't wait for the next tick
+}
+
+/** Il cluster "▶ Tempo reale / velocità / ⟲ Reset" accanto a "Simula
+ * l'intera serra" — TUTTI i controlli della riproduzione live vivono qui
+ * (mai in un pop-up separato, richiesta esplicita): un solo tasto che
+ * fa anche da play/pausa (toggleLiveSimulation), i preset di velocità
+ * subito alla sua destra (selectLiveSpeed), e un Reset per ricominciare da
+ * capo. Il badge "LIVE" (cliccabile solo quando un run esiste) apre il
+ * pop-up di sola lettura col grafico (openLiveSimulatorModal). Patchato
+ * (renderLiveControlCluster), mai ridisegnato dentro un intero
+ * renderSimulatorView(): gira via ad ogni tick di polling. */
+function renderLiveControlClusterHtml() {
+  const sim = STATE.liveSimulation;
+  const job = sim && sim.job;
+  const status = job && job.status;
+  const speed = (sim && sim.speedMultiplier) || DEFAULT_LIVE_SPEED_MULTIPLIER;
+  const busy = !!(sim && sim.starting) || status === "computing";
+
+  const playLabel = status === "computing" ? "Calcolo…"
+    : status === "playing" ? "⏸ Pausa"
+    : status === "paused" ? "▶ Riprendi"
+    : "▶ Tempo reale";
+  const playTitle = status === "playing"
+    ? "Metti in pausa la riproduzione live"
+    : status === "paused"
+      ? "Riprendi la riproduzione live"
+      : "Avvia la riproduzione in tempo simulato accelerato — gira finché resti su questa pagina";
+
+  const speedButtons = LIVE_SPEED_PRESETS.map((p) => `
+    <button type="button" class="live-speed-btn ${speed === p.multiplier ? "active" : ""}"
+      data-action="live-speed-select" data-speed="${p.multiplier}" title="${escapeAttr(p.title)}">${p.short}</button>
+  `).join("");
+
+  return `
+    <button type="button" class="btn btn-live-play" data-action="live-toggle-play" ${busy ? "disabled" : ""} title="${escapeAttr(playTitle)}">${playLabel}</button>
+    <div class="live-speed-group" role="group" aria-label="Velocità di riproduzione">${speedButtons}</div>
+    ${job ? `<button type="button" class="btn btn-live-reset" data-action="live-reset" title="Ricomincia la riproduzione live da capo">⟲ Reset</button>` : ""}
+    ${job && ["computing", "playing", "paused"].includes(status) ? `
+      <button type="button" class="sim-live-badge live-badge-btn" data-action="open-live-simulator" title="Vedi il grafico della riproduzione live">
+        <span class="live-dot"></span>LIVE${status === "paused" ? " · in pausa" : ""}
+      </button>` : ""}
+    ${sim && sim.error ? `<span class="live-error-hint" title="${escapeAttr(sim.error)}">⚠ ${escapeHtml(sim.error)}</span>` : ""}
+  `;
+}
+
+/** Patch mirato del cluster — MAI un renderSimulatorView() completo:
+ * girerebbe via ogni tick di polling (tickLiveSimulationJob), perdendo
+ * eventuali interazioni in corso altrove nella pagina. Stesso pattern di
+ * renderLiveZoneStrips. No-op se il contenitore non è nel DOM (fuori dalla
+ * pagina Simulatore, o nessun settore simulabile — vedi renderSimulatorView). */
+function renderLiveControlCluster() {
+  const el = document.getElementById("live-control-cluster");
+  if (el) el.innerHTML = renderLiveControlClusterHtml();
+}
+
+/** Compact "la serra sta girando" line patched onto every Simulatore grid
+ * tile that the running live playback covers (job.zones, see
+ * LiveSimulationJob.zones server-side) — fase attuale, un valore chiave e
+ * un pallino per pompa/lampada. A targeted DOM patch, not a grid
+ * re-render (same pattern as renderPlantCounts): called after every live
+ * poll tick and right after renderSimulatorView() repaints the grid, so it
+ * never waits for the next tick to show what's already known. A zone with
+ * no snapshot (no live session, or one that doesn't cover it) gets an
+ * empty strip — invisible, see .sector-live-strip:empty in styles.css. */
+function renderLiveZoneStrips() {
+  const zones = (STATE.liveSimulation && STATE.liveSimulation.job && STATE.liveSimulation.job.zones) || [];
+  const byZoneId = Object.fromEntries(zones.map((z) => [z.zone_id, z]));
+  document.querySelectorAll("[data-live-strip]").forEach((el) => {
+    const snapshot = byZoneId[el.dataset.liveStrip];
+    el.innerHTML = snapshot ? renderLiveStripContent(snapshot) : "";
+  });
+}
+
+// Solo pompa e lampada sulla card, non le 5 elettrovalvole (la card e'
+// stretta) — il grafico del pop-up le mostra tutte, come intensita' del
+// comando dentro il grafico della variabile che controllano.
+const LIVE_STRIP_ACTUATOR_KEYS = ["water_pump", "lighting"];
+
+function renderLiveStripContent(snapshot) {
+  const moisture = snapshot.sensors && snapshot.sensors.soil_moisture_percent;
+  const actuatorDots = LIVE_STRIP_ACTUATOR_KEYS
+    .map((key) => `<span class="live-actuator-dot ${snapshot.active_actuators?.[key] ? "on" : ""}" title="${escapeAttr(SIM_ACTUATOR_LABELS[key] || key)}"></span>`)
+    .join("");
+  return `
+    <span class="live-dot"></span>
+    <span class="live-strip-phase" title="${escapeAttr(snapshot.phase_name || "")}">${escapeHtml(snapshot.phase_name || "—")}</span>
+    ${isFinite(moisture) ? `<span class="live-strip-value">${fmtNum(moisture, 0)}% umidità</span>` : ""}
+    <span class="live-strip-actuators">${actuatorDots}</span>
+  `;
 }
 
 /** Reparto 5's room in the Simulatore floor plan — never clickable (see
@@ -2349,7 +2755,10 @@ function renderSimulatorSectorRow(z) {
   // offline è connettività reale, fuori luogo in un contesto che simula
   // sempre uno scenario isolato. Le altre informazioni della card (specie,
   // fase, badge di sicurezza, conteggio piante) restano identiche a Home.
-  const inner = renderSectorRowInner(z, { showConnection: false });
+  // liveStripZoneId aggiunge il segnaposto per renderLiveZoneStrips — vuoto
+  // (quindi invisibile) finche' nessuna riproduzione live copre questo
+  // settore, indipendentemente dal fatto che abbia una ricetta assegnata.
+  const inner = renderSectorRowInner(z, { showConnection: false, liveStripZoneId: z.id });
   if (!z.active_recipe_id) {
     return `
       <div class="sector-row sector-row-disabled" title="Nessuna ricetta assegnata a questo settore: non simulabile.">
@@ -2456,6 +2865,108 @@ function renderSimulatorModal() {
     </div>
   `;
   if (sim.result) { drawSimulationChart(); }
+}
+
+/** "3g 04:15" style phrasing for a simulated elapsed/total-duration span —
+ * distinct from fmtSimDuration/fmtElapsedSeconds (those phrase whole-day
+ * or compact axis-tick spans) since the live playback bar needs an
+ * always-legible clock-like readout that keeps the same width as the
+ * minutes tick over. */
+function formatSimulatedDuration(totalSeconds) {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const clock = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+  return days > 0 ? `${days}g ${clock}` : clock;
+}
+
+/** Pop-up di sola LETTURA della riproduzione live — grafico + riepilogo,
+ * stesso corpo dell'anteprima batch (renderSimulationResult non sa ne'
+ * deve sapere se sta leggendo un batch finito o una riproduzione ancora in
+ * corso, vedi currentSim()). Nessun controllo qui: play/pausa/velocità/
+ * reset vivono nel cluster della pagina (renderLiveControlCluster), questo
+ * pop-up si limita a mostrarne lo stato (renderLiveStatusLine) — mai due
+ * posti diversi che potrebbero raccontare stati diversi. Raggiungibile
+ * solo tramite il badge LIVE del cluster (openLiveSimulatorModal), quindi
+ * sim.job esiste sempre qui. */
+function renderLiveSimulatorModal() {
+  const wrap = document.getElementById("modal-content");
+  const sim = STATE.liveSimulation;
+  if (!sim || !sim.job) { wrap.innerHTML = '<div class="empty-note">Nessuna riproduzione live in corso.</div>'; return; }
+
+  const zoneCount = (sim.job.zone_ids && sim.job.zone_ids.length)
+    || (Array.isArray(sim.result) ? sim.result.length : STATE.zones.filter((z) => z.department_number !== 5 && !!z.active_recipe_id).length);
+  const status = sim.job.status;
+
+  const body = sim.result
+    ? renderSimulationResult(sim)
+    : status === "computing"
+      ? renderLiveSimulationComputing(sim)
+      // Il calcolo Edge e' finito (altrimenti saremmo nel ramo sopra) ma il
+      // primo /result non e' ancora tornato — dura al piu' un tick di poll.
+      : '<div class="empty-note" style="margin-top:16px">Caricamento dei primi dati…</div>';
+
+  wrap.innerHTML = `
+    <div class="zone-header" style="--zone-tint:var(--sim-soft)">
+      <div style="min-width:0">
+        <div class="zone-header-code">
+          <span class="code">Intera serra</span>
+          <span class="sim-live-badge"><span class="live-dot"></span>LIVE</span>
+        </div>
+        <h2>Simulazione in tempo reale</h2>
+        <div class="zone-header-meta">
+          <span>${zoneCount} settor${zoneCount === 1 ? "e" : "i"} con ricetta assegnata, ognuno con la propria ricetta</span>
+        </div>
+      </div>
+      <button type="button" class="zone-close" data-action="close-modal">✕</button>
+    </div>
+    <div style="padding:20px 28px 28px">
+      <div class="simulator-intro simulator-intro-compact">
+        <div class="simulator-intro-title">Riproduzione in tempo accelerato</div>
+        <div class="simulator-intro-text">
+          Stessa fisica di "Simula l'intera serra" — un'anteprima batch isolata, <strong>non tocca mai la telemetria, i
+          comandi o le coltivazioni reali</strong> — ma il tempo simulato avanza da solo e non si ferma mai: gira
+          finché resti sulla pagina Simulatore. Play/pausa, velocità e reset sono sul banner della pagina, non qui:
+          chiudi pure questo pop-up, la riproduzione continua lo stesso.
+        </div>
+      </div>
+      ${status !== "computing" ? renderLiveStatusLine(sim) : ""}
+      ${body}
+    </div>
+  `;
+  if (sim.result) { drawSimulationChart(); }
+}
+
+function renderLiveSimulationComputing(sim) {
+  const pct = sim.job.computing_progress_percent;
+  return `
+    <div class="zone-section" style="margin-top:16px">
+      <div class="zone-section-title">Calcolo dello scenario…</div>
+      <div class="sim-progress-track"><div class="sim-progress-fill" style="width:${Math.max(3, pct)}%"></div></div>
+      <div class="empty-note" style="margin-top:10px">${fmtNum(pct, 0)}% · la riproduzione parte da sola non appena pronta</div>
+    </div>
+  `;
+}
+
+/** Riga di sola lettura — stato/velocità/tempo trascorso — sopra il
+ * grafico nel pop-up. Vedi il commento in cima a renderLiveSimulatorModal
+ * sul perché non ha alcun controllo proprio. Il tempo trascorso conta
+ * sempre in avanti, mai un "di quanto" (niente ciclo/durata totale: non
+ * finisce mai da sola, vedi il modulo docstring lato live_manager.py) — il
+ * "calcolato fino a" e' solo un dettaglio implementativo (l'orizzonte
+ * Edge già pronto, che cresce da solo restando sempre più avanti della
+ * riproduzione), non un traguardo verso cui la riproduzione sta andando. */
+function renderLiveStatusLine(sim) {
+  const job = sim.job;
+  const label = job.status === "playing" ? "In riproduzione" : "In pausa";
+  const speedLabel = LIVE_SPEED_PRESETS.find((p) => p.multiplier === job.speed_multiplier);
+  return `
+    <div class="zone-section live-status-line" style="margin-top:16px">
+      <span class="pill" style="background:var(--sim-soft);color:var(--sim-dark)"><span class="live-dot"></span>${label}</span>
+      <span class="hint">${speedLabel ? speedLabel.short : `${job.speed_multiplier}×`} · ${formatSimulatedDuration(job.elapsed_seconds)} di riproduzione · calcolato fino a ${formatSimulatedDuration(job.horizon_seconds)}</span>
+    </div>
+  `;
 }
 
 function renderSimulationSetup(sim) {
@@ -2578,6 +3089,23 @@ function simZoneOptionLabel(preview) {
   return zone ? `${zoneLabel(zone)} · ${preview.recipe.plant_type}` : preview.zone_id;
 }
 
+/** "Vista" select shown only for the light chart in single-view mode:
+ * "Andamento completo" (sim.lightDetailDay == null, default — the full
+ * multi-day sawtooth, still useful as an overview) or one "Giorno N" per
+ * simulated day, which zooms drawSimulationSeriesChart down to just that
+ * day's own bucket (see the filtering in drawSimulationChart) — the DLI
+ * reset at every midnight makes reading ONE day's shape precisely hard on
+ * a 7-day sawtooth, this is the detail view that fixes that without
+ * touching the chart function itself. */
+function renderLightDaySelect(sim, result) {
+  const days = Math.max(1, Math.ceil(result.duration_seconds / 86400));
+  const current = sim.lightDetailDay ?? "";
+  const options = [`<option value="">Andamento completo</option>`].concat(
+    Array.from({ length: days }, (_, i) =>
+      `<option value="${i}" ${String(i) === String(current) ? "selected" : ""}>Giorno ${i + 1}</option>`));
+  return `<select id="sim-light-day-select">${options.join("")}</select>`;
+}
+
 function renderSimulationResult(sim) {
   const greenhouse = Array.isArray(sim.result);
   const result = activeSimulationPreview(sim);
@@ -2602,6 +3130,7 @@ function renderSimulationResult(sim) {
         <select id="sim-chart-variable-select">
           ${VARIABLES.map((v) => `<option value="${v.key}" ${sim.chartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
         </select>`}
+        ${!gridView && sim.chartVariable === "light" ? renderLightDaySelect(sim, result) : ""}
         <button type="button" class="chart-view-toggle" data-action="sim-chart-view-toggle">
           ${gridView ? "◧ Un grafico alla volta" : "▦ Vedi tutti i grafici"}
         </button>
@@ -2622,7 +3151,7 @@ function renderSimulationResult(sim) {
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="band" ${sim.chartLayers?.band === false ? "" : "checked"}> Banda</label>
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="setpoint" ${sim.chartLayers?.setpoint === false ? "" : "checked"}> Setpoint</label>
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="average" ${sim.chartLayers?.average === false ? "" : "checked"}> Valore medio</label>
-        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatori<span class="legend-glyph active" style="margin-left:5px">■</span> attivo <span class="legend-glyph inactive">□</span> spento</label>
+        <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatore <span class="legend-line" style="border-color:#8a5cf6"></span> intensità comando (0-100%), corsia propria sul fondo del grafico</label>
       </div>
       ${gridView
         ? `<div class="sim-chart-grid">
@@ -2630,19 +3159,23 @@ function renderSimulationResult(sim) {
               <div class="sim-chart-grid-cell">
                 <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""}</div>
                 <canvas id="simulation-chart-${v.key}" class="sim-chart-grid-canvas"></canvas>
-                ${sim.showActuatorStrips === false ? "" : `<canvas id="simulation-actuator-strip-${v.key}" class="sim-chart-grid-strip"></canvas>`}
               </div>`).join("")}
           </div>`
-        : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>
-          ${sim.showActuatorStrips === false ? "" : `<canvas id="simulation-actuator-strip-single" class="sim-actuator-strip-single"></canvas>`}`}
+        : `<div class="chart-canvas-wrap"><canvas id="simulation-chart" style="width:100%;height:100%;display:block"></canvas></div>`}
+      ${!gridView && sim.chartVariable === "light" ? `
+      <div class="sim-light-daily-summary">
+        <div class="hint" style="margin:10px 0 4px">Riepilogo — DLI raggiunto a fine giornata (tratteggio = target)</div>
+        <canvas id="simulation-light-daily-summary" style="width:100%;height:64px;display:block"></canvas>
+      </div>` : ""}
     </div>
     <div class="zone-section" style="margin-top:16px">
       <div class="zone-section-title">Riepilogo</div>
       ${renderSimulationSummary(result.summary)}
     </div>
+    ${greenhouse && sim === STATE.liveSimulation ? "" : `
     <div style="display:flex;justify-content:flex-end;margin-top:16px">
       <button type="button" class="btn" data-action="sim-restart">Nuova simulazione</button>
-    </div>
+    </div>`}
   `;
 }
 
@@ -2657,32 +3190,42 @@ const SIM_ACTUATOR_LABELS = {
   "valve_ph-down": "Elettrovalvola pH−",
 };
 
-/** Which actuator_intervals[*].actuator key(s) belong to each VARIABLES
- * entry — used by that variable's own companion actuator strip (see
- * drawActuatorStrip) to filter the full actuator_intervals list down to
- * just the actuator(s) that affect this one variable. pH lists both
- * valves: a single thin row has no room for a per-direction breakdown, so
- * "active" there means "either ph-up or ph-down was open". */
-const VARIABLE_ACTUATOR_KEYS = {
-  soil_moisture: ["water_pump"],
-  light: ["lighting"],
-  ph: ["valve_ph-up", "valve_ph-down"],
-  nitrogen: ["valve_nitrogen"],
-  phosphorus: ["valve_phosphorus"],
-  potassium: ["valve_potassium"],
+/** Which reduced-series numeric key(s) carry each VARIABLES entry's own
+ * actuator "how hard did it work" in [0, 1] — see manager.py's
+ * _actuator_intensity(), folded into the SAME average/minimum/maximum
+ * buckets as every sensor field, so actuatorIntensity() below reads it
+ * exactly like any other series value instead of needing its own
+ * separate interval list. Drawn as a tint on the SAME chart canvas as
+ * the variable it controls (see the "fascia di intensità" block in
+ * drawSimulationSeriesChart) — no more a separate strip underneath
+ * (see this file's git history for drawActuatorStrip/actuator_intervals,
+ * removed together with this comment's old counterpart
+ * VARIABLE_ACTUATOR_KEYS: a user directly asked for the actuator to live
+ * "inside the chart of what it controls, not below it"). pH lists both
+ * valves: "how hard" is whichever of the two is active. */
+const VARIABLE_ACTUATOR_INTENSITY_KEYS = {
+  soil_moisture: ["water_pump_intensity"],
+  light: ["light_intensity"],
+  ph: ["valve_ph-up_intensity", "valve_ph-down_intensity"],
+  nitrogen: ["valve_nitrogen_intensity"],
+  phosphorus: ["valve_phosphorus_intensity"],
+  potassium: ["valve_potassium_intensity"],
 };
 
-/** Short gutter label drawn on each variable's own actuator strip —
- * distinct from VARIABLE_ACTUATOR_KEYS' backend interval keys, this is
- * just the human-readable short name shown on the canvas itself. */
-const VARIABLE_ACTUATOR_LABEL = {
-  soil_moisture: "Acqua",
-  light: "Luce",
-  ph: "pH+/pH−",
-  nitrogen: "N",
-  phosphorus: "P",
-  potassium: "K",
-};
+/** Reads one reduced-series bucket's own actuator intensity (see
+ * VARIABLE_ACTUATOR_INTENSITY_KEYS) as the MAX across the involved
+ * key(s) — usually one, two for pH. A result predating this field (an
+ * older cached simulation) simply has none of these keys in `average`,
+ * so this reads as 0 and the tint stays invisible instead of breaking. */
+function actuatorIntensity(bucket, varMeta) {
+  const keys = VARIABLE_ACTUATOR_INTENSITY_KEYS[varMeta.key] || [];
+  let value = 0;
+  for (const k of keys) {
+    const v = bucket.average[k];
+    if (isFinite(v) && v > value) value = v;
+  }
+  return value;
+}
 
 function renderSimulationSummary(summary) {
   const fertRows = Object.entries(summary.delivered_fertilizer_milliliters || {})
@@ -2743,52 +3286,51 @@ function fmtDurationHM(totalSeconds) {
  * mode, and both pass sim.chartLayers through so the "Linee da mostrare"
  * toggle panel (value/band/setpoint/average — which LINES to draw inside
  * every chart, not which charts to show) applies identically everywhere.
- * Every chart (grid AND the single selected one) also gets its own
- * companion actuator strip right underneath, unless sim.showActuatorStrips
- * is off — see drawActuatorStrip. There is no combined multi-row Gantt
- * anymore (removed): each chart's own strip is now the only place
- * actuator activity shows up, one row scoped to exactly that variable
- * instead of a shared 7-row timeline you had to scroll to and cross-
- * reference by eye. */
+ * sim.showActuatorStrips (the "Attuatore" checkbox) is also passed
+ * straight through: drawSimulationSeriesChart draws that variable's own
+ * actuator intensity AS PART OF the same canvas (a tint along the
+ * bottom margin, see actuatorIntensity()) instead of a separate strip
+ * canvas underneath — no more per-chart stripCanvas lookup here. */
 function drawSimulationChart() {
-  const sim = STATE.simulation;
+  const sim = currentSim();
   const preview = activeSimulationPreview(sim);
   if (!preview) return;
-  const minT = preview.series[0]?.start_seconds ?? 0;
-  const maxT = preview.series[preview.series.length - 1]?.end_seconds ?? 0;
+  const showActuator = sim.showActuatorStrips !== false;
   if (sim.chartView === "grid") {
     VARIABLES.forEach((v) => {
       const canvas = document.getElementById(`simulation-chart-${v.key}`);
-      if (canvas) drawSimulationSeriesChart(canvas, preview.series, preview.phases, v, sim.chartLayers);
-      if (sim.showActuatorStrips === false) return;
-      const stripCanvas = document.getElementById(`simulation-actuator-strip-${v.key}`);
-      if (stripCanvas) {
-        drawActuatorStrip(
-          stripCanvas,
-          preview.actuator_intervals || [],
-          VARIABLE_ACTUATOR_KEYS[v.key] || [],
-          VARIABLE_ACTUATOR_LABEL[v.key] || "",
-          minT,
-          maxT);
+      if (canvas) {
+        drawSimulationSeriesChart(
+          canvas, preview.series, preview.phases, v, sim.chartLayers, showActuator);
       }
     });
     return;
   }
   const canvas = document.getElementById("simulation-chart");
+  const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   if (canvas) {
-    const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
-    drawSimulationSeriesChart(canvas, preview.series, preview.phases, varMeta, sim.chartLayers);
+    // "Giorno N" selezionato (solo per la luce, vedi renderLightDaySelect):
+    // filtra i bucket a un solo giorno solare invece di passare l'intero
+    // preview.series — drawSimulationSeriesChart non sa ne' deve sapere
+    // che e' stato zoomato, calcola minT/maxT dal primo/ultimo bucket
+    // ricevuto esattamente come farebbe con l'andamento completo, e
+    // ricostruisce il dente di sega isLight da zero per quel solo giorno.
+    let series = preview.series;
+    if (varMeta.key === "light" && sim.lightDetailDay != null) {
+      const dayStart = sim.lightDetailDay * 86400;
+      const dayEnd = dayStart + 86400;
+      const filtered = preview.series.filter(
+        (s) => s.start_seconds >= dayStart && s.start_seconds < dayEnd);
+      if (filtered.length) series = filtered;
+    }
+    drawSimulationSeriesChart(
+      canvas, series, preview.phases, varMeta, sim.chartLayers, showActuator);
   }
-  if (sim.showActuatorStrips === false) return;
-  const stripCanvas = document.getElementById("simulation-actuator-strip-single");
-  if (stripCanvas) {
-    drawActuatorStrip(
-      stripCanvas,
-      preview.actuator_intervals || [],
-      VARIABLE_ACTUATOR_KEYS[sim.chartVariable] || [],
-      VARIABLE_ACTUATOR_LABEL[sim.chartVariable] || "",
-      minT,
-      maxT);
+  if (varMeta.key === "light") {
+    const summaryCanvas = document.getElementById("simulation-light-daily-summary");
+    if (summaryCanvas) {
+      drawLightDailySummary(summaryCanvas, preview.series, preview.phases, varMeta);
+    }
   }
 }
 
@@ -2837,6 +3379,136 @@ function rollingAverage(points, windowSeconds) {
 }
 
 /**
+ * Intervalli NOTTURNI (fuori dalla finestra di luce naturale alba-tramonto
+ * — vedi ph.photoperiod, popolato da manager.py's _phase_targets() a
+ * partire da Photoperiod lato Edge) che ricadono entro [minT, maxT], un
+ * giorno solare alla volta. Usata solo dal grafico della luce per
+ * distinguere sullo sfondo la fase di sole da quella notturna in cui la
+ * lampada puo' supplire (vedi control_system.cpp, ramo LIGHT) — le altre
+ * variabili non hanno un concetto di "notte" rilevante per il loro
+ * controllo. Per ogni giorno solare (confine fisso ogni 86400s, lo stesso
+ * usato per azzerare il DLI reale e la sua ricostruzione qui nel dashboard
+ * — vedi isLight sotto) si usa il fotoperiodo della fase attiva al suo
+ * inizio: una fase che cambia il fotoperiodo a meta' giornata e' un caso
+ * limite che nessuna ricetta del catalogo produce oggi.
+ */
+function lightNightIntervals(phases, minT, maxT) {
+  const kSecondsPerDay = 86400;
+  const intervals = [];
+  const firstDayStart = Math.floor(minT / kSecondsPerDay) * kSecondsPerDay;
+  for (let dayStart = firstDayStart; dayStart < maxT; dayStart += kSecondsPerDay) {
+    const dayEnd = dayStart + kSecondsPerDay;
+    const probe = Math.max(dayStart, minT);
+    const phase = phases.find((ph) => probe >= ph.start_seconds && probe < ph.end_seconds)
+      || phases[phases.length - 1];
+    if (!phase || !phase.photoperiod) continue;
+    const dawn = dayStart + phase.photoperiod.start_hour * 3600;
+    const dusk = dawn + phase.photoperiod.duration_hours * 3600;
+    intervals.push({ start: dayStart, end: Math.min(dawn, dayEnd) });
+    intervals.push({ start: Math.min(dusk, dayEnd), end: dayEnd });
+  }
+  return intervals
+    .map((iv) => ({ start: Math.max(iv.start, minT), end: Math.min(iv.end, maxT) }))
+    .filter((iv) => iv.end > iv.start);
+}
+
+/** Per-calendar-day final DLI totals from the RAW (non-cumulative) series
+ * — same day boundary (floor(seconds/86400)) as the Edge's own
+ * DliAccumulator reset and the isLight branch of
+ * drawSimulationSeriesChart, computed independently of it so this works
+ * whether the main chart above is showing the full range or is zoomed to
+ * one "Giorno N" (see renderLightDaySelect/drawSimulationChart). The last
+ * day present may still be in progress (no midnight reset seen yet in
+ * this series): `complete` is false for that one entry only, so
+ * drawLightDailySummary can draw it lighter instead of implying a
+ * finished day's result. */
+function computeDailyLightTotals(series, key) {
+  const kSecondsPerDay = 86400;
+  const totals = [];
+  let dayIndex = null;
+  let cumulative = 0;
+  series.forEach((s) => {
+    const avg = s.average[key];
+    if (!isFinite(avg) || avg === null || avg === undefined) return;
+    const pointDay = Math.floor(s.start_seconds / kSecondsPerDay);
+    if (dayIndex === null) {
+      dayIndex = pointDay;
+    } else if (pointDay !== dayIndex) {
+      totals.push({ day: dayIndex, total: cumulative, complete: true });
+      cumulative = 0;
+      dayIndex = pointDay;
+    }
+    cumulative += (avg * (s.end_seconds - s.start_seconds)) / 1e6;
+  });
+  if (dayIndex !== null) totals.push({ day: dayIndex, total: cumulative, complete: false });
+  return totals;
+}
+
+/** One bar per simulated day, height = DLI reached that day (in progress
+ * for the last one, drawn lighter — see computeDailyLightTotals), target
+ * setpoint as a dashed reference line, green when the day met/exceeded
+ * target and terracotta when it fell short — the "riepilogo 7 giorni" the
+ * per-day reset makes hard to eyeball off the sawtooth alone. Always
+ * fed the FULL preview.series (never the "Giorno N" filtered slice the
+ * main chart above may be showing), so the week stays visible regardless
+ * of which day that chart is currently zoomed to. */
+function drawLightDailySummary(canvas, series, phases, varMeta) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(rect.width, 1);
+  const height = Math.max(rect.height, 1);
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const totals = computeDailyLightTotals(series, varMeta.simKey);
+  if (!totals.length) return;
+
+  const setpoint = phases[phases.length - 1]?.targets?.[varMeta.key]?.setpoint;
+  const maxV = (Math.max(setpoint || 0, ...totals.map((t) => t.total)) * 1.1) || 1;
+
+  const pad = { l: 46, r: 14, t: 4, b: 16 };
+  const w = width - pad.l - pad.r;
+  const h = height - pad.t - pad.b;
+  const barGap = 6;
+  const barWidth = Math.max(4, (w - barGap * (totals.length - 1)) / totals.length);
+  const y = (v) => pad.t + h - (Math.max(0, v) / maxV) * h;
+
+  if (isFinite(setpoint)) {
+    ctx.strokeStyle = "#c9803f";
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, y(setpoint));
+    ctx.lineTo(pad.l + w, y(setpoint));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  totals.forEach((t, i) => {
+    const bx = pad.l + i * (barWidth + barGap);
+    const met = !isFinite(setpoint) || t.total >= setpoint;
+    ctx.fillStyle = t.complete
+      ? (met ? "rgba(31,122,81,0.75)" : "rgba(197,92,63,0.75)")
+      : (met ? "rgba(31,122,81,0.35)" : "rgba(197,92,63,0.35)");
+    const by = y(t.total);
+    ctx.fillRect(bx, by, barWidth, pad.t + h - by);
+  });
+
+  ctx.fillStyle = "#8aa39a";
+  ctx.font = "9px 'IBM Plex Mono', monospace";
+  ctx.textAlign = "center";
+  totals.forEach((t, i) => {
+    const bx = pad.l + i * (barWidth + barGap);
+    ctx.fillText(`G${t.day + 1}`, bx + barWidth / 2, height - 4);
+  });
+  ctx.textAlign = "left";
+  ctx.fillText(`${maxV.toFixed(1)}`, 2, pad.t + 8);
+}
+
+/**
  * Unlike drawTelemetryChart (a single flat setpoint line, since live data
  * only ever has ONE current setpoint), a simulation spans potentially many
  * phases with different targets — and, unlike the live-data case, we know
@@ -2846,7 +3518,7 @@ function rollingAverage(points, windowSeconds) {
  * last phase), so the last phase's band is extended to the end of the
  * simulated span rather than leaving a gap.
  */
-function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
+function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers, showActuator) {
   // Quattro livelli disegnabili indipendentemente, ciascuno spentabile da
   // sim.chartLayers (vedi il pannello di spunte "Linee da mostrare" sopra
   // la griglia/il grafico singolo — non "quali variabili mostrare", che
@@ -2856,6 +3528,12 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
   // average = il valore comparabile col setpoint (media mobile 24h, o per
   // la luce il DLI a gradini — vedi isLight sotto). undefined = mostrata,
   // stessa convenzione "assente = true" usata altrove in questo file.
+  // showActuator e' invece il checkbox "Attuatore" (sim.showActuatorStrips,
+  // un flag a parte, non dentro sim.chartLayers): governa la fascia di
+  // intensita' del comando disegnata piu' in basso in questa stessa
+  // funzione, dentro il margine inferiore gia' riservato alle etichette
+  // dell'asse tempo — non piu' una striscia separata sotto (vedi
+  // actuatorIntensity()).
   const showValue = layers?.value !== false;
   const showBand = layers?.band !== false;
   const showSetpoint = layers?.setpoint !== false;
@@ -2879,7 +3557,11 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
 
   const key = varMeta.simKey;
   let points = series
-    .map((s) => ({ t0: s.start_seconds, t1: s.end_seconds, avg: s.average[key], min: s.minimum[key], max: s.maximum[key] }))
+    .map((s) => ({
+      t0: s.start_seconds, t1: s.end_seconds,
+      avg: s.average[key], min: s.minimum[key], max: s.maximum[key],
+      intensity: actuatorIntensity(s, varMeta),
+    }))
     .filter((p) => isFinite(p.avg) && p.avg !== null && p.avg !== undefined);
   if (!points.length) {
     ctx.fillStyle = "#8aa39a";
@@ -2928,13 +3610,21 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
       }
       cumulative += (p.avg * (p.t1 - p.t0)) / 1e6;
       lightCompletedDayTotal[i] = previousDayTotal;
-      return { t0: p.t0, t1: p.t1, avg: cumulative, min: cumulative, max: cumulative };
+      return {
+        t0: p.t0, t1: p.t1, avg: cumulative, min: cumulative, max: cumulative,
+        intensity: p.intensity,
+      };
     });
   }
   const displayUnit = isLight ? "mol/m²" : varMeta.unit;
   const displayDecimals = isLight ? 1 : varMeta.decimals;
 
-  const pad = { l: 46, r: 14, t: 14, b: 20 };
+  // b cresce di 14px quando la fascia dell'attuatore e' visibile (vedi
+  // laneTop/laneHeight piu' sotto): quello spazio in piu' e' dove la linea
+  // dell'attuatore vive, tra il fondo del grafico principale e le
+  // etichette dell'asse tempo — non toglie altezza a queste ultime, ne'
+  // costringe a ridisegnarle altrove.
+  const pad = { l: 46, r: 14, t: 14, b: showActuator ? 34 : 20 };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
 
@@ -2965,9 +3655,32 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
   const spanPad = (maxV - minV) * 0.1;
   minV -= spanPad;
   maxV += spanPad;
+  // Il DLI e' un integrale di un PPFD non negativo (vedi DliAccumulator
+  // lato Edge): non puo' MAI scendere sotto zero, ne' quindi dovrebbe
+  // l'asse che lo disegna — senza questo clamp lo spanPad sopra (un
+  // margine percentuale simmetrico, pensato per variabili che oscillano
+  // sopra e sotto il loro target) spingeva l'estremo inferiore sotto zero
+  // ogni volta che il minimo osservato era gia' vicino a zero (l'inizio di
+  // ogni dente di sega), disegnando un asse con etichette come "-4.2
+  // mol/m²" per un valore che in realta' non e' mai stato negativo.
+  if (isLight) {
+    minV = Math.max(0, minV);
+  }
 
   const x = (t) => pad.l + ((t - minT) / spanT) * w;
   const y = (v) => pad.t + h - ((v - minV) / (maxV - minV)) * h;
+
+  // Sfondo notte, SOLO per la luce (vedi lightNightIntervals): disegnato
+  // prima di tutto il resto cosi' griglia, banda, linee e fascia
+  // attuatore restano leggibili sopra.
+  if (isLight) {
+    ctx.fillStyle = "rgba(47,58,82,0.06)";
+    lightNightIntervals(phases, minT, maxT).forEach((iv) => {
+      const bx0 = x(iv.start);
+      const bx1 = x(iv.end);
+      if (bx1 > bx0) ctx.fillRect(bx0, pad.t, bx1 - bx0, h);
+    });
+  }
 
   ctx.strokeStyle = "#eef3ef";
   ctx.lineWidth = 1;
@@ -3098,6 +3811,54 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
     }
   }
 
+  // Linea di intensità dell'attuatore, DENTRO lo stesso canvas della
+  // variabile che controlla (non più una striscia separata sotto — vedi
+  // actuatorIntensity() e la cronologia git di questo file): una corsia
+  // propria, alta 14px, incassata nel margine inferiore appena allargato
+  // per farle posto (vedi pad.b sopra), con una scala VERTICALE tutta sua
+  // (0% = fondo corsia, 100% = cima corsia) — non tocca la scala del
+  // valore sopra. Un riquadro di sfondo tenue e un bordo delimitano la
+  // corsia cosi' non si confonde con il grafico principale; la linea
+  // viola (nessun altro tratto di questo grafico usa quel colore) e' un
+  // vero 0-100% per la luce — si veda quanto varia da un giorno all'altro
+  // anche quando il DLI di fine giornata resta lo stesso: e' li', non
+  // nella curva accumulata, che la variabilita' meteo che il controllore
+  // assorbe resta visibile — e un piatto 0/1 per gli attuatori on/off
+  // (portata piena o niente, nessuna via di mezzo fisica da mostrare).
+  if (showActuator && points.length) {
+    const laneTop = pad.t + h + 3;
+    const laneHeight = 14;
+    const laneBottom = laneTop + laneHeight;
+    const laneY = (v) => laneBottom - Math.max(0, Math.min(1, v)) * laneHeight;
+
+    ctx.fillStyle = "#f5f1fb";
+    ctx.fillRect(pad.l, laneTop, w, laneHeight);
+
+    const linePath = () => {
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const px = x((p.t0 + p.t1) / 2);
+        const py = laneY(p.intensity || 0);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+    };
+    linePath();
+    ctx.lineTo(x(points[points.length - 1].t1), laneBottom);
+    ctx.lineTo(x(points[0].t0), laneBottom);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(138,92,246,0.18)";
+    ctx.fill();
+
+    linePath();
+    ctx.strokeStyle = "#8a5cf6";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.strokeStyle = "#e3d9f7";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pad.l, laneTop, w, laneHeight);
+  }
+
   ctx.fillStyle = "#8aa39a";
   ctx.font = "10px 'IBM Plex Mono', monospace";
   ctx.fillText(`${maxV.toFixed(displayDecimals)} ${displayUnit}`, 2, pad.t + 8);
@@ -3106,65 +3867,6 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers) {
   ctx.textAlign = "right";
   ctx.fillText(fmtElapsedSeconds(maxT), pad.l + w, height - 4);
   ctx.textAlign = "left";
-}
-
-/**
- * Compact one-row companion strip drawn directly under a variable chart
- * (grid cell or the single selected one — see drawSimulationChart/
- * sim.showActuatorStrips), showing when THAT variable's own actuator(s)
- * were active. There used to also be one combined 7-row Gantt shared by
- * every chart (removed — redundant now that every chart has its own row,
- * and it forced scrolling down + cross-referencing by eye which row
- * belonged to which chart). actuatorKeys (VARIABLE_ACTUATOR_KEYS) selects
- * which actuator_intervals[*].actuator values count as "active" for this
- * one strip — a pH strip lists two keys (ph-up, ph-down): "active" means
- * "either one", since a single thin row has no room for a per-direction
- * breakdown. `label` (VARIABLE_ACTUATOR_LABEL) is the short gutter text
- * identifying which actuator this row is, since there is no shared row
- * gutter to label it once the way the old combined Gantt did.
- *
- * minT/maxT are passed in by the caller (not derived from `series` here)
- * so this stays pixel-aligned with the chart canvas immediately above it,
- * which computes the exact same values from the exact same series — and
- * pad.l/pad.r match drawSimulationSeriesChart's for the same reason, even
- * though this strip has no y-axis labels of its own to make room for.
- */
-function drawActuatorStrip(canvas, intervals, actuatorKeys, label, minT, maxT) {
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(rect.width, 1);
-  const height = Math.max(rect.height, 1);
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-
-  const pad = { l: 46, r: 14 };
-  const w = width - pad.l - pad.r;
-  const spanT = Math.max(maxT - minT, 1);
-  const x = (t) => pad.l + ((t - minT) / spanT) * w;
-
-  ctx.fillStyle = "#eef3ef";
-  ctx.fillRect(pad.l, 0, w, height);
-
-  ctx.fillStyle = "rgba(31,122,81,0.55)";
-  intervals
-    .filter((iv) => actuatorKeys.includes(iv.actuator) && iv.start_seconds <= maxT)
-    .forEach((iv) => {
-      const end = Math.min(iv.end_seconds, maxT);
-      if (end <= iv.start_seconds) return;
-      const bx0 = x(iv.start_seconds);
-      const bx1 = x(end);
-      if (bx1 <= bx0) return;
-      ctx.fillRect(bx0, 1, Math.max(bx1 - bx0, 1.5), height - 2);
-    });
-
-  ctx.fillStyle = "#8aa39a";
-  ctx.font = "9px 'IBM Plex Mono', monospace";
-  ctx.textBaseline = "middle";
-  ctx.fillText(label, 2, height / 2);
-  ctx.textBaseline = "alphabetic";
 }
 
 /* ------------------------------------------------------------------ */
@@ -4367,6 +5069,7 @@ function renderModal() {
   if (STATE.modalKind === "recipe-form") { renderRecipeFormModal(); return; }
   if (STATE.modalKind === "quarantine") { renderQuarantineModal(); return; }
   if (STATE.modalKind === "simulator") { renderSimulatorModal(); return; }
+  if (STATE.modalKind === "live-simulator") { renderLiveSimulatorModal(); return; }
   const zone = STATE.modalZone;
   const wrap = document.getElementById("modal-content");
   if (!zone) {
@@ -5366,6 +6069,12 @@ function switchView(view) {
     discardActiveSimulationIfAny();
     STATE.simulation = null;
     if (STATE.modalKind === "simulator") STATE.modalKind = null;
+    // Stessa disciplina per la riproduzione live — a differenza del batch
+    // pero' resta "attiva" (quindi da liberare) per tutta la sua durata,
+    // non solo finche' viene calcolata (vedi discardActiveLiveSimulationIfAny).
+    discardActiveLiveSimulationIfAny();
+    STATE.liveSimulation = null;
+    if (STATE.modalKind === "live-simulator") STATE.modalKind = null;
   }
   STATE.view = view;
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
@@ -5616,8 +6325,14 @@ function initEventDelegation() {
     if (confirmPlantRemoveBtn && !confirmPlantRemoveBtn.disabled) { confirmPlantRemove(confirmPlantRemoveBtn.dataset.plantId); return; }
 
     const openGreenhouseSimulator = e.target.closest('[data-action="open-greenhouse-simulator"]');
-    if (openGreenhouseSimulator) { openGreenhouseSimulatorModal(openGreenhouseSimulator.dataset.zoneId); return; }
+    if (openGreenhouseSimulator) { openSimulatorSectorModal(openGreenhouseSimulator.dataset.zoneId); return; }
 
+    const openLiveSimulator = e.target.closest('[data-action="open-live-simulator"]');
+    if (openLiveSimulator) { openLiveSimulatorModal(); return; }
+
+    // sim-select-duration e' del solo setup batch (renderSimulationSetup) —
+    // la riproduzione live non chiede piu' una durata (vedi il commento in
+    // cima alla sezione "Riproduzione live" per il perche').
     const simSelectDuration = e.target.closest('[data-action="sim-select-duration"]');
     if (simSelectDuration && !simSelectDuration.disabled && STATE.simulation) {
       STATE.simulation.durationDays = Number(simSelectDuration.dataset.days);
@@ -5631,15 +6346,30 @@ function initEventDelegation() {
     const simCancelBtn = e.target.closest('[data-action="sim-cancel"]');
     if (simCancelBtn) { cancelSimulation(); return; }
 
+    // sim-restart e' emesso da renderSimulationResult (nascosto per la
+    // riproduzione live, che ha il suo Reset sul banner della pagina — vedi
+    // renderSimulationResult) quindi qui serve solo il percorso batch.
     const simRestartBtn = e.target.closest('[data-action="sim-restart"]');
     if (simRestartBtn) { restartSimulationSetup(); return; }
 
+    // Cluster live (pagina Simulatore, vedi renderLiveControlClusterHtml) —
+    // funzionano identici a pop-up aperto o chiuso, non richiedono
+    // STATE.modalKind === "live-simulator".
+    const liveTogglePlayBtn = e.target.closest('[data-action="live-toggle-play"]');
+    if (liveTogglePlayBtn && !liveTogglePlayBtn.disabled) { toggleLiveSimulation(); return; }
+
+    const liveSpeedSelectBtn = e.target.closest('[data-action="live-speed-select"]');
+    if (liveSpeedSelectBtn) { selectLiveSpeed(Number(liveSpeedSelectBtn.dataset.speed)); return; }
+
+    const liveResetBtn = e.target.closest('[data-action="live-reset"]');
+    if (liveResetBtn) { resetLiveSimulation(); return; }
+
     const simChartViewToggle = e.target.closest('[data-action="sim-chart-view-toggle"]');
-    if (simChartViewToggle && STATE.simulation) {
+    if (simChartViewToggle && currentSim()) {
       // Swaps the DOM (single canvas <-> one per VARIABLES entry), so this
       // needs the full renderModal() — unlike the variable <select> above,
       // which only ever redraws the one canvas that's already there.
-      STATE.simulation.chartView = STATE.simulation.chartView === "grid" ? "single" : "grid";
+      currentSim().chartView = currentSim().chartView === "grid" ? "single" : "grid";
       renderModal();
       return;
     }
@@ -5660,46 +6390,55 @@ function initEventDelegation() {
 
     if (e.target.id === "chart-variable-select") { onChartVariableChange(e.target.value); return; }
 
-    if (e.target.id === "sim-zone-select" && STATE.simulation) {
+    if (e.target.id === "sim-zone-select" && currentSim()) {
       // Unlike the variable <select> below, switching zones changes almost
       // everything on screen (recipe id/version, phase bands, summary
       // totals) — a full renderModal() is simpler and cheap enough here.
-      STATE.simulation.activeZoneId = e.target.value;
+      currentSim().activeZoneId = e.target.value;
       renderModal();
       return;
     }
 
-    if (e.target.id === "sim-chart-variable-select" && STATE.simulation) {
+    if (e.target.id === "sim-chart-variable-select" && currentSim()) {
       // The simulation's series/phases are already in memory (no re-fetch
       // needed, unlike the live chart) — just update which variable is
-      // plotted and redraw the canvas directly.
-      STATE.simulation.chartVariable = e.target.value;
+      // plotted. A full renderModal() (not just a direct canvas redraw)
+      // because switching to/from "light" adds/removes its own extra DOM
+      // (the day <select> and the daily-summary canvas — see
+      // renderLightDaySelect/renderSimulationResult), not just what's
+      // drawn inside an already-present canvas.
+      currentSim().chartVariable = e.target.value;
+      renderModal();
+      return;
+    }
+
+    if (e.target.id === "sim-light-day-select" && currentSim()) {
+      // Zooms the light chart to one calendar day (or back to the full
+      // range) — see the filtering in drawSimulationChart. No DOM to
+      // add/remove here (same canvas, same summary), so a direct redraw
+      // is enough.
+      currentSim().lightDetailDay =
+        e.target.value === "" ? null : Number(e.target.value);
       drawSimulationChart();
-      const legendLabel = document.getElementById("sim-chart-legend-label");
-      if (legendLabel) legendLabel.textContent = `${varLegendLabel(VARIABLES_BY_KEY[e.target.value])} — valore simulato`;
-      const legendBand = document.getElementById("sim-chart-legend-band");
-      if (legendBand) legendBand.outerHTML = simBandLegendItem(VARIABLES_BY_KEY[e.target.value]);
-      const legendAverage = document.getElementById("sim-chart-legend-average");
-      if (legendAverage) legendAverage.outerHTML = simAverageLegendItem(VARIABLES_BY_KEY[e.target.value]);
       return;
     }
 
     const chartLayerToggle = e.target.closest('[data-action="sim-chart-layer-toggle"]');
-    if (chartLayerToggle && STATE.simulation) {
+    if (chartLayerToggle && currentSim()) {
       // Which LINES to draw inside every chart (value/band/setpoint/
       // average) — no canvas is added or removed, just what gets drawn
       // into the ones already there, so a direct redraw is enough (same
       // as the variable <select> above, no full renderModal() needed).
-      if (!STATE.simulation.chartLayers) STATE.simulation.chartLayers = {};
-      STATE.simulation.chartLayers[chartLayerToggle.dataset.layer] =
+      if (!currentSim().chartLayers) currentSim().chartLayers = {};
+      currentSim().chartLayers[chartLayerToggle.dataset.layer] =
         chartLayerToggle.checked;
       drawSimulationChart();
       return;
     }
 
     const actuatorStripToggle = e.target.closest('[data-action="sim-actuator-strip-toggle"]');
-    if (actuatorStripToggle && STATE.simulation) {
-      STATE.simulation.showActuatorStrips = actuatorStripToggle.checked;
+    if (actuatorStripToggle && currentSim()) {
+      currentSim().showActuatorStrips = actuatorStripToggle.checked;
       renderModal();
       return;
     }
@@ -5904,6 +6643,8 @@ async function logout() {
   clearPoll("alerts-view");
   discardActiveSimulationIfAny();
   STATE.simulation = null;
+  discardActiveLiveSimulationIfAny();
+  STATE.liveSimulation = null;
   clearGlobalStrategyPolls();
   STATE.controlStrategy = { settings: {}, loaded: false, loading: false, drafts: {}, status: {}, results: {} };
   STATE.users = {

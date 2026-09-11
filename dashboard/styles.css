@@ -925,6 +925,84 @@ a:hover { color: var(--accent-dark); }
 }
 .sim-nonop-banner::before { content: "⚠"; font-size: 14px; }
 
+/* ---------- Riproduzione live (tasto "Tempo reale" e pop-up dedicato) ---------- */
+/* Stesso motivo dell'anteprima batch sopra (.sim-progress-track, .sim-
+   nonop-banner) — solo il "sta girando adesso" in piu': un puntino verde
+   pulsante ovunque compaia lo stato live, sulla pagina, nel pop-up e su
+   ogni card settore della griglia. */
+
+.btn-live-play {
+  border: 1px solid var(--accent);
+  background: #fff;
+  color: var(--accent-dark);
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.btn-live-play:hover { background: var(--accent-soft); }
+
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.65); }
+}
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--accent);
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+/* sim-live-badge, non .live-badge: quella classe e' gia' presa dal badge
+   scuro "LIVE" della telemetria di zona (vedi piu' sotto, sezione zone
+   detail) — stesso nome, stile completamente diverso, servirebbe un
+   selettore piu' specifico per non farli scontrare in cascata. */
+.sim-live-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 10.5px/1 var(--mono); letter-spacing: .06em;
+  color: var(--accent-dark); background: var(--accent-soft);
+  border: 1px solid rgba(31, 122, 81, .3);
+  border-radius: 999px; padding: 5px 10px;
+}
+
+/* Cluster di controllo sul banner della pagina Simulatore (accanto a
+   "Simula l'intera serra") — l'UNICO posto con i controlli della
+   riproduzione live (play/pausa/velocità/reset): il pop-up
+   (renderLiveSimulatorModal) e' di sola lettura, vedi renderLiveStatusLine
+   in script.js. Patchato via renderLiveControlCluster, mai ridisegnato
+   dentro un renderSimulatorView() completo. */
+.live-control-cluster { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-live-play { min-width: 116px; justify-content: center; }
+.live-speed-group { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.live-speed-btn {
+  border: none; border-right: 1px solid var(--line); background: #fff;
+  padding: 9px 11px; font: 600 12px var(--mono); color: var(--ink-mute); cursor: pointer;
+}
+.live-speed-btn:last-child { border-right: none; }
+.live-speed-btn:hover { background: #f2f8f4; }
+.live-speed-btn.active { background: var(--accent); color: #fff; }
+.btn-live-reset { color: var(--ink-mute); }
+.live-error-hint { font-size: 11.5px; color: var(--danger); cursor: help; }
+
+/* Riga di sola lettura nel pop-up (stato/velocità/ciclo/tempo trascorso) —
+   vedi renderLiveStatusLine. */
+.live-status-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px; }
+.live-status-line .pill { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Striscia "la serra sta girando" su ogni card settore della griglia
+   Simulatore (renderSimulatorSectorRow) — vuota (quindi invisibile, vedi
+   :empty sotto) finche' nessuna riproduzione live copre quel settore.
+   Patchata direttamente (renderLiveZoneStrips), mai tramite un intero
+   re-render della griglia: e' aggiornata anche a pop-up chiuso, ogni tick
+   di polling, mentre si resta sulla pagina Simulatore. */
+.sector-live-strip {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed var(--dept-border, #cfe6d9);
+  font: 500 10px/1.2 var(--mono); color: var(--accent-dark);
+}
+.sector-live-strip:empty { display: none; }
+.live-strip-phase { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 92px; }
+.live-strip-value { white-space: nowrap; color: var(--ink-mute); font-weight: 400; }
+.live-strip-actuators { display: flex; gap: 3px; margin-left: auto; }
+.live-actuator-dot { width: 6px; height: 6px; border-radius: 50%; background: #d8e4dc; flex: none; }
+.live-actuator-dot.on { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
 /* ---------- Simulatore page: theme, intro banner, sector grid ---------- */
 /* Uses the --sim palette (aliased to the app's normal green --accent) —
    the grid below (dept-card/sector-row) is intentionally the SAME
@@ -1183,14 +1261,10 @@ a:hover { color: var(--accent-dark); }
 .sim-chart-grid-cell { background: #f9fbfa; border-radius: 14px; padding: 10px 10px 6px; }
 .sim-chart-grid-title { font: 500 11px var(--sans); color: var(--ink-soft); margin-bottom: 6px; }
 .sim-chart-grid-cell canvas { width: 100%; height: 128px; display: block; }
-/* Per-variable companion actuator strip (drawActuatorStrip), directly under
-   its own chart canvas — much shorter than the chart itself, the height
-   rule above is generic to any canvas in the cell so this needs the more
-   specific selector to override it. */
-.sim-chart-grid-cell canvas.sim-chart-grid-strip { height: 24px; margin-top: 4px; }
-/* Same strip, single-chart view — sits right under .chart-canvas-wrap
-   instead of inside a grid cell, so it gets its own top-level class. */
-.sim-actuator-strip-single { width: 100%; height: 24px; display: block; margin-top: 6px; border-radius: 6px; overflow: hidden; }
+/* Actuator activity used to get its own companion strip canvas directly
+   under each chart (drawActuatorStrip) — removed in favor of a tint drawn
+   INSIDE drawSimulationSeriesChart's own canvas (actuatorIntensity()), so
+   there is no separate strip element to size here anymore. */
 
 /* Checkbox row above the chart(s): which LINES to draw inside every one
    (value/band/setpoint/average — not which of the 6 to show, see
