@@ -125,11 +125,32 @@ quarantine ora accetta un quarantined_at opzionale (solo nel passato, solo
 insieme a is_quarantined=True — vedi backend/app/features/plants/
 models.py, aggiunto apposta per questo script): ensure_quarantine() lo usa
 per registrare le 5 piante del Passo 8 come già in quarantena da oltre 24h
-al momento in cui la demo parte, cosi' chi guarda non deve aspettare un
+al momento in cui viene chiamato, cosi' chi guarda non deve aspettare un
 giorno reale per vedere il bottone abilitato. Il backend applica lo stesso
 identico istante sia a plants.quarantined_at sia a plant_movements.
 moved_at (mai solo all'uno o all'altro): i due raccontano lo stesso
 evento e non devono mai divergere.
+
+Il tempo di quarantena non e' pero' un salto istantaneo: dato che
+QUARANTINE_MIN_RELEASE_MS confronta solo tempo reale e che ripetere la
+stessa PATCH e' un no-op silenzioso (vedi set_quarantine_state(), non si
+può quindi far avanzare quarantined_at a piccoli passi), lo script prima
+ATTENDE per davvero — con la stessa narrazione (narrate_wait) usata
+altrove — il tempo reale equivalente al margine QUARANTINE_BACKDATE al
+ritmo di 1 secondo reale = QUARANTINE_MINUTES_PER_SECOND minuti di
+quarantena (vedi QUARANTINE_REAL_WAIT_SECONDS: con 30h di margine e 10
+min/sec sono 180s, 3 minuti), e SOLO alla fine di quell'attesa registra
+con una singola PATCH il quarantined_at già backdatato di
+QUARANTINE_BACKDATE. Chi guarda la demo vede quindi il tempo di
+quarantena scorrere con lo stesso spirito accelerato del resto della
+serra, invece di un salto invisibile.
+
+ACCOUNT AGRONOMO NOMINATI: oltre all'admin, SEED_ACCOUNTS include quattro
+account agronomo con username/password fissi (mario/elena/antonio/alice),
+creati (o aggiornati se già esistenti) con lo stesso identico meccanismo
+dell'admin — scrittura diretta nel database via _upsert_user(), prima di
+qualunque chiamata HTTP. Stesse credenziali già usate in
+demo/seed_test_scenario.py (NAMED_AGRONOMO_ACCOUNTS).
 
 LOCKDOWN "DA SICUREZZA" (safety_range) su r4-s2 — terza transizione,
 qualitativamente diversa dalle due sopra: niente InjectFault, e niente
@@ -258,8 +279,18 @@ from backend.app.features.users.security import hash_password
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "pass123"
 
+# Oltre all'admin, quattro account agronomo "umani" nominati, utili per
+# provare la dashboard con più account invece del solo admin/pass123.
+# Stesse credenziali già usate in demo/seed_test_scenario.py
+# (NAMED_AGRONOMO_ACCOUNTS), cosi' i due script restano coerenti. Creati
+# (o aggiornati se già esistenti) con lo stesso identico meccanismo
+# dell'admin (_upsert_user, scrittura diretta nel database), non via HTTP.
 SEED_ACCOUNTS = (
     (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
+    ("mario", "1234frutta", UserRole.AGRONOMO, "Mario"),
+    ("elena", "1234verdura", UserRole.AGRONOMO, "Elena"),
+    ("antonio", "piantagrassa2", UserRole.AGRONOMO, "Antonio"),
+    ("alice", "curatrice10", UserRole.AGRONOMO, "Alice"),
 )
 # Configurabile via variabile d'ambiente cosi' lo STESSO script, senza
 # modifiche, funziona sia contro un backend locale (default) sia contro
@@ -328,6 +359,30 @@ PHASE_ADVANCE_ZONE_IDS = ["r1-s1", "r2-s1", "r3-s1"]
 # comodo per non finire sul filo per un ritardo di rete o di orologio fra
 # questa macchina e chi guarda la demo.
 QUARANTINE_BACKDATE = timedelta(hours=30)
+
+# QUARANTINE_MIN_RELEASE_MS (dashboard/script.js) confronta solo tempo
+# reale — Date.now() - quarantined_at — senza alcun "orologio di
+# quarantena" simulato lato backend/Edge; e PATCH /plants/{id}/quarantine
+# e' un no-op silenzioso quando lo stato (is_quarantined/zona/motivo) non
+# cambia (vedi set_quarantine_state() in backend/app/features/plants/
+# repository.py: il controllo in cima alla funzione ritorna subito senza
+# toccare quarantined_at), quindi non e' possibile far avanzare il
+# cronometro di quarantena a piccoli passi con piu' chiamate ravvicinate.
+# Per farlo comunque scorrere con lo stesso spirito accelerato del resto
+# della demo — non un salto istantaneo invisibile, ma un'attesa reale,
+# narrata, proporzionale — lo script attende per davvero il tempo reale
+# equivalente al margine QUARANTINE_BACKDATE usando il rapporto 1 secondo
+# reale = QUARANTINE_MINUTES_PER_SECOND minuti di quarantena (stesso
+# concetto di time_scale usato altrove per l'Edge, ma con un proprio
+# fattore: qui non esiste alcun processo lato server da accelerare, solo
+# l'attesa dello script). Con 30h di margine e 10 min/sec, l'attesa reale
+# e' 30*60/10 = 180s (3 minuti); il quarantined_at effettivo, registrato
+# con UNA sola PATCH al termine dell'attesa, resta comunque backdatato di
+# QUARANTINE_BACKDATE esattamente come prima.
+QUARANTINE_MINUTES_PER_SECOND = 10.0
+QUARANTINE_REAL_WAIT_SECONDS = (
+    QUARANTINE_BACKDATE.total_seconds() / 60.0 / QUARANTINE_MINUTES_PER_SECOND
+)
 
 # Quante volte al secondo la console viene aggiornata con lo stato di
 # avanzamento durante le attese lunghe (Passo 7): puramente cosmetico, per
@@ -1426,8 +1481,18 @@ def main() -> None:
     # "accodato" per ogni zona, ma time_scale rimasto a 1 su tutte).
 
     print(
-        "\n[seed] --- Passo 8: piante e quarantena (invariato nel meccanismo; "
-        f"backdatate di {QUARANTINE_BACKDATE} cosi' 'Fai uscire' e' gia' abilitabile) ---"
+        "\n[seed] --- Passo 8: piante e quarantena "
+        f"(margine di backdate {QUARANTINE_BACKDATE} cosi' 'Fai uscire' e' gia' "
+        "abilitabile; il tempo di quarantena scorre pero' con un'attesa reale, "
+        f"al ritmo di 1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min, prima di "
+        "registrarlo) ---"
+    )
+    narrate_wait(
+        f"quarantena: attendo {QUARANTINE_REAL_WAIT_SECONDS:.0f}s reali "
+        f"(equivalenti a {QUARANTINE_BACKDATE} di quarantena al ritmo di "
+        f"1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min) prima di registrare "
+        "l'inizio quarantena delle 5 piante...",
+        QUARANTINE_REAL_WAIT_SECONDS,
     )
     quarantine_backdate_at = datetime.now(timezone.utc) - QUARANTINE_BACKDATE
     plant_sources = [
