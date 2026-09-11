@@ -1094,11 +1094,11 @@ def step7_lockdown_demo(run_suffix: str) -> None:
         return
 
     degraded_event = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "StateChanged"
-        and e.get("payload",demo/old_test/seed_users.py {}).get("current_state") == "Degraded",
-        "StateChanged -> Degraded (pre-lockdown)",
-        since=since,
+    zone_id,
+    lambda e: e.get("event_type") == "StateChanged"
+    and e.get("payload", {}).get("current_state") == "Degraded",
+    "StateChanged -> Degraded (pre-lockdown)",
+    since=since,
     )
     if degraded_event is None:
         print(f"[seed] avviso: {zone_id} non è mai passata a Degraded, salto il resto del punto 7")
