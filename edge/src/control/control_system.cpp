@@ -437,7 +437,9 @@ ControlDecision RecipeControlSystem::execute(
     }
     if (variable == ControlledVariable::LIGHT &&
         (!std::isfinite(request.daily_light_mol_m2_so_far) ||
-         request.daily_light_mol_m2_so_far < 0.0)) {
+         request.daily_light_mol_m2_so_far < 0.0 ||
+         !std::isfinite(request.daily_supplemental_lighting_hours_so_far) ||
+         request.daily_supplemental_lighting_hours_so_far < 0.0)) {
         decision.safety_critical = true;
         decision.fault_severity = ControlFaultSeverity::CRITICAL;
         decision.message = "daily light history is invalid";
@@ -482,98 +484,67 @@ ControlDecision RecipeControlSystem::execute(
         return decision;
     }
 
-    if (variable == ControlledVariable::LIGHT &&
-        !hour_in_photoperiod(request.hour_of_day, active.photoperiod)) {
-        decision.status = ControlDecisionStatus::APPLIED;
-        decision.message = "outside photoperiod";
-        return decision;
-    }
-
     if (variable == ControlledVariable::LIGHT) {
-        // Deficit DLI (Daily Light Integral): la lampada supplisce solo se
-        // oggi, fra sole e lampada, non e' ancora arrivata alla pianta la
-        // quantita' di luce richiesta dalla fase (target.setpoint, in
-        // mol/m^2/giorno) — non reagisce alla lettura istantanea del
-        // momento. Bypassa deliberatamente ControllerFactory/IController:
-        // selected_strategy resta un campo valido e mostrato (coerenza col
-        // resto del sistema — vedi control_strategy/ lato backend), ma per
-        // la luce il comando e' sempre questo, qualunque Strategy sia
-        // selezionata.
-        const double remaining = std::max(
+        // Controllo a soglia sul deficit DLI (Daily Light Integral)
+        // giornaliero, non un PID sul PPFD istantaneo e non piu' un
+        // comando proporzionale: la lampada e' un attuatore ON/OFF (0 o
+        // 100, mai un valore intermedio), come le versioni precedenti di
+        // questa logica avevano gia' provato ad essere prima di scoprire
+        // che un ON/OFF ingenuo (acceso dal primo minuto di sole se il
+        // residuo era > 0) chiudeva il deficit troppo presto e lasciava
+        // il sole delle ore restanti sommarsi sopra un target gia' pieno
+        // (Pothos: 11.7 -> 18.5 mol/m^2/giorno) — bypassa deliberatamente
+        // ControllerFactory/IController: selected_strategy resta un
+        // campo valido e mostrato (coerenza col resto del sistema — vedi
+        // control_strategy/ lato backend), ma per la luce il comando e'
+        // sempre questo, qualunque Strategy sia selezionata.
+        //
+        // La differenza rispetto a quel primo tentativo e' QUANDO la
+        // lampada puo' intervenire: mai durante la finestra di luce
+        // NATURALE (Photoperiod — vedi il suo commento in questo header:
+        // e' l'ipotesi dell'agronomo su alba/tramonto, non piu' una
+        // finestra "supplire e' permesso"), cosi' il sole ha sempre tutta
+        // la giornata per fare la sua parte prima che la lampada tocchi
+        // qualcosa. Solo DOPO IL TRAMONTO, se il DLI maturato oggi e'
+        // ancora sotto il target di fase, la lampada supplisce — e solo
+        // finche' non si e' gia' raggiunto il tetto configurato di ore
+        // supplementari giornaliere (OutputSafetyLimits::
+        // maximum_supplemental_lighting_hours_per_day): un vero limite
+        // dell'agronomo, non un effetto collaterale della legge di
+        // comando come nelle versioni precedenti (quella "a ritmo
+        // lineare" e quella con scala che si restringe, entrambe scartate
+        // per un deficit strutturale o un'instabilita' da guadagno
+        // eccessivo — vedi la cronologia git di questo file per i
+        // dettagli empirici di ciascun tentativo).
+        const bool is_natural_daylight =
+            hour_in_photoperiod(request.hour_of_day, active.photoperiod);
+        if (is_natural_daylight) {
+            decision.command = 0.0;
+            decision.status = ControlDecisionStatus::APPLIED;
+            decision.message = "natural daylight phase";
+            return decision;
+        }
+
+        const double deficit = std::max(
             0.0, target.setpoint - request.daily_light_mol_m2_so_far);
-        // A RITMO E PROPORZIONALE, non piu' un binario "accesa finche' il
-        // deficit non si chiude" scattato al primissimo minuto di
-        // fotoperiodo (MVP originale): quella versione accendeva la
-        // lampada a piena potenza dall'inizio del fotoperiodo ogni volta
-        // che il residuo era > 0, anche con l'intera giornata ancora
-        // davanti al sole per colmarlo da solo — osservato empiricamente
-        // che il deficit si chiudeva spesso entro meta' mattina, e tutto
-        // il sole ricevuto nelle ore RESTANTI del fotoperiodo si sommava
-        // comunque sopra (nessun attuatore riduce il sole in eccesso),
-        // portando il totale giornaliero anche al doppio del target.
-        //
-        // Un primo tentativo binario "a ritmo" (accesa al 100% solo se
-        // indietro rispetto a un ritmo lineare, spenta appena si e' di
-        // nuovo in pari) chiudeva il problema sopra ma ne apriva un altro:
-        // con una lampada abbastanza potente da coprire da sola le specie
-        // a fabbisogno alto (vedi maximum_lighting_power_watts), bastava
-        // una nuvola che si apriva per un attimo a far scattare/rientrare
-        // il 100% ad ogni ciclo di controllo — osservato empiricamente sul
-        // Pomodorino: 40 accensioni/spegnimenti in un solo giorno, non
-        // realistico per una lampada da centinaia di watt vera. Un secondo
-        // tentativo con isteresi (resta accesa una finestra minima prima
-        // di rivalutare) risolveva lo sfarfallio ma non c'era una singola
-        // finestra buona per tutte le specie: abbastanza lunga da non far
-        // scattare il pomodoro troppo spesso, chiudeva pero' l'INTERO
-        // target giornaliero del Pothos in 1-2 ore, lasciando poi tutte le
-        // ore restanti di fotoperiodo libere di sommare sole naturale
-        // sopra un target gia' chiuso (media giornaliera Pothos salita da
-        // 11.7 a 18.5 mol/m^2/giorno).
-        //
-        // Qui il comando e' PROPORZIONALE a quanto si e' indietro rispetto
-        // al ritmo lineare (pace_threshold sotto), non piu' un interruttore
-        // 100%/0%: per un piccolo scostamento la lampada spinge poco (una
-        // specie a fabbisogno basso come il Pothos, quasi sempre appena
-        // indietro, non riceve mai un getto pieno che chiude da solo tutta
-        // la giornata), per un grande scostamento spinge fino al massimo
-        // (una specie a fabbisogno alto come il pomodoro, quasi sempre
-        // molto indietro perche' il sole da solo non basta, ottiene
-        // comunque un comando vicino al 100% quasi tutto il giorno). Niente
-        // isteresi a stato: la modulazione continua del comando smorza da
-        // sola le oscillazioni cicliche senza bisogno di "ricordare" se
-        // era gia' accesa.
-        const double elapsed_in_photoperiod = std::max(
-            0.0, request.hour_of_day - active.photoperiod.start_hour);
-        const double photoperiod_progress =
-            active.photoperiod.duration_hours > 0.0
-                ? std::clamp(
-                      elapsed_in_photoperiod /
-                          active.photoperiod.duration_hours,
-                      0.0,
-                      1.0)
-                : 1.0;
-        // pace_threshold e' quanto resterebbe da colmare a questo punto
-        // della giornata se il DLI si accumulasse a ritmo LINEARE costante
-        // dall'inizio alla fine del fotoperiodo. La soglia tende a zero
-        // verso la fine del fotoperiodo, quindi qualunque residuo ancora
-        // aperto a quel punto spinge comunque il comando verso il massimo
-        // in tempo — la garanzia del minimo entro fine giornata resta
-        // intatta, cambia solo QUANTO spinge e QUANDO.
-        const double pace_threshold =
-            target.setpoint * (1.0 - photoperiod_progress);
-        const double behind_by = std::max(0.0, remaining - pace_threshold);
-        // Scala di riferimento: il comando raggiunge il 100% quando si e'
-        // indietro di piu' di un quarto del target dell'intera giornata
-        // rispetto al ritmo — una frazione del target invece di un valore
-        // assoluto fisso, cosi' la stessa logica si adatta da sola a
-        // target di ordini di grandezza diversi (8 vs 58 mol/m^2/giorno)
-        // senza bisogno di conoscere la potenza reale della lampada, che
-        // il controllo non conosce ne' deve conoscere (bypassa
-        // deliberatamente ControllerFactory/IController, vedi sopra).
-        const double scale = target.setpoint * 0.25;
-        decision.command = scale > 0.0
-            ? std::clamp(100.0 * behind_by / scale, 0.0, 100.0)
-            : (behind_by > 0.0 ? 100.0 : 0.0);
+        if (deficit <= 0.0) {
+            decision.command = 0.0;
+            decision.status = ControlDecisionStatus::APPLIED;
+            decision.message = "daily DLI target already met";
+            return decision;
+        }
+        const double supplemental_hours_cap =
+            configuration.output_limits
+                .maximum_supplemental_lighting_hours_per_day;
+        if (request.daily_supplemental_lighting_hours_so_far >=
+            supplemental_hours_cap) {
+            decision.command = 0.0;
+            decision.status = ControlDecisionStatus::LIMITED;
+            decision.message =
+                "maximum supplemental lighting hours reached for today";
+            return decision;
+        }
+        decision.command = 100.0;
         decision.status = ControlDecisionStatus::APPLIED;
         return decision;
     }
@@ -702,6 +673,12 @@ void RecipeControlSystem::validate_recipe(const Recipe& recipe) {
                 "controller unit and version must be defined");
         }
         const auto& limits = configuration.output_limits;
+        // lighting_reference_ppfd_umol_m2_s e
+        // maximum_supplemental_lighting_hours_per_day non hanno un vincolo
+        // di positivita' stretta come gli altri: il ramo LIGHT e' ON/OFF
+        // (vedi execute()), non divide piu' per il primo, e zero e' un
+        // valore legittimo per il secondo ("mai supplire, solo sole").
+        // Restano comunque non negativi come tutti i limiti qui sotto.
         for (const double value : {
                  limits.maximum_water_volume_liters,
                  limits.maximum_pump_duration_seconds,
@@ -709,7 +686,9 @@ void RecipeControlSystem::validate_recipe(const Recipe& recipe) {
                  limits.maximum_dose_per_command_milliliters,
                  limits.maximum_daily_dose_milliliters,
                  limits.minimum_seconds_between_doses,
-                 limits.ph_settling_time_seconds}) {
+                 limits.ph_settling_time_seconds,
+                 limits.lighting_reference_ppfd_umol_m2_s,
+                 limits.maximum_supplemental_lighting_hours_per_day}) {
             require_finite(value, "output safety limit");
             if (value < 0.0) {
                 throw std::invalid_argument(

@@ -9,7 +9,7 @@
       "duration_hours": 336,
       "photoperiod": {
         "start_hour": 6,
-        "duration_hours": 18
+        "duration_hours": 14
       },
       "targets": [
         {
@@ -132,7 +132,9 @@
         "maximum_dose_per_command_milliliters": 5,
         "maximum_daily_dose_milliliters": 20,
         "minimum_seconds_between_doses": 900,
-        "ph_settling_time_seconds": 1800
+        "ph_settling_time_seconds": 1800,
+        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
       "version": 1,
@@ -160,7 +162,9 @@
         "maximum_dose_per_command_milliliters": 5,
         "maximum_daily_dose_milliliters": 20,
         "minimum_seconds_between_doses": 900,
-        "ph_settling_time_seconds": 1800
+        "ph_settling_time_seconds": 1800,
+        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
       "version": 1,
@@ -189,7 +193,9 @@
         "maximum_dose_per_command_milliliters": 0.5,
         "maximum_daily_dose_milliliters": 5,
         "minimum_seconds_between_doses": 900,
-        "ph_settling_time_seconds": 1800
+        "ph_settling_time_seconds": 1800,
+        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
       "version": 1,
@@ -221,7 +227,9 @@
         "maximum_dose_per_command_milliliters": 4,
         "maximum_daily_dose_milliliters": 12,
         "minimum_seconds_between_doses": 3600,
-        "ph_settling_time_seconds": 1800
+        "ph_settling_time_seconds": 1800,
+        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
       "version": 1,
@@ -253,7 +261,9 @@
         "maximum_dose_per_command_milliliters": 3,
         "maximum_daily_dose_milliliters": 8,
         "minimum_seconds_between_doses": 3600,
-        "ph_settling_time_seconds": 1800
+        "ph_settling_time_seconds": 1800,
+        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
       "version": 1,
@@ -285,7 +295,9 @@
         "maximum_dose_per_command_milliliters": 4,
         "maximum_daily_dose_milliliters": 12,
         "minimum_seconds_between_doses": 3600,
-        "ph_settling_time_seconds": 1800
+        "ph_settling_time_seconds": 1800,
+        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
       "version": 1,

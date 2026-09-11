@@ -79,6 +79,20 @@ target_link_libraries(control_system
 )
 set_target_properties(control_system PROPERTIES CXX_EXTENSIONS OFF)
 
+# Integratore del DLI (Daily Light Integral): PPFD -> mol/m^2 nel tempo,
+# azzerato a comando — separato dal modello fisico, dal sensore, dal
+# controllore e dall'attuatore (vedi dli_accumulator.hpp). Nessuna
+# dipendenza propria: e' solo aritmetica su due double.
+add_library(
+    dli_accumulator
+    control/dli_accumulator.cpp
+)
+target_include_directories(dli_accumulator
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_features(dli_accumulator PUBLIC cxx_std_17)
+set_target_properties(dli_accumulator PROPERTIES CXX_EXTENSIONS OFF)
+
 # EventBus Observer e consumer standard per console, CSV e backend.
 add_library(
     event_bus
@@ -149,6 +163,7 @@ target_link_libraries(edge_runtime
         io_adapters
         event_bus
         fault_management
+        dli_accumulator
 )
 set_target_properties(edge_runtime PROPERTIES CXX_EXTENSIONS OFF)
 

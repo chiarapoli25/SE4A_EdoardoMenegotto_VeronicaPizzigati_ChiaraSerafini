@@ -279,6 +279,17 @@ class OutputSafetyLimits(BaseModel):
     minimum_seconds_between_doses: float = Field(ge=0.0)
     ## @brief Tempo di assestamento del pH, in secondi.
     ph_settling_time_seconds: float = Field(ge=0.0)
+    ## @brief PPFD erogato dalla plafoniera da accesa (taratura hardware),
+    ## in umol/(m2 s). Il controllore LIGHT comanda ON/OFF (vedi
+    ## maximum_supplemental_lighting_hours_per_day sotto), non piu' una
+    ## percentuale: questo valore resta solo per stimare il contributo
+    ## artificiale al DLI giornaliero (dashboard/riepiloghi).
+    lighting_reference_ppfd_umol_m2_s: float = Field(ge=0.0)
+    ## @brief Ore massime giornaliere di illuminazione supplementare
+    ## (lampada accesa dopo il tramonto naturale), oltre le quali il
+    ## controllore LIGHT forza lo spegnimento anche con un deficit DLI
+    ## ancora aperto. Zero e' legittimo ("mai supplire, solo sole").
+    maximum_supplemental_lighting_hours_per_day: float = Field(ge=0.0)
 
 
 class PhaseVariableTarget(BaseModel):

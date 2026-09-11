@@ -203,7 +203,11 @@ Json safety_to_json(const OutputSafetyLimits& safety) {
          safety.maximum_daily_dose_milliliters},
         {"minimum_seconds_between_doses",
          safety.minimum_seconds_between_doses},
-        {"ph_settling_time_seconds", safety.ph_settling_time_seconds}};
+        {"ph_settling_time_seconds", safety.ph_settling_time_seconds},
+        {"lighting_reference_ppfd_umol_m2_s",
+         safety.lighting_reference_ppfd_umol_m2_s},
+        {"maximum_supplemental_lighting_hours_per_day",
+         safety.maximum_supplemental_lighting_hours_per_day}};
 }
 
 OutputSafetyLimits safety_from_json(const Json& json) {
@@ -214,7 +218,10 @@ OutputSafetyLimits safety_from_json(const Json& json) {
         json.at("maximum_dose_per_command_milliliters").get<double>(),
         json.at("maximum_daily_dose_milliliters").get<double>(),
         json.at("minimum_seconds_between_doses").get<double>(),
-        json.at("ph_settling_time_seconds").get<double>()};
+        json.at("ph_settling_time_seconds").get<double>(),
+        json.at("lighting_reference_ppfd_umol_m2_s").get<double>(),
+        json.at("maximum_supplemental_lighting_hours_per_day")
+            .get<double>()};
 }
 
 Json recipe_to_object(const Recipe& recipe) {

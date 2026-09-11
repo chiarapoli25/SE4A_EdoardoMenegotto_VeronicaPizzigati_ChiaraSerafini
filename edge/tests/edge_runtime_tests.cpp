@@ -389,12 +389,14 @@ TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
         first_failure.decisions[light_index].status,
         smarthydro::ControlDecisionStatus::BLOCKED);
     // La lampada resta spenta a questo primo istante (t~0 nel fotoperiodo
-    // 0-24h impostato sopra): il controllo della luce ora e' "a ritmo"
-    // (vedi control_system.cpp, RecipeControlSystem::execute) invece del
-    // vecchio MVP binario "accesa appena c'e' un deficit" — con l'intero
-    // fotoperiodo ancora davanti, il residuo non supera ancora la soglia
-    // di ritmo, quindi non e' un segno di guasto: il canale luce resta
-    // comunque "non bloccato" (verificato sopra), solo non ha ancora
+    // 0-24h impostato sopra, quindi sempre "luce naturale"): il ramo LIGHT
+    // (control_system.cpp, RecipeControlSystem::execute) non supplisce mai
+    // durante la finestra di luce naturale, qualunque sia il deficit —
+    // solo DOPO IL TRAMONTO (fuori da quella finestra) puo' accendersi, e
+    // solo se il DLI di oggi e' ancora sotto il target. Con l'intera
+    // giornata dichiarata "naturale" qui, quel momento non arriva mai: il
+    // canale luce resta comunque "non bloccato" (verificato sopra, status
+    // APPLIED con message "natural daylight phase"), semplicemente non ha
     // motivo di accendersi.
     EXPECT_DOUBLE_EQ(
         first_failure.actuator_output.lighting_power_watts,

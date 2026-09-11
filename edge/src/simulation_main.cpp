@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -43,6 +44,18 @@ struct CommandLineOptions {
     std::size_t cycle_delay_milliseconds = 0;
     bool show_help = false;
     bool progress = false;
+    // Seed meteo esplicito, condiviso da OGNI zona di questo processo — cioe'
+    // "un solo cielo per l'intera serra simulata", invece del seed
+    // 0x53484D31U+indice usato di default (che fa dipendere il meteo dalla
+    // POSIZIONE della zona nell'elenco, non da un vero regime condiviso):
+    // il chiamante (SimulationManager lato backend, vedi manager.py::
+    // execute_edge_steps) ne estrae uno fresco per ogni run di simulazione e
+    // lo passa identico a ogni processo settore di quella stessa run, cosi'
+    // tutti i settori vedono lo stesso giorno nuvoloso o sereno — e run
+    // diverse non rivedono piu' sempre la stessa sequenza meteo fissa.
+    // Assente per l'uso diretto da riga di comando (test, esperimenti): li'
+    // resta il vecchio comportamento per-zona.
+    std::optional<std::uint32_t> environment_seed;
 };
 
 const char* status_name(
@@ -83,6 +96,19 @@ double parse_positive_double(
             std::string(option) + " requires a positive number");
     }
     return parsed;
+}
+
+std::uint32_t parse_uint32(
+    const std::string& value,
+    const char* option) {
+    std::size_t parsed_characters = 0;
+    const auto parsed = std::stoull(value, &parsed_characters);
+    if (parsed_characters != value.size() ||
+        parsed > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument(
+            std::string(option) + " requires a 32-bit unsigned integer");
+    }
+    return static_cast<std::uint32_t>(parsed);
 }
 
 CommandLineOptions parse_options(int argc, char* argv[]) {
@@ -196,6 +222,15 @@ CommandLineOptions parse_options(int argc, char* argv[]) {
                 static_cast<std::size_t>(parsed);
             continue;
         }
+        if (argument == "--environment-seed") {
+            if (++index >= argc) {
+                throw std::invalid_argument(
+                    "--environment-seed requires a value");
+            }
+            options.environment_seed =
+                parse_uint32(argv[index], "--environment-seed");
+            continue;
+        }
         if (argument == "--progress") {
             options.progress = true;
             continue;
@@ -215,6 +250,8 @@ void print_help(const char* executable) {
         << "  --zones N           Number of independent zones (default: 1)\n"
         << "  --steps N           Number of control cycles (default: 1)\n"
         << "  --step-seconds SEC  Simulated seconds per cycle (default: 900)\n"
+        << "  --environment-seed N  Weather seed shared by every zone\n"
+        << "                        (default: per-zone, 0x53484D31+index)\n"
         << "  --output FORMAT     Output format: human or json (default: human)\n"
         << "  --backend-url URL   Enable asynchronous backend delivery\n"
         << "  --edge-id ID        Stable Edge identifier\n"
@@ -504,13 +541,19 @@ int main(int argc, char* argv[]) {
         }
         smarthydro::GreenhouseManager greenhouse(event_bus);
         for (std::size_t index = 0; index < options.zones; ++index) {
+            // Con --environment-seed esplicito, OGNI zona di questo processo
+            // usa lo stesso identico seed meteo (un solo cielo condiviso —
+            // vedi il commento su CommandLineOptions::environment_seed).
+            // Senza, resta il vecchio seed per-zona offsettato dall'indice.
+            const auto environment_seed = options.environment_seed.value_or(
+                static_cast<std::uint32_t>(0x53484D31U + index));
             auto& zone = greenhouse.add_simulated_zone(
                 "zone-" + std::to_string(index + 1),
                 recipe,
                 {},
                 {},
                 {},
-                static_cast<std::uint32_t>(0x53484D31U + index),
+                environment_seed,
                 static_cast<std::uint32_t>(0x53484D32U + index));
             zone.confirm_all_configurations();
         }

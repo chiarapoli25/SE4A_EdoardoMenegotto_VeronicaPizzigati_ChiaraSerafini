@@ -1,6 +1,7 @@
 #include <smarthydro/control/control_system.hpp>
 #include <smarthydro/recipes/recipe_json.hpp>
 
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -383,9 +384,10 @@ TEST(RecipeControlSystemTest, NutrientsIgnoreMeasuredValuesAndRequireValidHistor
         std::string::npos);
 }
 
-TEST(RecipeControlSystemTest, LightSuppliesDailyDeficitOnlyWithinPhotoperiod) {
+TEST(RecipeControlSystemTest, LightIsOnOffOnDailyDliDeficitOutsideNaturalDaylight) {
     // VegetativeGrowth's light target (config/example_recipe.json) e' un
-    // DLI di 29.2 mol/m^2/giorno, fotoperiodo 6h-24h.
+    // DLI di 29.2 mol/m^2/giorno, finestra di luce naturale 6h-20h (14h),
+    // tetto di illuminazione supplementare 6h/giorno.
     smarthydro::RecipeControlSystem system(load_demo_recipe());
     confirm_all(system);
     smarthydro::ControlRequest request;
@@ -405,70 +407,113 @@ TEST(RecipeControlSystemTest, LightSuppliesDailyDeficitOnlyWithinPhotoperiod) {
     // la luce (il target e' ormai un totale giornaliero, non un livello
     // istantaneo): una lettura "estrema" non blocca piu' nulla di per se'.
     request.source_valid = true;
+
+    // Dentro la finestra di luce naturale (6h-20h): la lampada resta
+    // SEMPRE spenta, qualunque sia il deficit — e' il sole a maturare il
+    // DLI durante il giorno, non un attuatore che reagisce al residuo.
     request.hour_of_day = 10.0;
-
-    // Deficit ancora aperto E si e' gia' indietro rispetto a un ritmo
-    // lineare verso il target lungo l'intero fotoperiodo (6h-24h, quindi
-    // a ore 10 e' trascorso il 22% del fotoperiodo: un ritmo costante
-    // avrebbe gia' accumulato il 22% di 29.2 = 6.5 mol/m^2, contro i soli
-    // 3.0 raggiunti qui): la lampada spinge, dentro il fotoperiodo. Il
-    // controllo e' "a ritmo E proporzionale" (vedi il commento su
-    // pace_threshold/behind_by/scale in control_system.cpp) — un piccolo
-    // scostamento dal ritmo (qui behind_by = remaining - pace_threshold =
-    // 26.2 - 22.71... = 3.49) da' un comando PARZIALE (100 * behind_by /
-    // scale, scale = 29.2*0.25 = 7.3), non piu' un binario 100%/0%.
-    request.daily_light_mol_m2_so_far = 3.0;
-    const auto behind =
+    request.daily_light_mol_m2_so_far = 3.0;  // deficit ancora ampio (26.2)
+    const auto daylight =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
-    EXPECT_EQ(behind.status, smarthydro::ControlDecisionStatus::APPLIED);
-    EXPECT_GT(behind.command, 0.0);
-    EXPECT_LT(behind.command, 100.0);
-    EXPECT_NEAR(behind.command, 47.79, 0.1);
+    EXPECT_EQ(daylight.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(daylight.command, 0.0);
+    EXPECT_EQ(daylight.message, "natural daylight phase");
 
-    // Molto piu' indietro (niente accumulato affatto, e siamo gia' a ore
-    // 20 su un fotoperiodo che finisce a ore 24): behind_by supera la
-    // scala di saturazione, il comando arriva al massimo — la garanzia
-    // del minimo entro fine fotoperiodo resta intatta anche col comando
-    // proporzionale.
-    request.daily_light_mol_m2_so_far = 0.0;
+    // Esattamente all'alba (6.0, estremo incluso della finestra) e appena
+    // prima del tramonto (19.99): ancora dentro la finestra, ancora
+    // spenta — l'estremo superiore (20.0 esatto) e' invece gia' notte,
+    // verificato subito sotto.
+    request.hour_of_day = 6.0;
+    EXPECT_DOUBLE_EQ(
+        system.execute(smarthydro::ControlledVariable::LIGHT, request)
+            .command,
+        0.0);
+    request.hour_of_day = 19.99;
+    EXPECT_DOUBLE_EQ(
+        system.execute(smarthydro::ControlledVariable::LIGHT, request)
+            .command,
+        0.0);
+
+    // Dopo il tramonto (20.0 esatto, fuori dalla finestra 6h-20h) con un
+    // deficit ancora aperto e nessuna ora supplementare ancora erogata
+    // oggi: la lampada si accende, ON/OFF (100%, mai un valore intermedio
+    // — niente PID, niente proporzionale sul PPFD istantaneo).
     request.hour_of_day = 20.0;
-    const auto very_behind =
+    const auto dusk =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
-    EXPECT_EQ(very_behind.status, smarthydro::ControlDecisionStatus::APPLIED);
-    EXPECT_DOUBLE_EQ(very_behind.command, 100.0);
-    request.hour_of_day = 10.0;
+    EXPECT_EQ(dusk.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(dusk.command, 100.0);
+    EXPECT_EQ(dusk.message, "");
 
-    // Target di giornata gia' raggiunto: la lampada non supplisce oltre.
+    // In piena notte (2.0), stesso discorso: il fotoperiodo non e'
+    // "l'unica finestra in cui e' permesso accendere" (vecchio
+    // significato) ma la finestra di luce NATURALE — fuori da essa la
+    // lampada supplisce se serve.
+    request.hour_of_day = 2.0;
+    const auto night =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(night.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(night.command, 100.0);
+
+    // Target di giornata gia' raggiunto (DLI so_far >= setpoint): la
+    // lampada non supplisce oltre, anche di notte.
     request.daily_light_mol_m2_so_far = 29.2;
     const auto met =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(met.status, smarthydro::ControlDecisionStatus::APPLIED);
     EXPECT_DOUBLE_EQ(met.command, 0.0);
+    EXPECT_EQ(met.message, "daily DLI target already met");
 
-    // Fuori fotoperiodo la lampada resta spenta anche con un deficit
-    // aperto: il fotoperiodo resta la finestra "di giorno" in cui e'
-    // ammesso supplire, non una decisione che il deficit puo' scavalcare.
-    request.daily_light_mol_m2_so_far = 0.0;
-    request.hour_of_day = 2.0;
-    const auto night =
+    // Un deficit ancora aperto ma il tetto di ore supplementari (6h/giorno
+    // in config/example_recipe.json) gia' raggiunto: la lampada resta
+    // spenta comunque — un limite dell'agronomo, non negoziabile dal
+    // deficit residuo.
+    request.daily_light_mol_m2_so_far = 3.0;
+    request.daily_supplemental_lighting_hours_so_far = 6.0;
+    const auto capped =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
-    EXPECT_EQ(night.status, smarthydro::ControlDecisionStatus::APPLIED);
-    EXPECT_DOUBLE_EQ(night.command, 0.0);
-    EXPECT_EQ(night.message, "outside photoperiod");
+    EXPECT_EQ(capped.status, smarthydro::ControlDecisionStatus::LIMITED);
+    EXPECT_DOUBLE_EQ(capped.command, 0.0);
+    EXPECT_NE(
+        capped.message.find("maximum supplemental lighting hours"),
+        std::string::npos);
 
-    // Un cumulativo giornaliero corrotto (negativo/non finito) resta un
-    // guasto critico, come per la cronologia di dose dei fertilizzanti.
-    request.hour_of_day = 10.0;
-    request.daily_light_mol_m2_so_far = -1.0;
-    const auto invalid_history =
+    // Appena SOTTO il tetto, la lampada torna a supplire normalmente.
+    request.daily_supplemental_lighting_hours_so_far = 5.99;
+    const auto just_under_cap =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(
-        invalid_history.status,
+        just_under_cap.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(just_under_cap.command, 100.0);
+    request.daily_supplemental_lighting_hours_so_far = 0.0;
+
+    // Un cumulativo giornaliero corrotto (negativo/non finito, sul DLI
+    // o sulle ore supplementari) resta un guasto critico, come per la
+    // cronologia di dose dei fertilizzanti.
+    request.daily_light_mol_m2_so_far = -1.0;
+    const auto invalid_dli_history =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(
+        invalid_dli_history.status,
         smarthydro::ControlDecisionStatus::BLOCKED);
     EXPECT_EQ(
-        invalid_history.fault_severity,
+        invalid_dli_history.fault_severity,
         smarthydro::ControlFaultSeverity::CRITICAL);
-    EXPECT_NE(invalid_history.message.find("light"), std::string::npos);
+    EXPECT_NE(
+        invalid_dli_history.message.find("light"), std::string::npos);
+
+    request.daily_light_mol_m2_so_far = 0.0;
+    request.daily_supplemental_lighting_hours_so_far = -1.0;
+    const auto invalid_hours_history =
+        system.execute(smarthydro::ControlledVariable::LIGHT, request);
+    EXPECT_EQ(
+        invalid_hours_history.status,
+        smarthydro::ControlDecisionStatus::BLOCKED);
+    EXPECT_EQ(
+        invalid_hours_history.fault_severity,
+        smarthydro::ControlFaultSeverity::CRITICAL);
+    EXPECT_NE(
+        invalid_hours_history.message.find("light"), std::string::npos);
 }
 
 TEST(RecipeControlSystemTest, RejectsNonIncreasingRecipeReplacementVersion) {
