@@ -170,6 +170,95 @@ def test_releasing_plant_clears_flag_and_returns_it_home(
     assert [item["is_quarantined"] for item in movements.json()] == [True, False]
 
 
+def test_quarantine_can_be_backdated_consistently_in_plant_and_movement(
+    client: TestClient,
+) -> None:
+    import datetime as datetime_module
+
+    register_tomato(client)
+    backdated = (
+        datetime_module.datetime.now(datetime_module.timezone.utc)
+        - datetime_module.timedelta(hours=48)
+    ).isoformat()
+
+    response = client.patch(
+        "/plants/tomato-1/quarantine",
+        json={
+            "is_quarantined": True,
+            "quarantine_zone_id": "quarantine-1",
+            "reason": "controllo fitosanitario di routine",
+            "quarantined_at": backdated,
+        },
+    )
+    movements = client.get("/plants/tomato-1/movements")
+
+    assert response.status_code == 200
+    expected = datetime_module.datetime.fromisoformat(backdated)
+    assert (
+        datetime_module.datetime.fromisoformat(response.json()["quarantined_at"])
+        == expected
+    )
+    # updated_at resta l'istante reale della scrittura, non quello
+    # backdatato dell'evento: le due cose sono deliberatamente diverse.
+    assert (
+        datetime_module.datetime.fromisoformat(response.json()["updated_at"])
+        != expected
+    )
+    matching = [m for m in movements.json() if m["is_quarantined"] is True]
+    assert len(matching) == 1
+    assert (
+        datetime_module.datetime.fromisoformat(matching[0]["moved_at"]) == expected
+    )
+
+
+def test_quarantine_backdated_to_the_future_is_rejected(
+    client: TestClient,
+) -> None:
+    import datetime as datetime_module
+
+    register_tomato(client)
+    future = (
+        datetime_module.datetime.now(datetime_module.timezone.utc)
+        + datetime_module.timedelta(hours=1)
+    ).isoformat()
+
+    response = client.patch(
+        "/plants/tomato-1/quarantine",
+        json={
+            "is_quarantined": True,
+            "quarantine_zone_id": "quarantine-1",
+            "reason": "controllo fitosanitario di routine",
+            "quarantined_at": future,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_quarantined_at_is_rejected_when_releasing_a_plant(
+    client: TestClient,
+) -> None:
+    import datetime as datetime_module
+
+    register_tomato(client)
+    quarantine_tomato(client)
+    past = (
+        datetime_module.datetime.now(datetime_module.timezone.utc)
+        - datetime_module.timedelta(hours=1)
+    ).isoformat()
+
+    response = client.patch(
+        "/plants/tomato-1/quarantine",
+        json={
+            "is_quarantined": False,
+            "reason": "pianta guarita",
+            "quarantined_at": past,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_plant_species_must_match_home_zone(client: TestClient) -> None:
     response = client.post(
         "/plants",

@@ -118,6 +118,7 @@ def update_plant_quarantine(
         is_quarantined=update.is_quarantined,
         destination_zone_id=destination_zone_id,
         reason=reason,
+        quarantined_at_override=update.quarantined_at,
     )
 
 

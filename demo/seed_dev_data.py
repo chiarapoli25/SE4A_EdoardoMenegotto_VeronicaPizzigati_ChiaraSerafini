@@ -3,12 +3,41 @@
 # vero (non simulato) si comporti correttamente.
 # Per popolare rapidamente la dashboard durante lo sviluppo, usa invece
 # demo/seed_test_scenario.py (non richiede l'Edge).
+#
+# NOTA su r4-s2 (CommandFailed): lo scenario storico "CommandFailed per
+# volume di irrigazione oltre il limite fisico dell'attuatore (5.0 L)" non
+# e' piu' riproducibile da input legittimo dal commit 85633f6 in poi
+# ("Strategy diventa impostazione globale d'impianto", branch dashboard):
+# il backend (recipes/repository.py::_stamp_global_strategy() +
+# recipes/parameters.py::default_parameters_for()) ricalcola SEMPRE i
+# parametri del controllore (incluso active_command) da formule globali
+# fisse alla lettura di ogni ricetta, ignorando qualunque valore la ricetta
+# dichiari — per soil_moisture il comando massimo possibile e' ora 1.0 L
+# (Threshold) o 0.5 L (PID/Predictive), sempre sotto il limite fisico reale.
+# Vedi la nota estesa "LOCKDOWN 'DA SICUREZZA' (safety_range) su r4-s2" piu'
+# sotto per il meccanismo attualmente usato al suo posto (una violazione di
+# safety_range, non un CommandFailed) e per i dettagli di come e' stato
+# verificato dal vivo in questa sessione.
 
 """Popolamento SmartHydro basato ESCLUSIVAMENTE sull'Edge C++ reale.
 
 USO: con il backend già avviato (uvicorn backend.app.main:app --reload):
 
     python demo/seed_dev_data.py
+
+Per puntare a un backend remoto (es. il deploy Railway, dove — vedi
+Dockerfile/start.sh — l'Edge reale parte da solo insieme al backend a ogni
+avvio del container, senza bisogno di avviarlo qui a mano):
+
+    SMARTHYDRO_BASE_URL=https://<nome-servizio>.up.railway.app python demo/seed_dev_data.py
+
+Il prompt "avvia l'Edge e premi INVIO" (vedi wait_for_edge_start()) diventa
+automaticamente superfluo in questo caso: lo script prova per una manciata
+di secondi, SENZA chiedere alcun input, se le zone appena attivate
+diventano già Running da sole (segno che un Edge è già in esecuzione e
+raggiungibile, come su Railway); solo se questo non accade — il caso
+locale, dove l'Edge va ancora avviato a mano — torna al prompt interattivo
+di sempre. Vedi probe_edge_already_running().
 
 Questo script NON invia mai telemetria o stati calcolati a mano: fornisce
 solo l'input che un chiamante legittimo può dare al backend (registrazione
@@ -32,8 +61,8 @@ VINCOLI RISPETTATI:
   legittima come farebbe un chiamante umano o un pannello di controllo.
 
 AUTENTICAZIONE: come primo passo lo script fa login su POST /auth/login con
-l'account amministratore di esempio (vedi demo/seed_users.py, che va
-eseguito almeno una volta prima di questo script) e allega il token
+l'account amministratore di esempio (vedi demo/old_test/seed_users.py, che
+va eseguito almeno una volta prima di questo script) e allega il token
 ottenuto a ogni comando accodato su POST /zones/{id}/commands. Nessuno dei
 command_type usati qui è oggi ChangeStrategy/ConfirmConfiguration (l'unico
 gate protetto da ruolo, vedi backend/app/features/commands/routes.py), ma
@@ -49,61 +78,122 @@ scenario dovesse cambiare in futuro.
   telemetria dal nostro Edge, quindi resta offline per davvero.
 
 Topologia (stessa forma delle versioni precedenti dello script):
-- Reparto 1: r1-s1 (Nominal), r1-s2 (dimostrazione InjectFault -> Degraded,
-  auto-recupero)
-- Reparto 2: r2-s1 (Nominal), r2-s2 (OFFLINE: nessun assigned_edge_id)
-- Reparto 3: r3-s1 (Nominal)
+- Reparto 1: r1-s1 (Nominal, avanzata fino all'ultima fase della ricetta),
+  r1-s2 (dimostrazione InjectFault -> Degraded, auto-recupero; NON avanzata
+  di fase, resta nella sua fase iniziale per tutta la demo)
+- Reparto 2: r2-s1 (Nominal, avanzata fino all'ultima fase), r2-s2
+  (OFFLINE: nessun assigned_edge_id, mai — stesso principio di r2-s2 in
+  demo/seed_test_scenario.py: non è una disconnessione simulata a metà
+  scenario, è una zona che non ha mai avuto un Edge)
+- Reparto 3: r3-s1 (Nominal, avanzata fino all'ultima fase)
 - Reparto 4: r4-s1 (dimostrazione InjectFault persistente -> Degraded ->
-  EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal),
-  r4-s2 (dimostrazione CommandFailed -> EmergencyLockdown, vedi sotto)
+  EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal,
+  POI avanzata fino all'ultima fase una volta rientrata Nominal), r4-s2
+  (dimostrazione lockdown per violazione di safety_range, vedi sotto; NON
+  avanzata di fase)
 - Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 5 piante
-  quarantenate
+  quarantenate, backdatate oltre la soglia di rilascio del frontend (vedi
+  BACKDATING QUARANTENA sotto)
 
-COMANDO NON ESEGUITO (CommandFailed) su r4-s2 — a differenza di r1-s2/r4-s1
-questo NON usa InjectFault: e' scatenato da puro INPUT di ricetta (POST
-/recipes, la stessa via legittima con cui backend/data/recipes/
-tomato_recipe.json esiste), senza toccare una riga di codice dell'Edge.
-Verificato leggendo per intero edge/src/runtime/edge_runtime_cycle.cpp,
-edge_runtime_actuation.cpp e edge/src/simulation/actuator_simulator.cpp
-(non assunto):
-- L'evento "Comando non eseguito"/COMANDO KO nella pagina Allarmi e' un
-  CommandFailed pubblicato da EdgeRuntime::publish_command_failed(), MAI un
-  comando con esito "rejected": e' l'UNICO punto di pubblicazione, dentro
-  il catch(const std::exception&) che avvolge apply_decisions() in
-  edge_runtime_cycle.cpp — e quello stesso catch forza SUBITO
-  EmergencyLockdown (mai Degraded), a differenza del fault recuperabile di
-  cui sopra.
-- Le uniche eccezioni che quel catch puo' intercettare vivono in
-  actuator_simulator.cpp (volume d'irrigazione oltre il massimo
-  configurato, richiesta gia' attiva, pH su/giu' aperti insieme). Le fault
-  ufficiali (InjectFault/FaultMode) alterano solo l'output GIA' calcolato
-  dell'attuatore (fault_injector.hpp: alter_readings/alter_output), mai il
-  suo stato interno di richiesta: non possono quindi mai scatenare queste
-  eccezioni, a differenza del fault recuperabile sopra.
-- L'unica via reale e ripetibile e' "volume oltre il massimo fisico",
-  confermata dal test del progetto stesso
-  (EdgeRuntimeTest.StopsAllActuatorsWhenPhysicalCommandFails,
-  edge/tests/edge_runtime_tests.cpp): il sistema ha DUE limiti d'acqua
-  indipendenti — quello della ricetta (output_limits.
-  maximum_water_volume_liters, nessun tetto lato validazione, vedi
-  backend/app/features/recipes/models.py) e quello FISICO dell'attuatore
-  (ActuatorConfig::maximum_irrigation_volume_liters, di default 5.0 L,
-  cablato nell'Edge e mai esposto da alcun endpoint/comando/file). In
-  edge/src/control/control_system.cpp il comando calcolato viene limitato
-  al tetto della RICETTA prima di raggiungere l'attuatore: se la ricetta
-  dichiara (legittimamente: nessun limite superiore lato Pydantic) un
-  tetto piu' alto di 5.0 L, il comando supera comunque la vera capacita'
-  fisica e l'eccezione scatta, esattamente come nel test.
-- ensure_command_failed_recipe() crea quindi (POST /recipes, puro input)
-  una ricetta "male configurata di proposito": soglia Threshold
-  dell'umidita' del terriccio impostata molto in alto (attiva quasi certa
-  al primo ciclo), active_command = 6.0 L (> 5.0 L fisici) e
-  output_limits.maximum_water_volume_liters = 10.0 L (> 5.0 L, quindi il
-  clamp lato ricetta non lo ferma prima che raggiunga l'attuatore). Il
-  safety_range resta apposta ampio (0-100%) cosi' la zona non salta invece
-  dritta in EmergencyLockdown per fault CRITICAL come descritto sopra: la
-  transizione osservata deve essere Nominal -> EmergencyLockdown via
-  CommandFailed, non via un fault_severity CRITICAL sul safety_range.
+Ogni zona online (con un Edge assegnato) riceve anche una pianta residente
+non quarantenata, di specie coerente con la ricetta della zona (vedi
+ensure_resident_plants()): senza questo, un settore Nominal/Degraded/
+EmergencyLockdown normale non avrebbe mai alcuna pianta a proprio nome, a
+differenza delle 5 piante del Reparto 5 (che sono sempre e solo in
+quarantena).
+
+AVANZAMENTO DI FASE (AdvanceRecipePhase) — ogni ricetta di catalogo ha 4
+fasi la cui durata reale (control_system.cpp/profiles.json) va da ~126 a
+~231 giorni: anche a time_scale=60 non c'e' alcuna speranza di vedere una
+zona arrivare da sola all'ultima fase entro una demo di pochi minuti.
+AdvanceRecipePhase (backend/app/features/commands/models.py CommandType.
+ADVANCE_RECIPE_PHASE, gestito in edge/src/runtime/runtime_commands.cpp e
+edge/src/runtime/edge_runtime_configuration.cpp advance_recipe_phase()) è
+un comando legittimo pensato esattamente per questo: sposta in avanti
+SOLO l'orologio interno della ricetta fino all'inizio della fase
+successiva (mai lo stato dei sensori/attuatori), e risponde "rejected:
+recipe is already in its last phase" quando non c'e' una fase successiva
+— usato qui per sapere quando fermarsi, senza dover contare le fasi a
+mano. Non e' quindi un dato calcolato a mano: e' lo stesso comando che un
+agronomo potrebbe inviare dal pannello di controllo per far avanzare
+manualmente una coltivazione.
+
+BACKDATING QUARANTENA — dashboard/script.js definisce
+QUARANTINE_MIN_RELEASE_MS (24h, solo lato frontend, non imposto dal
+backend) prima che "Fai uscire" diventi cliccabile. PATCH /plants/{id}/
+quarantine ora accetta un quarantined_at opzionale (solo nel passato, solo
+insieme a is_quarantined=True — vedi backend/app/features/plants/
+models.py, aggiunto apposta per questo script): ensure_quarantine() lo usa
+per registrare le 5 piante del Passo 8 come già in quarantena da oltre 24h
+al momento in cui la demo parte, cosi' chi guarda non deve aspettare un
+giorno reale per vedere il bottone abilitato. Il backend applica lo stesso
+identico istante sia a plants.quarantined_at sia a plant_movements.
+moved_at (mai solo all'uno o all'altro): i due raccontano lo stesso
+evento e non devono mai divergere.
+
+LOCKDOWN "DA SICUREZZA" (safety_range) su r4-s2 — terza transizione,
+qualitativamente diversa dalle due sopra: niente InjectFault, e niente
+CommandFailed nonostante il nome storico della zona (r4-s2 era in origine
+la demo CommandFailed: vedi il ripensamento sotto). E' scatenata da puro
+INPUT di ricetta (POST /recipes, target di fase), senza toccare una riga
+di codice dell'Edge.
+
+Perche' NON e' (piu') CommandFailed — verificato dal vivo in questa
+sessione, non solo a codice: la tecnica storica (una ricetta con un
+active_command/soglia tale da chiedere alla pompa piu' del limite fisico
+di 5.0 L, edge/src/simulation/actuator_simulator.cpp) funzionava quando fu
+verificata la prima volta, ma da allora e' stata introdotta (branch
+dashboard, commit 85633f6 "Strategy diventa impostazione globale
+d'impianto") la ristampa globale dei parametri del controllore:
+backend/app/features/recipes/repository.py::_stamp_global_strategy()
+sovrascrive SEMPRE selected_strategy e parameters di OGNI controllore alla
+lettura di una ricetta (GET /recipes, e quindi anche il comando
+ActivateCultivation che la incapsula), con
+backend/app/features/recipes/parameters.py::default_parameters_for() —
+funzione pura, senza alcuna lettura da configurazione modificabile: per
+Threshold su soil_moisture restituisce SEMPRE active_command=1.0 L,
+qualunque valore la ricetta dichiari. 1.0 L resta sempre sotto i 5.0 L
+fisici, quindi nessuna ricetta (e nessun comando disponibile: SetSimulation-
+Speed/AdvanceRecipePhase/InjectFault non toccano l'attuatore) puo' piu' far
+scattare quell'eccezione tramite input legittimo. Verificato dal vivo:
+un run completo di r4-s2 con la vecchia ricetta non ha mai prodotto un
+evento CommandFailed, solo un fault ricorrente e non voluto
+("commanded_without_response") e infine un EmergencyLockdown casuale per
+una violazione del safety_range della luce, scollegata dallo scenario
+voluto — da cui la sostituzione qui sotto con un meccanismo diverso ma
+altrettanto reale.
+
+Il nuovo meccanismo, deterministico e riproducibile:
+- Il target di fase soil_moisture di questa ricetta (ensure_safety_lockdown
+  _recipe(), *solo* il target, il controllore resta quello originale del
+  catalogo — tanto i suoi parametri sarebbero comunque ristampati) ha un
+  safety_range volutamente stretto attorno all'allowed_range (43-57%
+  contro 45-55%): un margine di soli 2 punti percentuali per lato.
+- edge/src/runtime/edge_runtime_core.cpp::environment_for_recipe() campiona
+  l'umidita' INIZIALE del terriccio non dentro l'allowed_range ma in una
+  finestra allargata di meta' della sua ampiezza per lato — quindi puo'
+  cadere gia' fuori sia dall'allowed_range sia (con margini stretti come
+  questi) dal safety_range fin dal primissimo ciclo. Il seed di questo
+  campionamento e' FISSO (environment_seed di default, mai passato da riga
+  di comando) e mescolato con l'hash dell'id ricetta: per una data stringa
+  id il valore campionato e' quindi sempre lo stesso, run dopo run — motivo
+  per cui LOCKDOWN_SAFETY_DEMO_RECIPE_ID e' scritta esattamente com'e'
+  sotto (trovata empiricamente in questa sessione provando alcuni id su
+  questo stesso Edge/backend finche' il campionamento non e' caduto fuori
+  dal safety_range fin dal primo ciclo: 81.33%, ben oltre 57): cambiare
+  quella stringa cambia il campione, quindi NON rinominarla senza riverifica
+  dal vivo.
+- Il risultato e' un FaultDetected CRITICAL con rule="outside_recipe_
+  safety_range" component="soil_moisture_sensor" (edge/src/faults/
+  fault_detector.cpp) sul primissimo ciclo di controllo, seguito
+  immediatamente da StateChanged Nominal -> EmergencyLockdown (bypassando
+  Degraded, vedi la nota IMPORTANTE sotto) — senza bisogno di alcun
+  InjectFault ne' di ripetuti cicli di attesa: e' per questo lo scenario
+  piu' VELOCE dei tre, utile per stare dentro il budget dei primi 3 minuti
+  (punto 9). La zona resta in EmergencyLockdown per il resto della demo
+  (nessun reset automatico, a differenza di r4-s1): e' la terza situazione
+  attiva, diversa sia da r1-s2 (fault recuperabile breve) sia da r4-s1
+  (fault recuperabile persistente + reset manuale).
 
 IMPORTANTE su cosa "genera" Degraded vs EmergencyLockdown nel codice reale
 dell'Edge (verificato leggendo edge/src/faults/fault_detector.cpp ed
@@ -111,9 +201,10 @@ edge/src/runtime/edge_runtime_fsm.cpp, non assunto):
 - Un valore che supera il safety_range della ricetta per una variabile
   fisica come soil_moisture/ph/light NON produce Degraded: produce una
   fault CRITICAL e porta IMMEDIATAMENTE a EmergencyLockdown (bypassando
-  Degraded). Per questo motivo questo script non usa `sensor_offset` per
-  ottenere Degraded: userebbe un valore fuori dal safety_range e salterebbe
-  dritto in EmergencyLockdown, contraddicendo l'obiettivo del punto 5.
+  Degraded) — esattamente il meccanismo usato sopra per r4-s2. Per questo
+  motivo r1-s2/r4-s1 sotto NON usano `sensor_offset` per ottenere Degraded:
+  userebbe un valore fuori dal safety_range e salterebbe dritto in
+  EmergencyLockdown, contraddicendo il loro obiettivo (Degraded).
 - Un fault RECOVERABLE (es. `sensor_dropout`, cioè "missing_value") porta
   invece SUBITO a Degraded al primo ciclo di controllo in cui è rilevato;
   se lo stesso fault persiste per `recoverable_faults_before_lockdown`
@@ -137,63 +228,36 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
-import sqlite3
-import sys
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
-# Aggiungi la radice del repository al path per poter importare il backend
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# Modulo non nel pacchetto backend, ora dentro demo/old_test/ (spostato li'
+# insieme a seed_test_scenario.py/run_end_to_end.py). Python mette la
+# cartella dello script (demo/) in sys.path[0] quando lo lanci direttamente,
+# e old_test/ e' un namespace package implicito (nessun __init__.py
+# necessario in Python 3), quindi questo import funziona sia da
+# `python demo/seed_dev_data.py` (dalla radice) sia da dentro demo/, senza
+# bisogno di manipolare sys.path.
+from old_test.seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
 
-from backend.app.core.database import get_connection, init_db
-from backend.app.features.users.models import UserRole
-from backend.app.features.users.repository import UsernameConflict, create_user
-from backend.app.features.users.security import hash_password
-
-def _upsert_user(
-    connection: sqlite3.Connection,
-    username: str,
-    password: str,
-    role: UserRole,
-    display_name: str,
-) -> None:
-    """Crea l'utente o lo aggiorna se esiste già, scrivendo direttamente nel DB."""
-    try:
-        create_user(connection, username, password, role, display_name)
-        print(f"[seed] utente creato nel database: {username} (ruolo={role.value})")
-    except UsernameConflict:
-        connection.execute(
-            "UPDATE users SET password_hash = ?, role = ?, display_name = ? WHERE username = ?",
-            (hash_password(password), role.value, display_name, username),
-        )
-        connection.commit()
-        print(f"[seed] utente gia' esistente, password/ruolo aggiornati: {username}")
-
-
-def init_admin_in_db() -> None:
-    """Inizializza il DB e assicura l'esistenza dell'admin prima del login HTTP."""
-    connection = get_connection()
-    try:
-        init_db(connection)
-        _upsert_user(
-            connection, 
-            ADMIN_USERNAME, 
-            ADMIN_PASSWORD, 
-            UserRole.ADMIN, 
-            "Amministratore"
-        )
-    finally:
-        connection.close()
-
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "pass123"
-
-BASE_URL = "https://smarthydro-production-2a53.up.railway.app"
+# Configurabile via variabile d'ambiente cosi' lo STESSO script, senza
+# modifiche, funziona sia contro un backend locale (default) sia contro
+# l'indirizzo pubblico di un deploy Railway (SMARTHYDRO_BASE_URL=https://
+# <nome-servizio>.up.railway.app). Nota sull'account amministratore quando
+# BASE_URL e' remoto: questo script fa solo POST /auth/login (puro HTTP),
+# non puo' creare il primo account da solo (per scelta non esiste un
+# endpoint HTTP di registrazione, vedi demo/old_test/seed_users.py) — su
+# Railway demo/old_test/seed_users.py va eseguito UNA VOLTA dentro lo
+# stesso container (es. `railway run python demo/old_test/seed_users.py`,
+# cosi' scrive nello stesso
+# file SQLite che il backend in esecuzione sta davvero usando), non dal tuo
+# PC puntato all'URL pubblico: eseguito localmente scriverebbe in un
+# database SQLite locale, sul tuo PC, completamente scollegato da quello
+# del servizio remoto.
+BASE_URL = os.environ.get("SMARTHYDRO_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 EDGE_ID = "edge-serra-1"
 
 # Token di sessione ottenuto da login_as_admin() e allegato da request() a
@@ -224,18 +288,46 @@ POLL_INTERVAL_SECONDS = 2.0
 DEGRADED_DEMO_ZONE_ID = "r1-s2"
 LOCKDOWN_DEMO_ZONE_ID = "r4-s1"
 
-# Zona dedicata alla dimostrazione CommandFailed (vedi la nota in cima al
+# Quanto aspettare, SENZA chiedere alcun input, per capire se un Edge è
+# già in esecuzione e raggiungibile (caso Railway: start.sh lo avvia da
+# solo insieme al backend) prima di ripiegare sul prompt interattivo
+# (caso locale). Margine: ~1s di discovery lato Edge (poll_zone_assignments
+# ogni command_poll_milliseconds, default 1000ms) + un intero ciclo di
+# controllo a DEV_TIME_SCALE già attivo (900/60 = 15s) + margine — vedi
+# probe_edge_already_running().
+EDGE_READY_PROBE_SECONDS = 25.0
+
+# Zone che restano Nominal per l'intera demo (cioè non r1-s2 né la zona
+# dedicata al lockdown safety_range) e vengono quindi avanzate fino all'ultima fase
+# della loro ricetta con AdvanceRecipePhase. r4-s1 NON è qui: passa prima
+# dalla dimostrazione Degraded/EmergencyLockdown (step7_lockdown_demo) e
+# viene avanzata di fase solo DOPO essere rientrata Nominal — vedi main().
+PHASE_ADVANCE_ZONE_IDS = ["r1-s1", "r2-s1", "r3-s1"]
+
+# Le 5 piante del Passo 8 risultano già in quarantena da questo intervallo
+# al momento in cui la demo parte: deve superare
+# QUARANTINE_MIN_RELEASE_MS (24h) di dashboard/script.js, con un margine
+# comodo per non finire sul filo per un ritardo di rete o di orologio fra
+# questa macchina e chi guarda la demo.
+QUARANTINE_BACKDATE = timedelta(hours=30)
+
+# Quante volte al secondo la console viene aggiornata con lo stato di
+# avanzamento durante le attese lunghe (Passo 7): puramente cosmetico, per
+# chi guarda la demo dal vivo — vedi narrate_wait().
+NARRATION_TICK_SECONDS = 5.0
+
+# Zona dedicata alla dimostrazione del lockdown safety_range (vedi la nota in cima al
 # file): DIVERSA da r1-s2/r4-s1, cosi' "Situazioni attive"/"Registro eventi"
 # mostrano tre scenari distinti. Sta FUORI da PRODUCTION_ZONES apposta: le
 # altre zone del Reparto 4 (qui solo r4-s1) prendono la loro ricetta dal
 # catalogo via pick_recipes()/by_department in main(), mentre questa zona
-# deve puntare esattamente a COMMAND_FAILED_DEMO_RECIPE_ID e a nessun'altra
+# deve puntare esattamente a LOCKDOWN_SAFETY_DEMO_RECIPE_ID e a nessun'altra
 # — tenerla fuori da quel ciclo generico evita qualunque ambiguita' su quale
 # ricetta del reparto finisca su quale settore.
-COMMAND_FAILED_DEMO_ZONE_ID = "r4-s2"
-COMMAND_FAILED_DEMO_DEPARTMENT = 4
-COMMAND_FAILED_DEMO_SECTOR = 2
-COMMAND_FAILED_DEMO_RECIPE_ID = "recipe-command-failed-demo"
+LOCKDOWN_SAFETY_DEMO_ZONE_ID = "r4-s2"
+LOCKDOWN_SAFETY_DEMO_DEPARTMENT = 4
+LOCKDOWN_SAFETY_DEMO_SECTOR = 2
+LOCKDOWN_SAFETY_DEMO_RECIPE_ID = "recipe-safety-demo-g"
 
 # id, nome, department_number, sector_number, ha un Edge assegnato
 PRODUCTION_ZONES = [
@@ -245,8 +337,8 @@ PRODUCTION_ZONES = [
     ("r2-s2", "Reparto 2 - Settore 2", 2, 2, False),
     ("r3-s1", "Reparto 3 - Settore 1", 3, 1, True),
     ("r4-s1", "Reparto 4 - Settore 1", 4, 1, True),
-    # r4-s2 (CommandFailed demo) non e' qui: vedi la nota su
-    # COMMAND_FAILED_DEMO_ZONE_ID sopra e ensure_command_failed_zone() sotto.
+    # r4-s2 (lockdown safety_range demo) non e' qui: vedi la nota su
+    # LOCKDOWN_SAFETY_DEMO_ZONE_ID sopra e ensure_safety_lockdown_zone() sotto.
 ]
 QUARANTINE_ZONES = [
     ("r5-s1", "Quarantena - Settore 1", 5, 1),
@@ -306,7 +398,7 @@ def request(method: str, path: str, payload: dict | None = None) -> tuple[int, d
 def login_as_admin() -> None:
     """Autentica lo script come l'account amministratore di seed e salva il
     token in _AUTH_TOKEN, cosi' request() lo allega da qui in poi. Richiede
-    che demo/seed_users.py sia gia' stato eseguito almeno una volta contro
+    che demo/old_test/seed_users.py sia gia' stato eseguito almeno una volta contro
     lo stesso database del backend."""
     global _AUTH_TOKEN
     status, body = request(
@@ -316,7 +408,7 @@ def login_as_admin() -> None:
         raise SystemExit(
             "[seed] impossibile autenticarsi come amministratore "
             f"({ADMIN_USERNAME!r}): credenziali rifiutate (401) {body}. Hai gia' "
-            "eseguito `python demo/seed_users.py` contro questo stesso database?"
+            "eseguito `python demo/old_test/seed_users.py` contro questo stesso database?"
         )
     if status != 200:
         raise SystemExit(
@@ -347,18 +439,20 @@ def pick_recipes(department_number: int, how_many: int) -> list[dict]:
     return candidates[:how_many]
 
 
-def ensure_command_failed_recipe() -> str:
-    """Crea (POST /recipes, puro input — vedi la nota IMPORTANTE in cima al
-    file) la ricetta "male configurata di proposito" che fa scattare un vero
-    CommandFailed su COMMAND_FAILED_DEMO_ZONE_ID. Restituisce il plant_type
-    usato, cosi' ensure_command_failed_zone() puo' mostrarlo come specie
-    della zona senza doverlo ricalcolare.
+def ensure_safety_lockdown_recipe() -> str:
+    """Crea (POST /recipes, puro input — vedi la nota LOCKDOWN "DA SICUREZZA"
+    in cima al file) la ricetta con un target soil_moisture volutamente
+    stretto che fa scattare un vero EmergencyLockdown per safety_range su
+    LOCKDOWN_SAFETY_DEMO_ZONE_ID al primissimo ciclo. Restituisce il
+    plant_type usato, cosi' ensure_safety_lockdown_zone() puo' mostrarlo
+    come specie della zona senza doverlo ricalcolare.
 
     Copia una ricetta REALE del catalogo del reparto
-    COMMAND_FAILED_DEMO_DEPARTMENT e sovrascrive SOLO il target e il
-    controllore di soil_moisture: luce/pH/N/P/K restano quelli originali,
-    validi e "normali" — nessun bisogno di ricostruire un'intera ricetta a
-    mano per rompere un'unica variabile.
+    LOCKDOWN_SAFETY_DEMO_DEPARTMENT e sovrascrive SOLO il target di fase di
+    soil_moisture: il controllore (selected_strategy/parameters) resta
+    quello originale del catalogo, perche' tanto verrebbe comunque
+    ristampato dalla Strategy globale d'impianto alla lettura (vedi la nota
+    in cima al file) — non c'e' piu' alcun motivo di toccarlo.
 
     Chiamata SOLO dopo che il Passo 1 ha gia' assegnato le ricette di
     catalogo alle zone via pick_recipes(): questa ricetta non esiste ancora
@@ -368,127 +462,84 @@ def ensure_command_failed_recipe() -> str:
     Idempotente: un 409 (RecipeVersionConflict, stessa versione gia'
     salvata da un run precedente) viene tollerato, non e' un errore."""
     status, catalog = request(
-        "GET", f"/recipes?department_number={COMMAND_FAILED_DEMO_DEPARTMENT}"
+        "GET", f"/recipes?department_number={LOCKDOWN_SAFETY_DEMO_DEPARTMENT}"
     )
     template = None
     if status == 200 and isinstance(catalog, list):
         template = next(
-            (r for r in catalog if r.get("id") != COMMAND_FAILED_DEMO_RECIPE_ID), None
+            (r for r in catalog if r.get("id") != LOCKDOWN_SAFETY_DEMO_RECIPE_ID), None
         )
     if template is None:
         raise SystemExit(
             "[seed] impossibile trovare una ricetta di catalogo del reparto "
-            f"{COMMAND_FAILED_DEMO_DEPARTMENT} da usare come base per la "
-            "ricetta della demo CommandFailed (serve che r4-s1 sia gia' "
-            "stata registrata nel Passo 1)."
+            f"{LOCKDOWN_SAFETY_DEMO_DEPARTMENT} da usare come base per la "
+            "ricetta della demo lockdown/safety_range (serve che r4-s1 sia "
+            "gia' stata registrata nel Passo 1)."
         )
 
     recipe = copy.deepcopy(template)
     recipe.pop("department_name", None)  # computed field, non accettato in POST
-    recipe["id"] = COMMAND_FAILED_DEMO_RECIPE_ID
+    recipe["id"] = LOCKDOWN_SAFETY_DEMO_RECIPE_ID
     recipe["version"] = 1
-    plant_type = f"{template['plant_type']} (demo comando non eseguito)"
+    plant_type = f"{template['plant_type']} (demo lockdown sicurezza)"
     recipe["plant_type"] = plant_type
 
-    # Target soil_moisture: allowed_range e' cio' che conta DAVVERO per la
-    # soglia Threshold, non i lower_threshold/upper_threshold dentro
-    # "parameters" sotto (verificato in edge/src/control/control_system.cpp
-    # parameters_for_phase(): per StrategyType::THRESHOLD sovrascrive SEMPRE
-    # lower_threshold/upper_threshold con target.allowed_range.minimum/
-    # maximum, qualunque valore sia dichiarato nel controllore stesso). Per
-    # questo allowed_range e' impostato altissimo (95-99%): con quasi
-    # qualunque umidita' iniziale simulata sotto 95%, il controllo Threshold
-    # risulta "attivo" gia' al primo ciclo. safety_range resta invece
-    # volutamente AMPIO (0-100%): se fosse stretto, un valore fuori banda
-    # farebbe scattare PRIMA il fault CRITICAL/EmergencyLockdown per
-    # safety_range (vedi la nota IMPORTANTE in cima al file), mascherando il
-    # CommandFailed che questa ricetta vuole invece dimostrare.
-    broken_target = {
+    # Target soil_moisture volutamente stretto: safety_range e' solo 2 punti
+    # percentuali oltre allowed_range per lato (43-57 contro 45-55). L'umidita'
+    # INIZIALE del terriccio non e' campionata dentro allowed_range ma in una
+    # finestra allargata di meta' della sua ampiezza per lato
+    # (edge_runtime_core.cpp::environment_for_recipe(), vedi la nota in cima
+    # al file) — con un margine di sicurezza cosi' stretto, un campione fuori
+    # da allowed_range e' spesso ANCHE fuori da safety_range fin dal primo
+    # ciclo. Il campionamento e' deterministico (seed fisso mescolato con
+    # l'hash dell'id ricetta): per LOCKDOWN_SAFETY_DEMO_RECIPE_ID verificato
+    # dal vivo in questa sessione che il campione cade a 81.33% (ben oltre
+    # 57) — da cui l'id scelto qui sotto, NON un id "pulito" a caso.
+    narrow_target = {
         "variable": "soil_moisture",
-        "setpoint": 97.0,
-        "allowed_range": {"minimum": 95.0, "maximum": 99.0},
-        "safety_range": {"minimum": 0.0, "maximum": 100.0},
+        "setpoint": 50.0,
+        "allowed_range": {"minimum": 45.0, "maximum": 55.0},
+        "safety_range": {"minimum": 43.0, "maximum": 57.0},
         "suggested_phase_dose_milliliters": 0.0,
     }
     for phase in recipe["phases"]:
         phase["targets"] = [
-            broken_target if t["variable"] == "soil_moisture" else t
+            narrow_target if t["variable"] == "soil_moisture" else t
             for t in phase["targets"]
         ]
-
-    # Controllore soil_moisture: lower_threshold/upper_threshold qui sotto
-    # sono ignorati a runtime (vedi la nota sopra su parameters_for_phase())
-    # ma li teniamo uguali ad allowed_range per coerenza di lettura. Il
-    # comando che conta e' active_command = 6.0 L, sopra i 5.0 L FISICI di
-    # ActuatorConfig::maximum_irrigation_volume_liters (cablati nell'Edge).
-    # output_limits.maximum_water_volume_liters = 10.0 L (> 6.0 L) fa si'
-    # che il clamp lato ricetta in control_system.cpp NON fermi il comando
-    # prima che raggiunga l'attuatore fisico.
-    broken_controller = {
-        "variable": "soil_moisture",
-        "input_source": "soil_moisture_sensor",
-        "actuator": "water_pump",
-        "default_strategy": "Threshold",
-        "selected_strategy": "Threshold",
-        "parameters": {
-            "lower_threshold": 95.0,
-            "upper_threshold": 99.0,
-            "direction": "increases",
-            "active_command": 6.0,
-            "inactive_command": 0.0,
-            "bidirectional": False,
-        },
-        "unit": "% soil moisture",
-        "output_limits": {
-            "maximum_water_volume_liters": 10.0,
-            "maximum_pump_duration_seconds": 36000.0,
-            "water_pump_flow_liters_per_hour": 20.0,
-            "maximum_dose_per_command_milliliters": 5.0,
-            "maximum_daily_dose_milliliters": 20.0,
-            "minimum_seconds_between_doses": 900.0,
-            "ph_settling_time_seconds": 1800.0,
-        },
-        "confirmation_state": "PENDING_CONFIRMATION",
-        "version": 1,
-        "confirmed_recipe_version": 0,
-    }
-    recipe["controllers"] = [
-        broken_controller if c["variable"] == "soil_moisture" else c
-        for c in recipe["controllers"]
-    ]
 
     status, body = request("POST", "/recipes", recipe)
     if status == 201:
         print(
-            f"[seed] ricetta demo creata: {COMMAND_FAILED_DEMO_RECIPE_ID!r} "
-            f"(base: {template['id']!r} del reparto {COMMAND_FAILED_DEMO_DEPARTMENT}, "
-            "soil_moisture sovrascritto: active_command=6.0 L > 5.0 L fisici)"
+            f"[seed] ricetta demo creata: {LOCKDOWN_SAFETY_DEMO_RECIPE_ID!r} "
+            f"(base: {template['id']!r} del reparto {LOCKDOWN_SAFETY_DEMO_DEPARTMENT}, "
+            "soil_moisture: allowed_range 45-55%, safety_range 43-57%)"
         )
     elif status == 409:
         print(
-            f"[seed] ricetta demo {COMMAND_FAILED_DEMO_RECIPE_ID!r} gia' "
+            f"[seed] ricetta demo {LOCKDOWN_SAFETY_DEMO_RECIPE_ID!r} gia' "
             "esistente da un run precedente, la lascio com'e'"
         )
     else:
         raise SystemExit(
-            f"[seed] errore creando la ricetta demo CommandFailed: {status} {body}"
+            f"[seed] errore creando la ricetta demo lockdown/safety_range: {status} {body}"
         )
     return plant_type
 
 
-def ensure_command_failed_zone(plant_type: str) -> None:
+def ensure_safety_lockdown_zone(plant_type: str) -> None:
     """Registra (POST /zones, puro input) la zona dedicata
-    COMMAND_FAILED_DEMO_ZONE_ID con la ricetta demo. Tenuta fuori da
+    LOCKDOWN_SAFETY_DEMO_ZONE_ID con la ricetta demo. Tenuta fuori da
     PRODUCTION_ZONES/pick_recipes() apposta — vedi la nota su
-    COMMAND_FAILED_DEMO_ZONE_ID."""
+    LOCKDOWN_SAFETY_DEMO_ZONE_ID."""
     ensure_zone(
-        COMMAND_FAILED_DEMO_ZONE_ID,
+        LOCKDOWN_SAFETY_DEMO_ZONE_ID,
         "Reparto 4 - Settore 2",
-        COMMAND_FAILED_DEMO_DEPARTMENT,
-        COMMAND_FAILED_DEMO_SECTOR,
+        LOCKDOWN_SAFETY_DEMO_DEPARTMENT,
+        LOCKDOWN_SAFETY_DEMO_SECTOR,
         {
             "plant_species": plant_type,
-            "active_recipe_id": COMMAND_FAILED_DEMO_RECIPE_ID,
+            "active_recipe_id": LOCKDOWN_SAFETY_DEMO_RECIPE_ID,
             "assigned_edge_id": EDGE_ID,
         },
     )
@@ -694,18 +745,33 @@ def ensure_plant(plant_id: str, species: str, home_zone_id: str) -> None:
         print(f"[seed] avviso: pianta {plant_id} non creata (status {status}) {body}")
 
 
-def ensure_quarantine(plant_id: str, quarantine_zone_id: str, reason: str) -> None:
-    status, body = request(
-        "PATCH",
-        f"/plants/{plant_id}/quarantine",
-        {
-            "is_quarantined": True,
-            "quarantine_zone_id": quarantine_zone_id,
-            "reason": reason,
-        },
-    )
+def ensure_quarantine(
+    plant_id: str,
+    quarantine_zone_id: str,
+    reason: str,
+    *,
+    quarantined_at: datetime | None = None,
+) -> None:
+    """quarantined_at, se passato, backdata sia plants.quarantined_at sia
+    plant_movements.moved_at allo stesso istante (vedi la nota BACKDATING
+    QUARANTENA in cima al file) — puro input verso il campo opzionale
+    aggiunto a PlantQuarantineUpdate apposta per questo script, non un
+    accesso diretto al database."""
+    payload = {
+        "is_quarantined": True,
+        "quarantine_zone_id": quarantine_zone_id,
+        "reason": reason,
+    }
+    if quarantined_at is not None:
+        payload["quarantined_at"] = quarantined_at.isoformat()
+    status, body = request("PATCH", f"/plants/{plant_id}/quarantine", payload)
     if status != 200:
         print(f"[seed] avviso: quarantena non applicata a {plant_id} (status {status}) {body}")
+    elif quarantined_at is not None:
+        print(
+            f"[seed] {plant_id} spostata in quarantena, backdatata a "
+            f"{quarantined_at.isoformat()} (oltre la soglia di rilascio del frontend)"
+        )
     else:
         print(f"[seed] {plant_id} spostata in quarantena")
 
@@ -722,6 +788,176 @@ def wait_for_edge_start() -> None:
     print(" non servono opzioni --zones/--zone-id.)")
     print("=" * 78)
     input("Premi INVIO qui quando è avviato... ")
+
+
+def probe_edge_already_running(edge_zone_ids: list[str]) -> bool:
+    """Verifica, SENZA chiedere alcun input, se un Edge è già in esecuzione
+    e sta già scoprendo/eseguendo le zone appena registrate e attivate —
+    il caso tipico di un deploy dove l'Edge parte da solo insieme al
+    backend a ogni avvio del container (vedi Dockerfile/start.sh: lo
+    stesso identico --edge-id EDGE_ID usato qui). Prova per
+    EDGE_READY_PROBE_SECONDS: se nessuna zona diventa Running entro
+    quella finestra, assume che l'Edge NON sia ancora in esecuzione (il
+    caso locale, dove va ancora avviato a mano) e restituisce False senza
+    aver mai bloccato lo script in attesa di un input.
+
+    Non sostituisce il Passo 4 (polling più lungo, con timeout completo,
+    per OGNI zona): questo è solo un rilevamento rapido "c'è già qualcuno
+    dall'altra parte?" per decidere se mostrare il prompt oppure no."""
+    print(
+        f"\n[seed] verifico se un Edge è già raggiungibile e attivo "
+        f"(fino a {EDGE_READY_PROBE_SECONDS:.0f}s, senza chiedere alcun input)..."
+    )
+    deadline = time.monotonic() + EDGE_READY_PROBE_SECONDS
+    while time.monotonic() < deadline:
+        for zone_id in edge_zone_ids:
+            zone = get_zone(zone_id)
+            if zone is not None and zone.get("lifecycle_state") == "Running":
+                print(
+                    f"[seed] {zone_id} è già Running: un Edge reale è già in "
+                    "esecuzione e raggiungibile (probabile deploy remoto). "
+                    "Procedo senza attendere alcun avvio manuale."
+                )
+                return True
+        time.sleep(POLL_INTERVAL_SECONDS)
+    print(
+        "[seed] nessuna zona è diventata Running entro questa finestra breve: "
+        "assumo che l'Edge non sia ancora in esecuzione (caso locale) e passo "
+        "al prompt manuale."
+    )
+    return False
+
+
+def narrate_wait(message: str, seconds: float) -> None:
+    """Aspetta `seconds` reali stampando un avanzamento ogni
+    NARRATION_TICK_SECONDS: puramente cosmetico, per chi guarda la demo dal
+    vivo mentre si parla — non introduce alcun dato, comando o stato, solo
+    un ritmo leggibile fra una fase e la successiva della narrazione."""
+    print(f"\n[seed] {message}")
+    remaining = seconds
+    while remaining > 0:
+        tick = min(NARRATION_TICK_SECONDS, remaining)
+        time.sleep(tick)
+        remaining -= tick
+        if remaining > 0:
+            print(f"[seed]   ... ancora ~{remaining:.0f}s")
+
+
+def ensure_resident_plants(zone_species: dict[str, str], edge_zone_ids: list[str]) -> None:
+    """Ogni settore online (con un Edge assegnato) riceve almeno una
+    pianta residente, non quarantenata, di specie coerente con la ricetta
+    già assegnata alla zona (il backend rifiuta altrimenti con 400, vedi
+    backend/app/features/plants/routes.py: "plant species must match the
+    home zone species"). ID distinti (resident-<zone_id>) dalle 5 piante
+    del Passo 8, che restano una popolazione separata dedicata solo alla
+    quarantena."""
+    print("\n[seed] --- Passo 1ter: pianta residente per ogni settore online ---")
+    for zone_id in edge_zone_ids:
+        species = zone_species.get(zone_id)
+        if not species:
+            print(f"[seed] avviso: nessuna specie nota per {zone_id}, salto la pianta residente")
+            continue
+        ensure_plant(f"resident-{zone_id}", species, zone_id)
+
+
+def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) -> None:
+    """Fa avanzare `zone_id` fino all'ultima fase della sua ricetta con
+    AdvanceRecipePhase ripetuti (vedi la nota AVANZAMENTO DI FASE in cima
+    al file) — mai aspettando che trascorra davvero il tempo simulato
+    necessario, impraticabile per una demo di pochi minuti. Si ferma
+    quando il comando risulta rejected per "already in its last phase",
+    quando current_phase raggiunge l'ultima fase, o quando
+    cultivation_completed diventa true (il secondo criterio richiesto,
+    praticamente irraggiungibile in una demo breve: la fase finale dura
+    comunque centinaia di ore anche a time_scale=60, ma il controllo resta
+    qui per correttezza)."""
+    status, recipe = request("GET", f"/recipes/{recipe_id}")
+    if status != 200 or not isinstance(recipe, dict) or not recipe.get("phases"):
+        print(
+            f"[seed] avviso: impossibile leggere le fasi della ricetta {recipe_id!r} "
+            f"per {zone_id} (status {status}), salto l'avanzamento di fase"
+        )
+        return
+    phase_names = [p["name"] for p in recipe["phases"]]
+    last_phase = phase_names[-1]
+    print(
+        f"\n[seed] --- Avanzamento di fase su {zone_id}: "
+        f"{' -> '.join(phase_names)} ---"
+    )
+    for step_index in range(len(phase_names) - 1):
+        zone = get_zone(zone_id)
+        if zone is not None and (
+            zone.get("current_phase") == last_phase or zone.get("cultivation_completed")
+        ):
+            break
+        result = enqueue_and_wait_command(
+            zone_id,
+            f"advance-phase-{zone_id}-{step_index}-{run_suffix}",
+            "AdvanceRecipePhase",
+            {},
+        )
+        if result != "succeeded":
+            print(
+                f"[seed] avviso: AdvanceRecipePhase su {zone_id} non è andato a buon "
+                f"fine (esito={result!r}), mi fermo qui"
+            )
+            break
+        zone = get_zone(zone_id)
+        current = zone.get("current_phase") if zone is not None else None
+        print(f"[seed] {zone_id}: fase avanzata a {current!r}")
+
+    final_zone = get_zone(zone_id)
+    if final_zone is None:
+        print(f"[seed] avviso: impossibile rileggere {zone_id} per la verifica finale di fase")
+    elif final_zone.get("current_phase") == last_phase:
+        print(f"[seed] {zone_id} ha raggiunto l'ultima fase della ricetta: {last_phase!r}.")
+    elif final_zone.get("cultivation_completed"):
+        print(f"[seed] {zone_id}: coltivazione segnalata come completata (cultivation_completed=true).")
+    else:
+        print(
+            f"[seed] avviso: {zone_id} non risulta sull'ultima fase attesa "
+            f"({last_phase!r}); fase corrente osservata: "
+            f"{final_zone.get('current_phase')!r}"
+        )
+
+
+def diagnose_actuator_snapshot(zone_id: str) -> None:
+    """GET /zones/{id}/actuators/latest: se vuoto, DIAGNOSTICA il motivo
+    invece di introdurre una POST manuale con dati inventati (questo
+    script rimane input puro fino in fondo — vedi VINCOLI RISPETTATI). Lo
+    snapshot è normalmente caricato in automatico dall'Edge reale a OGNI
+    ciclo di controllo completato (edge/src/backend/http_backend_client.cpp,
+    stesso evento che porta la telemetria): se manca, la causa più
+    probabile è che la zona non abbia ancora completato un ciclo intero,
+    non un problema di questo script."""
+    status, snapshot = request("GET", f"/zones/{zone_id}/actuators/latest")
+    if status == 200 and isinstance(snapshot, dict):
+        print(
+            f"[seed] {zone_id}: snapshot attuatori presente "
+            f"(sequence_number={snapshot.get('sequence_number')}, "
+            f"timestamp_seconds={snapshot.get('timestamp_seconds')})."
+        )
+        return
+    zone = get_zone(zone_id)
+    lifecycle = zone.get("lifecycle_state") if zone is not None else None
+    if lifecycle != "Running":
+        reason = (
+            f"lifecycle_state={lifecycle!r}: la zona non è (ancora) Running, quindi "
+            "l'Edge non ha ancora eseguito alcun ciclo di controllo su di essa — "
+            "non c'è nulla da caricare su /actuators, non è un errore."
+        )
+    else:
+        reason = (
+            f"lifecycle_state=Running ma nessuno snapshot presente: può darsi sia "
+            "trascorso troppo poco tempo simulato per completare un intero ciclo di "
+            "controllo, o che l'outbox dell'Edge stia ancora ritentando la consegna "
+            "(controlla il log del processo edge reale: tempo simulato trascorso ed "
+            "eventuali errori di rete verso il backend)."
+        )
+    print(
+        f"[seed] AVVISO: GET /zones/{zone_id}/actuators/latest è vuoto "
+        f"(status {status}). Diagnosi — {reason}"
+    )
 
 
 def step5_degraded_demo(run_suffix: str) -> None:
@@ -939,11 +1175,12 @@ def step7_lockdown_demo(run_suffix: str) -> None:
     )
 
 
-def step_command_failed_demo(since: datetime) -> None:
-    """Attende il vero CommandFailed su COMMAND_FAILED_DEMO_ZONE_ID (vedi la
-    nota IMPORTANTE in cima al file e ensure_command_failed_recipe()): nessun
-    InjectFault qui, la ricetta demo gia' assegnata alla zona basta da sola a
-    farlo scattare al primo ciclo di controllo reale dell'Edge.
+def step_safety_lockdown_demo(since: datetime) -> None:
+    """Attende il vero EmergencyLockdown per violazione di safety_range su
+    LOCKDOWN_SAFETY_DEMO_ZONE_ID (vedi la nota LOCKDOWN "DA SICUREZZA" in
+    cima al file e ensure_safety_lockdown_recipe()): nessun InjectFault qui,
+    il target di fase gia' assegnato alla zona basta da solo a farlo
+    scattare al primo ciclo di controllo reale dell'Edge.
 
     A differenza di step5_degraded_demo/step7_lockdown_demo non serve
     accodare alcun comando: si limita a osservare cosa fa l'Edge reale non
@@ -957,66 +1194,65 @@ def step_command_failed_demo(since: datetime) -> None:
     a differenza di step5/step7, che inviano loro stessi il comando che fa
     scattare la transizione (quindi "since=adesso" e' sempre corretto),
     qui non c'e' alcun comando da inviare — il primo ciclo di controllo
-    dell'Edge reale potrebbe gia' avere fatto scattare CommandFailed PRIMA
+    dell'Edge reale potrebbe gia' avere fatto scattare il lockdown PRIMA
     che questa funzione venga chiamata (es. durante il polling Running del
     Passo 4 o durante step5/step7), quindi filtrare da un "since" preso solo
     ora rischierebbe di scartare l'evento vero e segnalare un falso
     avviso."""
-    zone_id = COMMAND_FAILED_DEMO_ZONE_ID
+    zone_id = LOCKDOWN_SAFETY_DEMO_ZONE_ID
     print(
-        f"\n[seed] --- Passo 6bis: attendo il vero CommandFailed su {zone_id} "
-        "(nessun InjectFault: basta la ricetta demo gia' assegnata) ---"
+        f"\n[seed] --- Passo 6bis: attendo il vero lockdown da safety_range su "
+        f"{zone_id} (nessun InjectFault: basta il target di fase gia' assegnato) ---"
     )
 
-    failed_event = poll_events_until(
+    fault_event = poll_events_until(
         zone_id,
-        lambda e: e.get("event_type") == "CommandFailed",
-        "evento CommandFailed",
+        lambda e: e.get("event_type") == "FaultDetected"
+        and e.get("payload", {}).get("rule") == "outside_recipe_safety_range",
+        "evento FaultDetected (outside_recipe_safety_range)",
         since=since,
     )
-    if failed_event is None:
+    if fault_event is None:
         print(
-            f"[seed] avviso: nessun CommandFailed osservato entro il timeout su "
-            f"{zone_id} — puo' darsi che l'Edge non abbia ancora eseguito il "
-            "primo ciclo di controllo su questa zona."
+            f"[seed] avviso: nessun FaultDetected outside_recipe_safety_range "
+            f"osservato entro il timeout su {zone_id} — puo' darsi che l'Edge "
+            "non abbia ancora eseguito il primo ciclo di controllo su questa zona."
         )
         return
-    payload = failed_event.get("payload", {})
-    diagnostic = payload.get("diagnostic", "")
+    payload = fault_event.get("payload", {})
     print(
-        f"[seed] CommandFailed osservato: actuator={payload.get('actuator')!r} "
-        f"diagnostic={diagnostic!r}"
+        f"[seed] FaultDetected osservato: component={payload.get('component')} "
+        f"severity={payload.get('severity')} diagnostic={payload.get('diagnostic')!r}"
     )
-    if "exceeds configured maximum" not in diagnostic:
+    if payload.get("severity") != "Critical":
         print(
-            "[seed] avviso: il diagnostic non contiene 'exceeds configured "
-            "maximum' come atteso — il CommandFailed potrebbe essere stato "
-            "causato da qualcos'altro (verifica manuale consigliata)."
+            "[seed] avviso: severity non e' 'Critical' come atteso per una "
+            "violazione di safety_range (verifica manuale consigliata)."
         )
 
     lockdown_event = poll_events_until(
         zone_id,
         lambda e: e.get("event_type") == "StateChanged"
         and e.get("payload", {}).get("current_state") == "EmergencyLockdown",
-        "StateChanged -> EmergencyLockdown (dopo CommandFailed)",
+        "StateChanged -> EmergencyLockdown (dopo FaultDetected safety_range)",
         since=since,
     )
     if lockdown_event is None:
         print(
             f"[seed] avviso: {zone_id} non risulta ancora in EmergencyLockdown "
-            "entro il timeout, anche se CommandFailed e' stato osservato."
+            "entro il timeout, anche se il FaultDetected e' stato osservato."
         )
         return
     print(
         f"[seed] {zone_id} e' passata a EmergencyLockdown: "
         f"{lockdown_event['payload'].get('previous_state')} -> "
         f"{lockdown_event['payload'].get('current_state')} "
-        "(CommandFailed forza SEMPRE EmergencyLockdown, mai Degraded — vedi "
-        "la nota in cima al file)."
+        "(una violazione CRITICAL di safety_range forza SEMPRE EmergencyLockdown "
+        "bypassando Degraded — vedi la nota in cima al file)."
     )
     print(
         f"[seed] Verifica nella UI: apri la pagina Allarmi da amministratore "
-        f"e controlla che compaia la card \"Comando non eseguito\" per {zone_id} "
+        f"e controlla che compaia una card di allarme per {zone_id} "
         "in Situazioni attive e nel Registro eventi."
     )
 
@@ -1071,18 +1307,10 @@ def verify_state_sequence(
 
 
 def main() -> None:
+    start_time = time.monotonic()
     run_suffix = str(int(time.time() * 1000))
 
-    #seedare il database:
-    print("[seed] --- Passo 0 (pre-setup): Creazione utente amministratore nel DB ---")
-    init_admin_in_db()
-
-    print("\n[seed] --- Passo 0: login come amministratore di seed ---")
-    login_as_admin()
-    
-
-    run_suffix = str(int(time.time() * 1000))
-
+    print(f"[seed] BASE_URL={BASE_URL!r} (SMARTHYDRO_BASE_URL per puntare altrove)")
     print("[seed] --- Passo 0: login come amministratore di seed ---")
     login_as_admin()
 
@@ -1107,23 +1335,25 @@ def main() -> None:
                 edge_zone_ids.append(zone_id)
             ensure_zone(zone_id, name, dept, sector, extra)
 
-    # --- Zona dedicata CommandFailed (r4-s2): DOPO il ciclo per-reparto qui
+    # --- Zona dedicata al lockdown safety_range (r4-s2): DOPO il ciclo per-reparto qui
     # sopra, mai dentro — pick_recipes(4, ...) ha gia' scelto la ricetta di
     # r4-s1 dal catalogo, quindi la ricetta demo (creata solo ora) non puo'
     # mai finire assegnata per sbaglio alla zona sbagliata. Vedi la nota
     # IMPORTANTE in cima al file e i docstring delle due funzioni.
-    command_failed_plant_type = ensure_command_failed_recipe()
-    ensure_command_failed_zone(command_failed_plant_type)
-    zone_species[COMMAND_FAILED_DEMO_ZONE_ID] = command_failed_plant_type
-    zone_recipe[COMMAND_FAILED_DEMO_ZONE_ID] = COMMAND_FAILED_DEMO_RECIPE_ID
-    edge_zone_ids.append(COMMAND_FAILED_DEMO_ZONE_ID)
-    # Catturato QUI, non dentro step_command_failed_demo(): vedi il
+    safety_lockdown_plant_type = ensure_safety_lockdown_recipe()
+    ensure_safety_lockdown_zone(safety_lockdown_plant_type)
+    zone_species[LOCKDOWN_SAFETY_DEMO_ZONE_ID] = safety_lockdown_plant_type
+    zone_recipe[LOCKDOWN_SAFETY_DEMO_ZONE_ID] = LOCKDOWN_SAFETY_DEMO_RECIPE_ID
+    edge_zone_ids.append(LOCKDOWN_SAFETY_DEMO_ZONE_ID)
+    # Catturato QUI, non dentro step_safety_lockdown_demo(): vedi il
     # docstring di quella funzione sul perche' non si puo' aspettare fino a
     # quando viene chiamata (dopo step5/step7).
-    command_failed_since = datetime.now(timezone.utc)
+    safety_lockdown_since = datetime.now(timezone.utc)
 
     for zone_id, name, dept, sector in QUARANTINE_ZONES:
         ensure_zone(zone_id, name, dept, sector, {"plant_species": None})
+
+    ensure_resident_plants(zone_species, edge_zone_ids)
 
     print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) ---")
     for zone_id in edge_zone_ids:
@@ -1152,7 +1382,11 @@ def main() -> None:
     # comunque "accodato" — esattamente il sintomo osservato (log
     # "accodato" per ogni zona, ma time_scale rimasto a 1 su tutte).
 
-    print("\n[seed] --- Passo 8: piante e quarantena (puro input, invariato) ---")
+    print(
+        "\n[seed] --- Passo 8: piante e quarantena (invariato nel meccanismo; "
+        f"backdatate di {QUARANTINE_BACKDATE} cosi' 'Fai uscire' e' gia' abilitabile) ---"
+    )
+    quarantine_backdate_at = datetime.now(timezone.utc) - QUARANTINE_BACKDATE
     plant_sources = [
         ("plant-1", zone_species["r1-s1"], "r1-s1"),
         ("plant-2", zone_species["r1-s1"], "r1-s1"),
@@ -1162,10 +1396,16 @@ def main() -> None:
     ]
     for plant_id, species, home_zone in plant_sources:
         ensure_plant(plant_id, species, home_zone)
-        ensure_quarantine(plant_id, "r5-s1", "controllo fitosanitario di routine")
+        ensure_quarantine(
+            plant_id,
+            "r5-s1",
+            "controllo fitosanitario di routine",
+            quarantined_at=quarantine_backdate_at,
+        )
 
-    # --- Passo 3: fermarsi in attesa dell'Edge reale, avviato a mano -------
-    wait_for_edge_start()
+    # --- Passo 3: Edge reale — salta il prompt se e' gia' raggiungibile ----
+    if not probe_edge_already_running(edge_zone_ids):
+        wait_for_edge_start()
 
     # --- Passo 4: polling lifecycle_state == Running ------------------------
     print(f"\n[seed] --- Passo 4: attendo lifecycle_state=Running (timeout {COMMAND_TIMEOUT_SECONDS:.0f}s ciascuna) ---")
@@ -1219,6 +1459,17 @@ def main() -> None:
                 "attivo, potrebbero non bastare per questa zona."
             )
 
+    # --- Passo 4ter: AdvanceRecipePhase sulle zone Nominal per tutta la ----
+    # demo (vedi la nota AVANZAMENTO DI FASE in cima al file). Fatto qui,
+    # subito dopo che time_scale e' gia' attivo su tutte, cosi' questi
+    # eventi (avanzamenti di fase) compaiono ben dentro i primi 3 minuti
+    # richiesti, prima ancora dei fault dimostrativi piu' sotto.
+    for zone_id in PHASE_ADVANCE_ZONE_IDS:
+        if running.get(zone_id):
+            advance_zone_to_last_phase(zone_id, zone_recipe[zone_id], run_suffix)
+        else:
+            print(f"\n[seed] salto l'avanzamento di fase su {zone_id}: non è Running")
+
     # --- Passo 5 + 6: InjectFault -> Degraded (obbligatorio) ---------------
     if running.get(DEGRADED_DEMO_ZONE_ID):
         step5_degraded_demo(run_suffix)
@@ -1228,16 +1479,30 @@ def main() -> None:
     # --- Passo 7: fault persistente -> EmergencyLockdown -> reset (opzionale) ---
     if running.get(LOCKDOWN_DEMO_ZONE_ID):
         step7_lockdown_demo(run_suffix)
+        # Avanzamento di fase su r4-s1 SOLO ora, a valle del recupero: prima
+        # (durante Degraded/EmergencyLockdown) non avrebbe senso dimostrare
+        # una progressione di coltivazione "normale" su una zona che sta
+        # ancora vivendo lo scenario di guasto.
+        advance_zone_to_last_phase(
+            LOCKDOWN_DEMO_ZONE_ID, zone_recipe[LOCKDOWN_DEMO_ZONE_ID], run_suffix
+        )
     else:
         print(f"\n[seed] salto il passo 7: {LOCKDOWN_DEMO_ZONE_ID} non è Running")
 
-    # --- Passo 6bis: CommandFailed reale, nessun InjectFault (obbligatorio) ---
-    if running.get(COMMAND_FAILED_DEMO_ZONE_ID):
-        step_command_failed_demo(command_failed_since)
+    # --- Passo 6bis: lockdown da safety_range reale, nessun InjectFault (obbligatorio) ---
+    if running.get(LOCKDOWN_SAFETY_DEMO_ZONE_ID):
+        step_safety_lockdown_demo(safety_lockdown_since)
     else:
         print(
-            f"\n[seed] salto il passo 6bis: {COMMAND_FAILED_DEMO_ZONE_ID} non è Running"
+            f"\n[seed] salto il passo 6bis: {LOCKDOWN_SAFETY_DEMO_ZONE_ID} non è Running"
         )
+
+    # --- Passo 9: diagnostica snapshot attuatori per ogni zona online ------
+    # (vedi diagnose_actuator_snapshot(): mai una POST manuale, solo lettura
+    # + diagnosi se manca).
+    print("\n[seed] --- Passo 9: verifica snapshot attuatori (GET /zones/{id}/actuators/latest) ---")
+    for zone_id in edge_zone_ids:
+        diagnose_actuator_snapshot(zone_id)
 
     # --- Riepilogo finale: stato REALE letto da GET /zones -----------------
     print("\n[seed] --- Riepilogo finale (stato reale riportato dal backend) ---")
@@ -1248,7 +1513,7 @@ def main() -> None:
     by_id = {z["id"]: z for z in zones}
     all_ids = (
         [z[0] for z in PRODUCTION_ZONES]
-        + [COMMAND_FAILED_DEMO_ZONE_ID]
+        + [LOCKDOWN_SAFETY_DEMO_ZONE_ID]
         + [z[0] for z in QUARANTINE_ZONES]
     )
     for zone_id in all_ids:
@@ -1263,9 +1528,23 @@ def main() -> None:
             f"current_phase={zone.get('current_phase')!r} "
             f"assigned_edge_id={zone.get('assigned_edge_id')!r}"
         )
+
+    elapsed = time.monotonic() - start_time
+    minimum_seconds = 5 * 60
+    if elapsed < minimum_seconds:
+        remaining = minimum_seconds - elapsed
+        narrate_wait(
+            f"la demo ha coperto tutti gli eventi principali in {elapsed:.0f}s; "
+            f"resto in attesa altri {remaining:.0f}s (fino ad almeno 5 minuti "
+            "reali totali) cosi' chi guarda ha tempo di ispezionare la dashboard "
+            "senza che lo script termini sotto i suoi occhi",
+            remaining,
+        )
+        elapsed = time.monotonic() - start_time
     print(
-        "\n[seed] fatto. Ricorda: time_scale=60 su queste zone è solo per velocizzare "
-        "questa demo — il prodotto di default lavora a time_scale=1x."
+        f"\n[seed] fatto. Durata reale totale: {elapsed:.0f}s ({elapsed / 60:.1f} min). "
+        "Ricorda: time_scale=60 su queste zone è solo per velocizzare questa demo — "
+        "il prodotto di default lavora a time_scale=1x."
     )
 
 

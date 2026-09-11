@@ -116,8 +116,22 @@ def set_quarantine_state(
     is_quarantined: bool,
     destination_zone_id: str,
     reason: str | None,
+    quarantined_at_override: datetime | None = None,
 ) -> Plant:
-    """Aggiorna flag e posizione e registra lo spostamento atomico."""
+    """Aggiorna flag e posizione e registra lo spostamento atomico.
+
+    @param quarantined_at_override Istante nel passato da registrare come
+        inizio quarantena al posto di "adesso" (vedi il commento su
+        PlantQuarantineUpdate.quarantined_at). Ignorato quando
+        `is_quarantined` e' False: un rilascio non ha un "istante
+        dell'evento" alternativo da registrare, solo `updated_at` reale.
+        Si applica SIA a `plants.quarantined_at` SIA a
+        `plant_movements.moved_at` con lo stesso identico valore — le due
+        colonne devono sempre raccontare la stessa storia — mentre
+        `plants.updated_at` resta l'istante reale della scrittura (e' un
+        campo di audit "quando ho toccato questa riga", non l'istante
+        dell'evento di business).
+    """
     stored_reason = reason if is_quarantined else None
     if (
         plant.is_quarantined == is_quarantined
@@ -126,8 +140,13 @@ def set_quarantine_state(
     ):
         return plant
 
-    now = datetime.now(timezone.utc)
-    quarantined_at = now.isoformat() if is_quarantined else None
+    real_now = datetime.now(timezone.utc)
+    event_at = (
+        quarantined_at_override
+        if is_quarantined and quarantined_at_override is not None
+        else real_now
+    )
+    quarantined_at = event_at.isoformat() if is_quarantined else None
     quarantine_reason = stored_reason
     connection.execute(
         """
@@ -141,7 +160,7 @@ def set_quarantine_state(
             int(is_quarantined),
             quarantine_reason,
             quarantined_at,
-            now.isoformat(),
+            real_now.isoformat(),
             plant.id,
         ),
     )
@@ -159,7 +178,7 @@ def set_quarantine_state(
             destination_zone_id,
             int(is_quarantined),
             reason,
-            now.isoformat(),
+            event_at.isoformat(),
         ),
     )
     connection.commit()
