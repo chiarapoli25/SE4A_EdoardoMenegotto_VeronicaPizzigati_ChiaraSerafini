@@ -1,6 +1,7 @@
 #include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/runtime/edge_runtime.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -213,8 +214,26 @@ bool EdgeRuntime::update_operational_state(
 
     if (severity == ControlFaultSeverity::RECOVERABLE) {
         consecutive_healthy_steps_ = 0;
-        if (count_recoverable_cycle) {
+        // Un valore N/P/K fuori dal range agronomico della ricetta e' una
+        // condizione di processo, non il guasto persistente di un sensore o
+        // attuatore. apply_degraded_isolation() ha gia' chiuso soltanto la
+        // relativa valvola: promuoverla dopo tre cicli a EmergencyLockdown
+        // spegneva anche la pompa, faceva seccare il substrato e concentrava
+        // ulteriormente i sali, creando una retroazione opposta a quella
+        // desiderata. Rimane visibile come stato Degraded finche' il valore
+        // non rientra, ma non puo' arrestare gli altri anelli di controllo.
+        const bool contains_only_process_excursions =
+            !faults.empty() &&
+            std::all_of(
+                faults.begin(), faults.end(),
+                [](const DetectedFault& fault) {
+                    return fault.severity == ControlFaultSeverity::RECOVERABLE &&
+                           fault.rule == "model_limit_incompatible";
+                });
+        if (count_recoverable_cycle && !contains_only_process_excursions) {
             ++consecutive_recoverable_faults_;
+        } else if (contains_only_process_excursions) {
+            consecutive_recoverable_faults_ = 0;
         }
         if (operational_state_ == OperationalState::NOMINAL) {
             transition_operational_state(

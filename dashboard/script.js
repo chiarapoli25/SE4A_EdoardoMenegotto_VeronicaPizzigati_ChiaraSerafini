@@ -898,13 +898,18 @@ const NUTRIENT_PREDICTIVE_GAINS = {
 // (es. l'evapotraspirazione, che un attuatore mono-direzionale come la
 // pompa non puo' mai contrastare "tirando giu'" il valore).
 const PID_INTEGRAL_TIME_SECONDS = 4 * 3600;
-// Tempo di integrazione del Predictive per N/P/K — molto piu' lungo di
-// quello del PID: vedi _PREDICTIVE_INTEGRAL_TIME_SECONDS in parameters.py.
-// Il dosaggio dei fertilizzanti e' troppo lento/raro (gated dall'irrigazione,
-// minimo un'ora fra dosi) perche' un errore di poche ore — normale durante
-// la salita verso un nuovo setpoint di fase — vada scambiato per un bias
-// stazionario da correggere subito.
+// La pompa interpreta il comando come litri per singola irrigazione: vicino
+// al target serve una pendenza piu' dolce per non creare un ciclo limite con
+// media sistematicamente sopra il setpoint (stesso fattore del backend).
+const SOIL_MOISTURE_PID_RESPONSE_FACTOR = 0.25;
+// Tempo di integrazione per eventuali usi Predictive non nutritivi; per
+// N/P/K l'integrale e' disabilitato sotto, perche' la dose integra gia'
+// fisicamente una massa che persiste nel substrato.
 const PREDICTIVE_INTEGRAL_TIME_SECONDS = 3 * 24 * 3600;
+// Il comando N/P/K e' una dose persistente nel substrato, non un livello
+// continuo: correggiamo progressivamente per evitare grandi salti di
+// concentrazione nei piccoli volumi radicali (stesso fattore del backend).
+const NUTRIENT_DOSE_RESPONSE_FACTOR = 0.10;
 
 function buildStrategyParameters(strategy, target, variableKey) {
   const setpoint = target ? target.setpoint : 0;
@@ -929,7 +934,8 @@ function buildStrategyParameters(strategy, target, variableKey) {
     // trascurabile, comportandosi come un bang-bang travestito da PID.
     const [commandMin, commandMax] = doseOnly ? [0.0, 3.0] : NON_DOSE_COMMAND_LIMITS[variableKey];
     const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
-    const proportionalGain = commandMax / margin;
+    const proportionalGain = (commandMax / margin)
+      * (variableKey === "soil_moisture" ? SOIL_MOISTURE_PID_RESPONSE_FACTOR : 1.0);
     const integralGain = proportionalGain / PID_INTEGRAL_TIME_SECONDS;
     return {
       setpoint, proportional_gain: proportionalGain, integral_gain: integralGain,
@@ -946,7 +952,8 @@ function buildStrategyParameters(strategy, target, variableKey) {
     // response_gain scalato sulla banda della fase, stessa formula e stessa
     // ragione del proportional_gain del PID sopra.
     const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
-    const responseGain = commandMax / margin;
+    const responseGain = (commandMax / margin)
+      * (doseOnly ? NUTRIENT_DOSE_RESPONSE_FACTOR : 1.0);
     // water_dilution_gain/substrate_gain hanno senso solo per un dosaggio
     // di fertilizzante (correggono la stima N/P/K per la diluizione data
     // dall'acqua appena irrigata e per il fattore del substrato — vedi
@@ -956,12 +963,11 @@ function buildStrategyParameters(strategy, target, variableKey) {
     const [waterDilutionGain, substrateGain] = doseOnly
       ? NUTRIENT_PREDICTIVE_GAINS[variableKey]
       : [0.0, 0.0];
-    // Stessa idea del PID sopra, ma con una costante di tempo molto più
-    // lunga (PREDICTIVE_INTEGRAL_TIME_SECONDS): il dosaggio dei fertilizzanti
-    // è troppo lento/raro perché un errore di poche ore significhi un bias
-    // reale da correggere, invece del normale transitorio di una salita
-    // verso un nuovo setpoint di fase.
-    const integralGain = responseGain / PREDICTIVE_INTEGRAL_TIME_SECONDS;
+    // N/P/K non integrano una seconda volta l'errore: la dose somministrata
+    // e' gia' una massa persistente nel substrato.
+    const integralGain = doseOnly
+      ? 0.0
+      : responseGain / PREDICTIVE_INTEGRAL_TIME_SECONDS;
     return {
       setpoint, prediction_horizon_steps: 1.0, response_gain: responseGain, neutral_command: 0.0,
       command_minimum: commandMin, command_maximum: commandMax,
@@ -3111,6 +3117,7 @@ function renderSimulationResult(sim) {
   const result = activeSimulationPreview(sim);
   const gridView = sim.chartView === "grid";
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
+  const selectedStrategy = result.recipe.strategies?.[varMeta.key] || "—";
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
     ${greenhouse ? `
@@ -3131,6 +3138,7 @@ function renderSimulationResult(sim) {
           ${VARIABLES.map((v) => `<option value="${v.key}" ${sim.chartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
         </select>`}
         ${!gridView && sim.chartVariable === "light" ? renderLightDaySelect(sim, result) : ""}
+        ${gridView ? "" : `<span class="hint">Strategia: <b>${escapeHtml(selectedStrategy)}</b></span>`}
         <button type="button" class="chart-view-toggle" data-action="sim-chart-view-toggle">
           ${gridView ? "◧ Un grafico alla volta" : "▦ Vedi tutti i grafici"}
         </button>
@@ -3157,7 +3165,7 @@ function renderSimulationResult(sim) {
         ? `<div class="sim-chart-grid">
             ${VARIABLES.map((v) => `
               <div class="sim-chart-grid-cell">
-                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""}</div>
+                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""} · ${escapeHtml(result.recipe.strategies?.[v.key] || "—")}</div>
                 <canvas id="simulation-chart-${v.key}" class="sim-chart-grid-canvas"></canvas>
               </div>`).join("")}
           </div>`

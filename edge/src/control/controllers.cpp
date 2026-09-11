@@ -167,8 +167,26 @@ double PidController::update(double measured_value, double delta_time_seconds) {
         unconstrained_command > config_.command_limits.maximum && error > 0.0;
     const bool winds_up_low =
         unconstrained_command < config_.command_limits.minimum && error < 0.0;
-    if (!winds_up_high && !winds_up_low) {
+    // Con un attuatore monodirezionale (limite minimo >= 0, ad esempio la
+    // pompa) un integrale positivo accumulato mentre il valore era basso
+    // deve poter SCENDERE quando, dopo l'erogazione, l'errore diventa
+    // negativo. Il vecchio anti-windup congelava sempre l'integrale appena
+    // il comando non vincolato scendeva sotto zero: evitava correttamente
+    // un windup negativo, ma congelava anche il wind-DOWN di un accumulo
+    // positivo gia' presente. Il risultato era un bias medio sopra il
+    // setpoint, proprio malgrado l'azione integrale.
+    const bool can_unwind_one_sided_integral =
+        winds_up_low &&
+        config_.command_limits.minimum >= 0.0 &&
+        integral_ > 0.0 &&
+        candidate_integral < integral_;
+    if (!winds_up_high && (!winds_up_low || can_unwind_one_sided_integral)) {
         integral_ = candidate_integral;
+        if (config_.command_limits.minimum >= 0.0) {
+            integral_ = std::max(0.0, integral_);
+        }
+        unconstrained_command = proportional_term +
+            config_.integral_gain * integral_ + derivative_term;
     } else {
         unconstrained_command = proportional_term + config_.integral_gain * integral_ +
                                 derivative_term;
@@ -265,12 +283,24 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
         !std::isfinite(input.cumulative_dose_milliliters) ||
         !std::isfinite(input.phase_target_dose_milliliters) ||
         !std::isfinite(input.substrate_factor) ||
+        !std::isfinite(input.retained_irrigation_liters) ||
+        !std::isfinite(input.nutrient_milligrams_per_command_unit) ||
+        (input.root_water_volume_liters.has_value() &&
+         !std::isfinite(*input.root_water_volume_liters)) ||
+        (input.reference_root_water_volume_liters.has_value() &&
+         !std::isfinite(*input.reference_root_water_volume_liters)) ||
         !std::isfinite(input.delta_time_seconds)) {
         return {false, 0.0, std::nullopt, "predictive context must be finite"};
     }
     if (input.water_delivered_liters < 0.0 ||
         input.cumulative_dose_milliliters < 0.0 ||
         input.phase_target_dose_milliliters < 0.0 ||
+        input.retained_irrigation_liters < 0.0 ||
+        input.nutrient_milligrams_per_command_unit < 0.0 ||
+        (input.root_water_volume_liters.has_value() &&
+         *input.root_water_volume_liters <= 0.0) ||
+        (input.reference_root_water_volume_liters.has_value() &&
+         *input.reference_root_water_volume_liters <= 0.0) ||
         input.substrate_factor <= 0.0 ||
         input.delta_time_seconds <= 0.0) {
         return {
@@ -295,6 +325,68 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
     // per assorbire un campione rumoroso, abbastanza reattivo da inseguire
     // un cambiamento vero entro un paio d'ore.
     constexpr double kSmoothingAlpha = 0.3;
+
+    // Per N/P/K la grandezza fisicamente conservata fra un'irrigazione e la
+    // successiva e' la MASSA, non la concentrazione: C aumenta quando il
+    // terriccio si asciuga e cala quando entra acqua anche se non e' stato
+    // assorbito o aggiunto un solo milligrammo. Quando il runtime fornisce la
+    // calibrazione radicale, trasformiamo quindi la stima C in inventario
+    // M=C*V, filtriamo e proiettiamo M, poi calcoliamo direttamente quanti mL
+    // servono per avere il setpoint nel volume post-irrigazione. Questo evita
+    // sia il vecchio guadagno empirico di diluizione sia una taratura diversa
+    // per N, P e K: la diversa forza dei prodotti entra esplicitamente in
+    // mg/mL.
+    const bool has_mass_balance =
+        input.root_water_volume_liters.has_value() &&
+        input.nutrient_milligrams_per_command_unit > 0.0;
+    if (has_mass_balance) {
+        const double current_volume = *input.root_water_volume_liters;
+        const double observed_mass = *value * current_volume;
+        const double filtered_mass =
+            smoothed_process_mass_milligrams_.has_value()
+                ? *smoothed_process_mass_milligrams_ +
+                      kSmoothingAlpha *
+                          (observed_mass -
+                           *smoothed_process_mass_milligrams_)
+                : observed_mass;
+        const double mass_trend =
+            smoothed_process_mass_milligrams_.has_value()
+                ? filtered_mass - *smoothed_process_mass_milligrams_
+                : 0.0;
+        const double predicted_mass = std::max(
+            0.0,
+            filtered_mass +
+                mass_trend * config_.prediction_horizon_steps);
+        const double post_irrigation_volume =
+            current_volume + input.retained_irrigation_liters;
+        const double predicted_concentration =
+            predicted_mass / post_irrigation_volume;
+        // Il setpoint di concentrazione della ricetta e' riferito alla sua
+        // umidita nominale. Imporlo al volume massimo subito dopo
+        // l'irrigazione caricherebbe troppa massa: asciugandosi verso il
+        // nominale la stessa massa si concentrerebbe e la media resterebbe
+        // sistematicamente sopra il setpoint.
+        const double reference_volume =
+            input.reference_root_water_volume_liters.value_or(
+                post_irrigation_volume);
+        const double target_mass =
+            config_.setpoint * reference_volume;
+        const double required_mass = directed_error(
+            target_mass,
+            predicted_mass,
+            config_.direction);
+        const double command = std::clamp(
+            config_.neutral_command +
+                required_mass /
+                    input.nutrient_milligrams_per_command_unit,
+            config_.command_limits.minimum,
+            config_.command_limits.maximum);
+
+        smoothed_process_mass_milligrams_ = filtered_mass;
+        smoothed_measurement_ = *value;
+        return {true, command, predicted_concentration, {}};
+    }
+
     const double filtered_value = smoothed_measurement_.has_value()
         ? *smoothed_measurement_ +
               kSmoothingAlpha * (*value - *smoothed_measurement_)
@@ -356,6 +448,7 @@ ControllerResult PredictiveController::compute(const ControllerInput& input) {
 void PredictiveController::reset() noexcept {
     previous_measurement_.reset();
     smoothed_measurement_.reset();
+    smoothed_process_mass_milligrams_.reset();
     integral_ = 0.0;
 }
 

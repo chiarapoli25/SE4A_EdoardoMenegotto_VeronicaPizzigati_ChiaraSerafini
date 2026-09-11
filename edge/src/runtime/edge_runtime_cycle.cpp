@@ -11,6 +11,47 @@ namespace {
 
 constexpr double kSecondsPerHour = 3600.0;
 constexpr double kSecondsPerDay = 24.0 * kSecondsPerHour;
+constexpr double kIrrigationSupervisionSeconds = 60.0;
+// Il PPFD e' rumoroso e le nuvole possono produrre cali locali: il
+// rilevatore non reagisce al singolo campione. Prima filtra, poi richiede
+// mezz'ora sotto il 15% del picco giornaliero (e comunque sotto 20 PPFD).
+constexpr double kSolarPpfdSmoothingAlpha = 0.50;
+constexpr double kMinimumSolarPeakPpfd = 25.0;
+constexpr double kDuskPpfdPeakFraction = 0.15;
+constexpr double kDuskAbsolutePpfd = 20.0;
+constexpr double kDuskConfirmationSeconds = 30.0 * 60.0;
+
+struct RootZoneHydraulics {
+    double capacity_liters;
+    double irrigation_retention;
+};
+
+RootZoneHydraulics root_zone_hydraulics(SoilType substrate) {
+    switch (substrate) {
+        case SoilType::AERATED_UNIVERSAL:
+            return {4.0, 0.90};
+        case SoilType::DRAINING:
+            return {3.0, 0.90};
+        case SoilType::ORGANIC_RETENTIVE:
+            return {5.0, 0.80};
+    }
+    throw std::invalid_argument("unknown substrate");
+}
+
+double nutrient_milligrams_per_milliliter(
+    ControlledVariable variable) {
+    switch (variable) {
+        case ControlledVariable::NITROGEN:
+            return 50.0;
+        case ControlledVariable::PHOSPHORUS:
+            return 20.0;
+        case ControlledVariable::POTASSIUM:
+            return 50.0;
+        default:
+            break;
+    }
+    throw std::invalid_argument("variable is not a nutrient");
+}
 
 double hour_of_day(double elapsed_hours) {
     double hour = std::fmod(elapsed_hours, 24.0);
@@ -105,6 +146,10 @@ void EdgeRuntime::reset_histories_if_needed() {
         daily_dose_milliliters_.fill(0.0);
         daily_light_accumulator_.reset();
         daily_supplemental_lighting_seconds_ = 0.0;
+        smoothed_natural_ppfd_.reset();
+        daily_peak_natural_ppfd_ = 0.0;
+        low_ppfd_duration_seconds_ = 0.0;
+        solar_descent_confirmed_ = false;
         history_day_index_ = current_day;
     }
 
@@ -112,6 +157,45 @@ void EdgeRuntime::reset_histories_if_needed() {
     if (phase != history_phase_index_) {
         cumulative_phase_dose_milliliters_.fill(0.0);
         history_phase_index_ = phase;
+    }
+}
+
+void EdgeRuntime::update_solar_descent_detector(
+    const SensorReadings& readings,
+    double delta_time_seconds) {
+    if (solar_descent_confirmed_ ||
+        lighting_.power_watts() > 1.0e-9 ||
+        !readings.light_ppfd_umol_m2_s.has_value() ||
+        !std::isfinite(*readings.light_ppfd_umol_m2_s) ||
+        *readings.light_ppfd_umol_m2_s < 0.0) {
+        return;
+    }
+
+    const double measured_ppfd = *readings.light_ppfd_umol_m2_s;
+    const double filtered_ppfd = smoothed_natural_ppfd_.has_value()
+        ? *smoothed_natural_ppfd_ +
+              kSolarPpfdSmoothingAlpha *
+                  (measured_ppfd - *smoothed_natural_ppfd_)
+        : measured_ppfd;
+    smoothed_natural_ppfd_ = filtered_ppfd;
+    daily_peak_natural_ppfd_ = std::max(
+        daily_peak_natural_ppfd_, filtered_ppfd);
+
+    if (daily_peak_natural_ppfd_ < kMinimumSolarPeakPpfd) {
+        low_ppfd_duration_seconds_ = 0.0;
+        return;
+    }
+
+    const double dusk_threshold = std::max(
+        kDuskAbsolutePpfd,
+        daily_peak_natural_ppfd_ * kDuskPpfdPeakFraction);
+    if (filtered_ppfd <= dusk_threshold) {
+        low_ppfd_duration_seconds_ += delta_time_seconds;
+        if (low_ppfd_duration_seconds_ >= kDuskConfirmationSeconds) {
+            solar_descent_confirmed_ = true;
+        }
+    } else {
+        low_ppfd_duration_seconds_ = 0.0;
     }
 }
 
@@ -301,14 +385,16 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         daily_light_accumulator_.value_mol_m2();
     request.daily_supplemental_lighting_hours_so_far =
         daily_supplemental_lighting_seconds_ / kSecondsPerHour;
+    update_solar_descent_detector(result.readings, delta_time_seconds);
+    request.solar_descent_confirmed = solar_descent_confirmed_;
     const auto light_index = controlled_variable_index(
         ControlledVariable::LIGHT);
     result.decisions[light_index] =
         control_system_.execute(ControlledVariable::LIGHT, request);
-    // La lampada e' comandata accesa SOLO fuori dalla finestra di luce
-    // naturale (vedi il ramo LIGHT in control_system.cpp): un comando >0
-    // qui e' quindi sempre illuminazione supplementare, mai luce
-    // naturale, e va verso il tetto giornaliero configurato
+    // La lampada e' comandata accesa SOLO dopo la conferma PPFD del fronte
+    // discendente (vedi il ramo LIGHT in control_system.cpp): un comando
+    // >0 qui e' quindi sempre illuminazione supplementare e va verso il
+    // tetto giornaliero configurato
     // (OutputSafetyLimits::maximum_supplemental_lighting_hours_per_day),
     // letto dal ramo luce del PROSSIMO ciclo sopra.
     if (result.decisions[light_index].command > 0.0) {
@@ -335,6 +421,28 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         controlled_variable_index(ControlledVariable::SOIL_MOISTURE);
     const double requested_water = std::max(
         0.0, result.decisions[water_index].command);
+    const auto hydraulics = root_zone_hydraulics(active_substrate_);
+    const auto measured_moisture = result.readings.soil_moisture_percent;
+    double expected_irrigation = requested_water;
+    if (requested_water > 0.0 && measured_moisture.has_value()) {
+        const auto& phase = control_system_.active_phase(
+            elapsed_recipe_hours());
+        const double upper_moisture =
+            phase.targets[water_index].allowed_range.maximum;
+        const double retained_to_upper = std::max(
+            0.0,
+            (upper_moisture - *measured_moisture) / 100.0 *
+                hydraulics.capacity_liters);
+        // Il cutoff Threshold osserva il fronte ogni minuto: includiamo al
+        // massimo un minuto di portata oltre il volume teorico necessario.
+        const double supervision_quantum_liters =
+            actuators_->config().water_pump_flow_liters_per_hour *
+            kIrrigationSupervisionSeconds / kSecondsPerHour;
+        expected_irrigation = std::min(
+            requested_water,
+            retained_to_upper / hydraulics.irrigation_retention +
+                supervision_quantum_liters);
+    }
     for (const auto variable : {
              ControlledVariable::NITROGEN,
              ControlledVariable::PHOSPHORUS,
@@ -346,7 +454,24 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
         request.source_valid =
             request.controller_input.model_estimate.has_value();
         request.controller_input.water_delivered_liters =
-            requested_water;
+            expected_irrigation;
+        if (measured_moisture.has_value()) {
+            const auto& phase = control_system_.active_phase(
+                elapsed_recipe_hours());
+            request.controller_input.root_water_volume_liters = std::max(
+                0.1,
+                hydraulics.capacity_liters *
+                    *measured_moisture / 100.0);
+            request.controller_input.reference_root_water_volume_liters =
+                std::max(
+                    0.1,
+                    hydraulics.capacity_liters *
+                        phase.targets[water_index].setpoint / 100.0);
+            request.controller_input.retained_irrigation_liters =
+                expected_irrigation * hydraulics.irrigation_retention;
+            request.controller_input.nutrient_milligrams_per_command_unit =
+                nutrient_milligrams_per_milliliter(variable);
+        }
         request.controller_input.cumulative_dose_milliliters =
             cumulative_phase_dose_milliliters_[index];
         request.daily_dose_milliliters =

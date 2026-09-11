@@ -86,14 +86,11 @@ struct ValueRange {
  * @brief Finestra di luce NATURALE giornaliera della fase (alba-tramonto).
  *
  * @details Rappresenta l'ipotesi dell'agronomo su quando splende il sole
- * per questa fase — non una finestra in cui e' "permesso" supplire con la
- * lampada (vecchio significato, superato): il ramo LIGHT di
- * RecipeControlSystem::execute() usa questa finestra per distinguere la
- * fase di luce naturale (dentro la finestra: lampada sempre spenta, e'
- * il sole a maturare il DLI) dalla fase notturna (fuori dalla finestra:
- * la lampada supplisce SOLO se il DLI di oggi e' ancora sotto il target
- * — vedi PhaseVariableTarget::setpoint per LIGHT — e solo entro il tetto
- * di ore configurato in OutputSafetyLimits::
+ * per questa fase. Non e' una finestra in cui e' "permesso" supplire con
+ * la lampada: il ramo LIGHT abilita la supplementazione dal rilevatore
+ * PPFD nel runtime, che richiede un picco giornaliero e il suo calo
+ * persistente. Il DLI resta confrontato col target della fase e con il
+ * tetto di ore in OutputSafetyLimits::
  * maximum_supplemental_lighting_hours_per_day).
  */
 struct Photoperiod {
@@ -146,10 +143,10 @@ struct OutputSafetyLimits {
      * lo stesso ruolo che water_pump_flow_liters_per_hour gia' gioca per
      * la pompa dell'acqua qui sopra.
      */
-    double lighting_reference_ppfd_umol_m2_s = 1200.0;
+    double lighting_reference_ppfd_umol_m2_s = 1400.0;
     /**
      * Ore massime giornaliere di illuminazione supplementare (lampada
-     * accesa dopo il tramonto naturale — vedi Photoperiod) oltre le quali
+     * accesa dopo la conferma PPFD del crepuscolo) oltre le quali
      * il ramo LIGHT forza lo spegnimento anche con un deficit DLI ancora
      * aperto: un vero tetto configurato dall'agronomo, non un effetto
      * collaterale del ritmo di controllo. Zero e' un valore legittimo
@@ -241,6 +238,13 @@ struct ControlRequest {
     double simulated_time_seconds = 0.0;
     /** Ora locale corrente nell'intervallo [0, 24). */
     double hour_of_day = 0.0;
+    /**
+     * True solo dopo che il rilevatore PPFD ha osservato, nel giorno
+     * corrente, un picco solare seguito da un calo basso e persistente.
+     * Il ramo LIGHT non usa l'orologio per decidere alba/tramonto: questo
+     * latch e' l'unica autorizzazione ad accendere la lampada.
+     */
+    bool solar_descent_confirmed = false;
     /** Dose del prodotto gia erogata oggi, in millilitri. */
     double daily_dose_milliliters = 0.0;
     /** Secondi trascorsi dall'ultimo dosaggio del prodotto. */
@@ -256,8 +260,8 @@ struct ControlRequest {
      */
     double daily_light_mol_m2_so_far = 0.0;
     /**
-     * Ore di illuminazione SUPPLEMENTARE (lampada accesa fuori dalla
-     * finestra di luce naturale — vedi Photoperiod) gia' erogate oggi,
+     * Ore di illuminazione SUPPLEMENTARE (lampada accesa dopo che il
+     * rilevatore PPFD ha confermato il tramonto) gia' erogate oggi,
      * PRIMA del contributo del ciclo corrente — stessa sequenza "leggo il
      * cumulativo di finora, poi lo aggiorna il chiamante dopo la
      * decisione" di daily_light_mol_m2_so_far sopra. Usato solo dal ramo

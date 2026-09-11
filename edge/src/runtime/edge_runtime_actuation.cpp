@@ -12,6 +12,12 @@ namespace {
 constexpr double kSecondsPerHour = 3600.0;
 constexpr double kEventToleranceSeconds = 1.0e-9;
 constexpr double kDeliveredTolerance = 1.0e-12;
+// Il campione pubblicato dal runtime puo coprire intervalli relativamente
+// lunghi (nelle anteprime del dashboard sono 15 minuti), ma l'irrigazione ha
+// un fronte di salita molto piu rapido. Durante una richiesta Threshold la
+// soglia superiore viene quindi ricontrollata ogni minuto, senza aumentare la
+// quantita di telemetria o di punti del grafico.
+constexpr double kIrrigationThresholdCheckSeconds = 60.0;
 
 }  // namespace
 
@@ -110,6 +116,11 @@ void EdgeRuntime::apply_decisions(
             ControlDecisionStatus::BLOCKED &&
         result.decisions[water_index].safety_critical) {
         water_pump_.cancel();
+    } else if (water_command <= 0.0 && water_pump_.active()) {
+        // Un comando Threshold inattivo significa che la soglia superiore e'
+        // stata raggiunta: non basta evitare una nuova richiesta, va annullato
+        // anche il volume residuo di quella precedente.
+        water_pump_.cancel();
     } else if (water_command > 0.0 && !water_pump_.active()) {
         water_pump_.request_volume_liters(water_command);
     }
@@ -149,6 +160,10 @@ void EdgeRuntime::apply_decisions(
 
     FertilizerValues<double> close_after_seconds{};
     std::vector<double> close_events;
+    const bool supervise_threshold_irrigation =
+        water_pump_.active() &&
+        control_system_.recipe().controllers[water_index].selected_strategy ==
+            StrategyType::THRESHOLD;
     if (water_pump_.active()) {
         const double available_pump_seconds = std::min(
             delta_time_seconds,
@@ -174,6 +189,18 @@ void EdgeRuntime::apply_decisions(
         }
     }
 
+    if (supervise_threshold_irrigation) {
+        // Questi checkpoint condividono la stessa timeline degli eventi di
+        // chiusura delle valvole. advance_physics() vede quindi sotto-intervalli
+        // da al massimo un minuto mentre il risultato esterno resta un solo
+        // campione della durata richiesta dal chiamante.
+        for (double checkpoint = kIrrigationThresholdCheckSeconds;
+             checkpoint <= delta_time_seconds + kEventToleranceSeconds;
+             checkpoint += kIrrigationThresholdCheckSeconds) {
+            close_events.push_back(std::min(checkpoint, delta_time_seconds));
+        }
+    }
+
     std::sort(close_events.begin(), close_events.end());
     close_events.erase(
         std::unique(
@@ -186,10 +213,50 @@ void EdgeRuntime::apply_decisions(
         close_events.end());
 
     double elapsed = 0.0;
+    bool threshold_supervision_finished = false;
+    const auto check_irrigation_threshold = [&]() {
+        if (!supervise_threshold_irrigation ||
+            threshold_supervision_finished) {
+            return;
+        }
+
+        SensorReadings moisture_reading;
+        moisture_reading.timestamp_seconds =
+            environment_->state().simulation_time_seconds;
+        moisture_reading.soil_moisture_percent =
+            sensors_[sensor_channel_index(SensorChannel::SOIL_MOISTURE)]
+                ->read(environment_->state());
+        fault_injector_.alter_readings(
+            moisture_reading,
+            environment_->state().simulation_time_seconds);
+
+        auto request = base_request(kIrrigationThresholdCheckSeconds);
+        request.controller_input.measured_value =
+            moisture_reading.soil_moisture_percent;
+        request.source_valid =
+            moisture_reading.soil_moisture_percent.has_value();
+        const auto decision = control_system_.execute(
+            ControlledVariable::SOIL_MOISTURE,
+            request);
+        if ((decision.status == ControlDecisionStatus::BLOCKED &&
+             decision.safety_critical) ||
+            decision.command <= 0.0) {
+            water_pump_.cancel();
+            threshold_supervision_finished = true;
+        } else if (!water_pump_.active()) {
+            // La richiesta si e' esaurita senza raggiungere la soglia: lo
+            // stato isteretico resta attivo e il ciclo esterno potra emettere
+            // una nuova dose, ma non servono altre letture rapide in questo
+            // stesso campione.
+            threshold_supervision_finished = true;
+        }
+    };
+
     for (const double event_time : close_events) {
         if (event_time > elapsed + kEventToleranceSeconds) {
             advance_physics(event_time - elapsed, result);
             elapsed = event_time;
+            check_irrigation_threshold();
         }
         for (std::size_t index = 0;
              index < kFertilizerTypeCount;

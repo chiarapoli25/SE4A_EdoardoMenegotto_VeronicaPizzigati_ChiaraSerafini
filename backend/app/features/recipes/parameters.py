@@ -80,24 +80,25 @@ _NUTRIENT_PREDICTIVE_GAINS: dict[ControlledVariable, tuple[float, float]] = {
 ## che si ripetono tipicamente piu' volte al giorno.
 _PID_INTEGRAL_TIME_SECONDS = 4.0 * 3600.0
 
-## @brief Tempo di integrazione del Predictive per N/P/K, in secondi —
-## deliberatamente molto piu' lungo di quello del PID sopra. Il dosaggio dei
-## fertilizzanti e' molto piu' lento/raro di quello dell'acqua: le valvole si
-## aprono solo mentre la pompa sta irrigando (poche occasioni al giorno), con
-## un intervallo minimo di un'ora fra dosi (vedi
-## catalog.py::nutrient_limits). Dopo un salto di setpoint fra due fasi (es.
-## raddoppio del target di azoto), la concentrazione impiega percio' giorni,
-## non ore, a raggiungere il nuovo target anche con un dosaggio corretto — un
-## errore persistente per giorni durante una salita legittima non e' un bias
-## da correggere, e' il transitorio normale. Con la stessa costante breve del
-## PID l'integrale si accumulava per l'intera salita (giorni di errore allo
-## stesso segno) prima ancora che la concentrazione si avvicinasse al nuovo
-## setpoint, producendo un sovraccumulo (windup) che spingeva la media
-## OLTRE il setpoint invece di farla convergere — verificato in simulazione:
-## con 4h la media di fase saliva, non scendeva, rispetto a nessuna azione
-## integrale. Su una scala di giorni l'integrale interviene solo sul bias
-## stazionario di fine fase, non sul transitorio della salita.
+# La pompa applica il comando come volume discreto di una singola
+# irrigazione. Usare l'intero command_max gia' al bordo della banda faceva
+# superare il setpoint ad ogni correzione; il PID finiva cosi' in un ciclo
+# limite con media stabilmente alta. Un quarto di quella pendenza mantiene
+# autorita' sui deficit grandi ma rende fini le correzioni vicino al target.
+_SOIL_MOISTURE_PID_RESPONSE_FACTOR = 0.25
+
+## @brief Tempo di integrazione del Predictive per eventuali variabili
+## continue non nutritive. Per N/P/K l'integrale viene disabilitato sotto:
+## il dosaggio e' gia' un'integrazione fisica di massa persistente.
 _PREDICTIVE_INTEGRAL_TIME_SECONDS = 3.0 * 24.0 * 3600.0
+
+# Il comando N/P/K e' una dose di concentrato, non un livello continuo di
+# attuatore: anche dopo che la valvola si chiude, la massa erogata resta nel
+# substrato. Una dose pari al massimo gia' per un errore grande quanto la
+# mezza banda produceva quindi salti di decine di mg/L nei piccoli volumi
+# radicali delle succulente. Il fattore rende la correzione progressiva; il
+# limite fisico massimo resta disponibile per deficit davvero eccezionali.
+_NUTRIENT_DOSE_RESPONSE_FACTOR = 0.10
 
 
 def _band_half_margin(setpoint: float, target: PhaseVariableTarget | None) -> float:
@@ -172,6 +173,8 @@ def default_parameters_for(
         # trascurabile, comportandosi come un bang-bang travestito da PID
         # invece di una vera correzione proporzionale.
         proportional_gain = command_maximum / _band_half_margin(setpoint, target)
+        if variable is ControlledVariable.SOIL_MOISTURE:
+            proportional_gain *= _SOIL_MOISTURE_PID_RESPONSE_FACTOR
         # Guadagno integrale non piu' trascurabile: elimina nel tempo il
         # bias stazionario che un P-solo lascia contro un disturbo costante
         # (l'evapotraspirazione) — vedi _PID_INTEGRAL_TIME_SECONDS.
@@ -192,6 +195,8 @@ def default_parameters_for(
     # ragione del proportional_gain del PID sopra — qui e' quella che
     # catalog.py::_predictive_parameters usa gia' per il seed iniziale.
     response_gain = command_maximum / _band_half_margin(setpoint, target)
+    if dose_only:
+        response_gain *= _NUTRIENT_DOSE_RESPONSE_FACTOR
     # water_dilution_gain/substrate_gain hanno senso solo per un dosaggio di
     # fertilizzante (correggono la stima N/P/K per la diluizione data
     # dall'acqua appena irrigata e per il fattore del substrato — vedi
@@ -203,11 +208,16 @@ def default_parameters_for(
     water_dilution_gain, substrate_gain = (
         _NUTRIENT_PREDICTIVE_GAINS[variable] if dose_only else (0.0, 0.0)
     )
-    # Stessa idea del PID sopra, ma con una costante di tempo molto piu'
-    # lunga — vedi _PREDICTIVE_INTEGRAL_TIME_SECONDS: il dosaggio dei
-    # fertilizzanti e' troppo lento/raro perche' un errore di qualche ora
-    # significhi un bias reale da correggere.
-    integral_gain = response_gain / _PREDICTIVE_INTEGRAL_TIME_SECONDS
+    # Per N/P/K la dose e' gia' l'integrale fisico del flusso e la massa
+    # somministrata persiste nel terriccio: integrare una seconda volta
+    # l'errore del controllore accumula sovradosaggio durante l'attesa tra
+    # due irrigazioni. Il feedback predittivo al dosaggio successivo e'
+    # sufficiente e produce correzioni molto piu' regolari.
+    integral_gain = (
+        0.0
+        if dose_only
+        else response_gain / _PREDICTIVE_INTEGRAL_TIME_SECONDS
+    )
     return PredictiveConfig(
         setpoint=setpoint,
         prediction_horizon_steps=1.0,

@@ -63,8 +63,20 @@ struct ControllerInput {
     std::optional<double> model_estimate;
     /** Intervallo trascorso dall'ultimo calcolo, in secondi. */
     double delta_time_seconds = 1.0;
-    /** Acqua erogata nell'intervallo corrente, in litri. */
+    /** Acqua associata al comando corrente, gia' erogata o prevista, in litri. */
     double water_delivered_liters = 0.0;
+    /**
+     * Volume d'acqua attualmente presente nella zona radicale, in litri.
+     * Se presente insieme ai due campi successivi, il Predictive N/P/K
+     * controlla la massa disciolta anziche la concentrazione istantanea.
+     */
+    std::optional<double> root_water_volume_liters;
+    /** Volume radicale corrispondente all'umidita nominale della ricetta. */
+    std::optional<double> reference_root_water_volume_liters;
+    /** Acqua che si prevede resti nel substrato durante l'irrigazione. */
+    double retained_irrigation_liters = 0.0;
+    /** Massa di nutriente aggiunta da un'unita di comando, in mg/mL. */
+    double nutrient_milligrams_per_command_unit = 0.0;
     /** Dose del prodotto gia erogata nella fase, in millilitri. */
     double cumulative_dose_milliliters = 0.0;
     /** Dose totale suggerita dalla ricetta per la fase, in millilitri. */
@@ -335,7 +347,9 @@ struct PredictiveControlResult {
  * integrale sullo stesso errore (integral_gain, con lo stesso anti-windup
  * del PID: l'accumulo si congela quando il comando e gia saturo e l'errore
  * spinge nella stessa direzione), quindi saturando il risultato nei limiti.
- * Non e un MPC e non usa un modello fisico dell'ambiente.
+ * Per N/P/K, se il runtime fornisce volume radicale e forza del prodotto,
+ * usa invece un semplice bilancio di massa riferito all'umidita nominale
+ * della ricetta. Non e' comunque un MPC.
  */
 class PredictiveController : public IController {
 public:
@@ -388,6 +402,10 @@ private:
     // prima di una finestra di dosaggio valida: vedi PredictiveController::
     // compute() in controllers.cpp per la spiegazione completa.
     std::optional<double> smoothed_measurement_;
+    // Quando il runtime fornisce il volume radicale, filtrare direttamente
+    // l'inventario di massa elimina il dente di sega puramente dovuto a
+    // concentrazione/diluizione senza nascondere il valore osservato.
+    std::optional<double> smoothed_process_mass_milligrams_;
     // Usato solo da compute() (che riceve un delta_time reale da
     // ControllerInput), non da update() — quest'ultimo non ha una durata e
     // resta percio' senza azione integrale, come documentato sopra.

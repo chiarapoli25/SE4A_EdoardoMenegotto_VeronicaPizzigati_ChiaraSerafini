@@ -115,10 +115,45 @@ def test_admin_change_persists_and_is_reflected_on_recipes(
         "command_maximum",
         "direction",
     }
+    target = recipe["phases"][0]["targets"][0]
+    half_band = max(
+        target["allowed_range"]["maximum"] - target["setpoint"],
+        target["setpoint"] - target["allowed_range"]["minimum"],
+    )
+    assert controller["parameters"]["proportional_gain"] * half_band == pytest.approx(
+        0.25 * controller["parameters"]["command_maximum"]
+    )
 
     # Un'altra variabile non toccata dal cambio resta al proprio default.
     ph_controller = next(c for c in recipe["controllers"] if c["variable"] == "ph")
     assert ph_controller["selected_strategy"] == "PID"
+
+
+def test_predictive_nutrient_uses_progressive_persistent_doses(
+    client: TestClient,
+) -> None:
+    token = _login(client, "admin")
+    recipe = client.get(
+        "/recipes/recipe-aloe-vera", headers=_auth_headers(token)
+    ).json()
+    controller = next(
+        c for c in recipe["controllers"] if c["variable"] == "nitrogen"
+    )
+    target = recipe["phases"][0]["targets"][3]
+    half_band = max(
+        target["allowed_range"]["maximum"] - target["setpoint"],
+        target["setpoint"] - target["allowed_range"]["minimum"],
+    )
+
+    # Al bordo della banda viene richiesta solo una frazione del massimo:
+    # la massa della dose resta nel substrato e non va reintegrata come se
+    # fosse un comando continuo.
+    parameters = controller["parameters"]
+    maximum = parameters["command_maximum"]
+    assert parameters["response_gain"] * half_band == pytest.approx(
+        0.10 * maximum
+    )
+    assert parameters["integral_gain"] == 0.0
 
 
 def test_admin_change_pushes_a_live_command_to_active_zones_only(
