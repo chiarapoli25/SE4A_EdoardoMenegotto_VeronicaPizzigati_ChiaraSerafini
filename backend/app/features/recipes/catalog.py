@@ -130,12 +130,21 @@ class _CatalogProfiles(_CatalogModel):
     # RecipeControlSystem::execute() lato Edge): senza questo bump, i
     # database gia' seminati con la v5 sarebbero rimasti con target PPFD
     # nell'ordine delle centinaia, interpretati come mol/m2/giorno —
-    # irraggiungibili, lampada sempre accesa. v6 e' l'unica accettata ora.
-    # Il limite superiore va spostato a ogni nuovo bump: e' quello che fa
-    # scattare seed_recipe_catalog() a rimigrare le ricette gia' importate a
-    # una versione precedente (vedi la colonna
+    # irraggiungibili, lampada sempre accesa. v7 aveva aggiunto
+    # output_limits.lighting_reference_ppfd_umol_m2_s e una legge di
+    # comando "a tempo residuo" (percentuale continua) per il ramo LIGHT;
+    # v8 la sostituisce con un controllo ON/OFF a soglia sul deficit DLI
+    # giornaliero (mai durante la finestra di luce naturale, solo dopo il
+    # tramonto — vedi Photoperiod e RecipeControlSystem::execute() in
+    # control_system.cpp) e aggiunge output_limits.
+    # maximum_supplemental_lighting_hours_per_day (_safety_limits()): senza
+    # questo bump, le ricette gia' seminate con la v7 non avrebbero quel
+    # campo e la nuova legge di comando non potrebbe caricarle. Il limite
+    # superiore va spostato a ogni nuovo bump: e' quello che fa scattare
+    # seed_recipe_catalog() a rimigrare le ricette gia' importate a una
+    # versione precedente (vedi la colonna
     # recipe_catalog_imports.catalog_version).
-    schema_version: int = Field(ge=2, le=6)
+    schema_version: int = Field(ge=2, le=8)
     phase_sequences: dict[str, list[_PhaseProfile]] = Field(min_length=1)
     light_profiles: dict[str, _LightProfile] = Field(min_length=1)
     water_profiles: dict[str, _WaterProfile] = Field(min_length=1)
@@ -262,6 +271,25 @@ def _safety_limits(
         "maximum_daily_dose_milliliters": maximum_daily_milliliters,
         "minimum_seconds_between_doses": minimum_seconds_between_doses,
         "ph_settling_time_seconds": 1800.0,
+        # Taratura assunta della plafoniera simulata: 600W (ActuatorConfig::
+        # maximum_lighting_power_watts) * 2.0 umol/(m2 s W) (EnvironmentConfig
+        # ::lamp_ppfd_umol_m2_s_per_watt) = 1200 umol/(m2 s) da accesa — la
+        # stessa relazione gia' usata sopra per
+        # water_pump_flow_liters_per_hour=2.0 (identico alla portata
+        # simulata della pompa). Il controllore LIGHT comanda ON/OFF (vedi
+        # RecipeControlSystem::execute(), ramo LIGHT), non piu' una
+        # percentuale: questo valore resta solo per stimare il contributo
+        # artificiale al DLI giornaliero (dashboard/riepiloghi) — non e'
+        # un valore che il controllo scopre dal simulatore, e' la stessa
+        # calibrazione che un agronomo misurerebbe puntando un quantum
+        # meter sotto la propria plafoniera in sede di commissioning.
+        "lighting_reference_ppfd_umol_m2_s": 1200.0,
+        # Tetto di illuminazione supplementare notturna: un valore
+        # prudente per ogni ricetta (nessuna specie del catalogo ha oggi
+        # un fabbisogno che lo saturi in condizioni meteo tipiche — vedi
+        # la validazione empirica nella cronologia del progetto), non
+        # derivato dal light_profile della singola ricetta.
+        "maximum_supplemental_lighting_hours_per_day": 6.0,
     }
 
 

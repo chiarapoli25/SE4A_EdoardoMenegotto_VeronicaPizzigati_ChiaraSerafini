@@ -74,7 +74,7 @@ def test_init_db_persists_the_seed_catalog_in_sqlite(
     assert stored is not None
     # Relativo alla versione di catalogo corrente (non un numero fisso), che
     # cambia a ogni bump — vedi _CatalogProfiles.schema_version.
-    assert stored[0] == 6
+    assert stored[0] == 8
     expanded = Recipe.model_validate_json(stored[1])
     assert expanded.plant_type == "Calathea"
     assert len(expanded.phases) == 4
@@ -142,7 +142,7 @@ def test_catalog_v1_bootstrap_is_migrated_to_multiphase_v2(
     assert migrated is not None
     # Relativa alla versione di catalogo corrente (non un numero fisso), che
     # cambia a ogni bump — vedi _CatalogProfiles.schema_version.
-    assert migrated.version == 6
+    assert migrated.version == 8
     assert len(migrated.phases) == 4
 
 

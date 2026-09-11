@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import math
 import queue
+import secrets
 import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -63,6 +65,18 @@ class _Target:
 class _Record:
     job: SimulationJob
     targets: list[_Target]
+    # Seed meteo condiviso da OGNI target di questa run (uno per settore in
+    # modalita' serra intera, uno solo in modalita' ricetta isolata) — vedi
+    # execute_edge_steps() ed EnvironmentSimulator::EnvironmentSimulator in
+    # environment_simulator.cpp. Generato una volta sola in _create(), non a
+    # ogni target: senza, ogni settore riceveva lo stesso seed LETTERALE
+    # fisso (il default C++ 0x53484D31U, sempre indice 0 perche' nessun
+    # chiamante passa mai --zones) — un caso fortunato che faceva GIA'
+    # coincidere il meteo fra settori, ma sempre la STESSA identica
+    # sequenza, run dopo run, perche' il valore non dipendeva da nulla di
+    # specifico alla run. Qui il seed e' fresco a ogni simulazione e resta
+    # comunque condiviso da tutti i settori della stessa serra.
+    environment_seed: int = field(default_factory=lambda: secrets.randbits(32))
     cancel: threading.Event = field(default_factory=threading.Event)
     # Un esito per target, nello stesso ordine di `targets`. La modalita'
     # storica per singolo settore ha sempre esattamente un target: result()
@@ -126,10 +140,43 @@ def _actuator_intervals(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return intervals
 
 
+def _actuator_intensity(step: dict[str, Any]) -> dict[str, float]:
+    """Quanto ha "spinto" ciascun attuatore in questo singolo step, in
+    [0, 1] — usato dal dashboard per tingere il fondo del grafico della
+    variabile controllata (dentro lo stesso canvas, non piu' una striscia
+    separata sotto: vedi la cronologia git di dashboard/script.js), cosi'
+    la variabilita' meteo che il controllore luce assorbe correttamente
+    nel DLI giornaliero (vedi RecipeControlSystem::execute(), ramo LIGHT)
+    resta comunque visibile in QUANTO ha dovuto lavorare la lampada, non
+    solo nel risultato finale. Per la luce e' il vero comando 0-100%
+    (decisions.light.command, scalato a 0-1): un giorno nuvoloso e uno
+    soleggiato producono lo stesso DLI di fine giornata ma tinte diverse,
+    perche' la lampada ha lavorato per una frazione diversa del suo
+    comando massimo. Per gli attuatori on/off (pompa, elettrovalvole) non
+    esiste un'intensita' piu' fine da mostrare (portata piena o niente),
+    quindi resta un 1.0/0.0 semplice, identico a quello gia' usato da
+    _active_actuators() sopra.
+    """
+    output = step.get("actuators", {}).get("output", {})
+    valves = output.get("fertilizer_valves_open", {})
+    light_command = step.get("decisions", {}).get("light", {}).get("command")
+    return {
+        "water_pump_intensity": 1.0 if output.get("water_pump_on") else 0.0,
+        "light_intensity": max(
+            0.0, min(1.0, float(light_command or 0.0) / 100.0)
+        ),
+        **{
+            f"valve_{key}_intensity": 1.0 if valves.get(key) else 0.0
+            for key in _fertilizer_keys()
+        },
+    }
+
+
 def _numeric_values(step: dict[str, Any]) -> dict[str, float]:
     merged = {
         **step.get("sensors", {}),
         **step.get("models", {}),
+        **_actuator_intensity(step),
     }
     return {
         key: float(value)
@@ -200,6 +247,16 @@ def _phase_targets(recipe: Recipe) -> list[dict[str, Any]]:
                 "name": phase.name,
                 "start_seconds": cursor,
                 "end_seconds": end,
+                # Finestra di luce NATURALE giornaliera (alba-tramonto),
+                # non un intervallo dentro start_seconds/end_seconds —
+                # vedi Photoperiod in control_system.hpp. Usata dal
+                # dashboard per distinguere, sul grafico della luce, la
+                # fase di sole da quella notturna in cui la lampada puo'
+                # supplire (isLight branch di drawSimulationSeriesChart).
+                "photoperiod": {
+                    "start_hour": phase.photoperiod.start_hour,
+                    "duration_hours": phase.photoperiod.duration_hours,
+                },
                 "targets": {
                     target.variable.value: {
                         "setpoint": target.setpoint,
@@ -235,6 +292,111 @@ def _summary(steps: list[dict[str, Any]], intervals: list[dict[str, Any]]) -> di
         "actuator_active_seconds": active_seconds,
         "control_cycles": len(steps),
     }
+
+
+def execute_edge_steps(
+    recipe: Recipe,
+    steps_count: int,
+    *,
+    cancel_event: threading.Event,
+    progress_cb: Callable[[int], None] | None = None,
+    on_process: Callable[[subprocess.Popen[str]], None] | None = None,
+    environment_seed: int | None = None,
+) -> list[dict[str, Any]]:
+    """Avvia l'Edge batch su una singola ricetta e restituisce i suoi step
+    grezzi (non ancora ridotti/riassunti). Isolato da SimulationManager
+    stesso perche' LiveSimulationManager (live_manager.py) lo riusa
+    identico: la fisica e' la stessa identica chiamata Edge — deterministica,
+    senza alcuna dipendenza dal tempo reale — solo quello che succede DOPO
+    diverge (il batch mostra tutto insieme, la riproduzione live centellina
+    l'esposizione degli stessi step a un ritmo scelto dall'utente). Solleva
+    InterruptedError/TimeoutError/RuntimeError esattamente come prima
+    quando era il corpo di _run_target — i chiamanti restano invariati.
+
+    @param environment_seed Seed meteo passato a --environment-seed
+        (EnvironmentSimulator, environment_simulator.cpp): STESSO valore per
+        ogni settore della stessa run di simulazione (vedi _Record.
+        environment_seed), cosi' tutti vedono lo stesso ciclo giorno/notte —
+        un vero "una sola serra, un solo cielo" invece che il seed
+        letterale fisso di prima. None lascia il vecchio default per-zona
+        del CLI (usato solo da chiamate dirette non orchestrate da qui,
+        es. test).
+    """
+    executable = configured_edge_executable()
+    if not edge_is_ready(executable):
+        raise RuntimeError(f"Edge simulator is not available at {executable}")
+    with tempfile.TemporaryDirectory(prefix="smarthydro-simulation-") as directory:
+        recipe_path = Path(directory) / "recipe.json"
+        output_path = Path(directory) / "result.json"
+        recipe_path.write_text(
+            recipe.model_dump_json(by_alias=True),
+            encoding="utf-8",
+        )
+        command = [
+            str(executable),
+            "--recipe", str(recipe_path),
+            "--steps", str(steps_count),
+            "--step-seconds", str(STEP_SECONDS),
+            "--output", "json",
+            "--progress",
+        ]
+        if environment_seed is not None:
+            command += ["--environment-seed", str(environment_seed)]
+        with output_path.open("w", encoding="utf-8") as output:
+            deadline = time.monotonic() + BATCH_TIMEOUT_SECONDS
+            process = subprocess.Popen(
+                command,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if on_process is not None:
+                on_process(process)
+            assert process.stderr is not None
+            errors: list[str] = []
+            stderr_lines: queue.Queue[str | None] = queue.Queue()
+
+            def read_stderr() -> None:
+                for stderr_line in process.stderr:
+                    stderr_lines.put(stderr_line)
+                stderr_lines.put(None)
+
+            threading.Thread(target=read_stderr, daemon=True).start()
+            while True:
+                if cancel_event.is_set():
+                    process.terminate()
+                    process.wait(timeout=10)
+                    raise InterruptedError("simulation cancelled")
+                if time.monotonic() > deadline:
+                    process.terminate()
+                    process.wait(timeout=10)
+                    raise TimeoutError(
+                        f"batch simulation exceeded {BATCH_TIMEOUT_SECONDS:.0f} seconds"
+                    )
+                try:
+                    line = stderr_lines.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                stripped = line.strip()
+                if stripped.startswith("PROGRESS "):
+                    completed_text = stripped.removeprefix("PROGRESS ").split("/", 1)[0]
+                    if progress_cb is not None:
+                        progress_cb(int(completed_text))
+                elif stripped:
+                    errors.append(stripped)
+            return_code = process.wait(timeout=10)
+        if cancel_event.is_set():
+            raise InterruptedError("simulation cancelled")
+        if return_code != 0:
+            raise RuntimeError(" · ".join(errors) or "Edge simulation failed")
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    steps = payload.get("steps")
+    if not isinstance(steps, list) or len(steps) != steps_count:
+        raise RuntimeError("Edge returned an incomplete simulation")
+    return steps
 
 
 class SimulationManager:
@@ -366,82 +528,22 @@ class SimulationManager:
         avanzare il progresso complessivo del job, non incide sul contenuto
         del risultato di questo target.
         """
-        executable = configured_edge_executable()
-        if not edge_is_ready(executable):
-            raise RuntimeError(f"Edge simulator is not available at {executable}")
-        with tempfile.TemporaryDirectory(prefix="smarthydro-simulation-") as directory:
-            recipe_path = Path(directory) / "recipe.json"
-            output_path = Path(directory) / "result.json"
-            recipe_path.write_text(
-                target.recipe.model_dump_json(by_alias=True),
-                encoding="utf-8",
-            )
-            command = [
-                str(executable),
-                "--recipe", str(recipe_path),
-                "--steps", str(steps_per_target),
-                "--step-seconds", str(STEP_SECONDS),
-                "--output", "json",
-                "--progress",
-            ]
-            with output_path.open("w", encoding="utf-8") as output:
-                deadline = time.monotonic() + BATCH_TIMEOUT_SECONDS
-                process = subprocess.Popen(
-                    command,
-                    stdout=output,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                with self._lock:
-                    record.process = process
-                assert process.stderr is not None
-                errors: list[str] = []
-                stderr_lines: queue.Queue[str | None] = queue.Queue()
+        def on_process(process: subprocess.Popen[str]) -> None:
+            with self._lock:
+                record.process = process
 
-                def read_stderr() -> None:
-                    for stderr_line in process.stderr:
-                        stderr_lines.put(stderr_line)
-                    stderr_lines.put(None)
+        def progress_cb(completed: int) -> None:
+            with self._lock:
+                self._update_progress(record, step_offset + completed)
 
-                threading.Thread(
-                    target=read_stderr,
-                    name=f"{run_id}-progress",
-                    daemon=True,
-                ).start()
-                while True:
-                    if record.cancel.is_set():
-                        process.terminate()
-                        process.wait(timeout=10)
-                        raise InterruptedError("simulation cancelled")
-                    if time.monotonic() > deadline:
-                        process.terminate()
-                        process.wait(timeout=10)
-                        raise TimeoutError(
-                            f"batch simulation exceeded {BATCH_TIMEOUT_SECONDS:.0f} seconds"
-                        )
-                    try:
-                        line = stderr_lines.get(timeout=0.1)
-                    except queue.Empty:
-                        continue
-                    if line is None:
-                        break
-                    stripped = line.strip()
-                    if stripped.startswith("PROGRESS "):
-                        completed_text = stripped.removeprefix("PROGRESS ").split("/", 1)[0]
-                        with self._lock:
-                            self._update_progress(record, step_offset + int(completed_text))
-                    elif stripped:
-                        errors.append(stripped)
-                return_code = process.wait(timeout=10)
-            if record.cancel.is_set():
-                raise InterruptedError("simulation cancelled")
-            if return_code != 0:
-                raise RuntimeError(" · ".join(errors) or "Edge simulation failed")
-            payload = json.loads(output_path.read_text(encoding="utf-8"))
-
-        steps = payload.get("steps")
-        if not isinstance(steps, list) or len(steps) != steps_per_target:
-            raise RuntimeError("Edge returned an incomplete simulation")
+        steps = execute_edge_steps(
+            target.recipe,
+            steps_per_target,
+            cancel_event=record.cancel,
+            progress_cb=progress_cb,
+            on_process=on_process,
+            environment_seed=record.environment_seed,
+        )
         intervals = _actuator_intervals(steps)
         return SimulationPreview(
             job_id=run_id,

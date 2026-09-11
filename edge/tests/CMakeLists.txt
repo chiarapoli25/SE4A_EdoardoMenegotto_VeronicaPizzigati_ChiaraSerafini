@@ -105,6 +105,17 @@ target_compile_features(controller_tests PRIVATE cxx_std_17)
 set_target_properties(controller_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(controller_tests)
 
+# Test dell'integratore DLI, isolato dal resto (vedi dli_accumulator.hpp).
+add_executable(dli_accumulator_tests dli_accumulator_tests.cpp)
+target_link_libraries(dli_accumulator_tests
+    PRIVATE
+        dli_accumulator
+        GTest::gtest_main
+)
+target_compile_features(dli_accumulator_tests PRIVATE cxx_std_17)
+set_target_properties(dli_accumulator_tests PROPERTIES CXX_EXTENSIONS OFF)
+gtest_discover_tests(dli_accumulator_tests)
+
 # Test di ricette, Strategy, conferma e limiti prioritari.
 add_executable(control_system_tests control_system_tests.cpp)
 target_link_libraries(control_system_tests

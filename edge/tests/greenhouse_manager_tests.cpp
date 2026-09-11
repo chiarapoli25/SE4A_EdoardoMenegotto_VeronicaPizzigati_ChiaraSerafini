@@ -691,9 +691,16 @@ TEST(GreenhouseManagerTest, KeepsTimelinesAndSequencesIndependent) {
 
 TEST(GreenhouseManagerTest, CriticalFaultInOneZoneDoesNotLockTheOther) {
     smarthydro::GreenhouseManager manager;
+    // Fotoperiodo esteso a tutta la giornata per la zona guasta: serve un
+    // comando LIGHT naturalmente a 0 (fase di luce naturale — vedi
+    // control_system.cpp) perche' il guasto ACTUATOR_STUCK_ON iniettato
+    // sotto sia un vero disallineamento comando/uscita, non un'accensione
+    // supplementare notturna gia' legittima di suo a quest'ora.
+    auto faulty_recipe = load_demo_recipe();
+    faulty_recipe.phases.front().photoperiod = {0.0, 24.0};
     auto& faulty = manager.add_simulated_zone(
         "faulty-zone",
-        load_demo_recipe(),
+        std::move(faulty_recipe),
         {},
         {},
         deterministic_sensors());

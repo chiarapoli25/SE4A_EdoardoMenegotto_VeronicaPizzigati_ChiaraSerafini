@@ -82,11 +82,24 @@ struct ValueRange {
     double maximum = 0.0;
 };
 
-/** @brief Fotoperiodo giornaliero della fase. */
+/**
+ * @brief Finestra di luce NATURALE giornaliera della fase (alba-tramonto).
+ *
+ * @details Rappresenta l'ipotesi dell'agronomo su quando splende il sole
+ * per questa fase — non una finestra in cui e' "permesso" supplire con la
+ * lampada (vecchio significato, superato): il ramo LIGHT di
+ * RecipeControlSystem::execute() usa questa finestra per distinguere la
+ * fase di luce naturale (dentro la finestra: lampada sempre spenta, e'
+ * il sole a maturare il DLI) dalla fase notturna (fuori dalla finestra:
+ * la lampada supplisce SOLO se il DLI di oggi e' ancora sotto il target
+ * — vedi PhaseVariableTarget::setpoint per LIGHT — e solo entro il tetto
+ * di ore configurato in OutputSafetyLimits::
+ * maximum_supplemental_lighting_hours_per_day).
+ */
 struct Photoperiod {
-    /** Ora di inizio, nell'intervallo [0, 24). */
+    /** Ora dell'alba, nell'intervallo [0, 24). */
     double start_hour = 6.0;
-    /** Durata di luce richiesta, in ore. */
+    /** Durata della luce naturale, in ore. */
     double duration_hours = 16.0;
 };
 
@@ -120,6 +133,30 @@ struct OutputSafetyLimits {
     double minimum_seconds_between_doses = 900.0;
     /** Tempo minimo di assestamento dopo una correzione pH, in secondi. */
     double ph_settling_time_seconds = 1800.0;
+    /**
+     * PPFD che la plafoniera eroga da accesa, per come e' stata TARATA in
+     * fase di associazione hardware — in umol/(m2 s). Il ramo LIGHT di
+     * RecipeControlSystem::execute() comanda la lampada in ON/OFF (vedi
+     * command sotto), non piu' in percentuale: questo valore non entra
+     * quindi nella decisione, resta pero' l'informazione che backend e
+     * dashboard usano per stimare il contributo ARTIFICIALE al DLI
+     * giornaliero (accensione nota moltiplicata per il tempo acceso) da
+     * quello NATURALE (il resto) — la stessa calibrazione che un agronomo
+     * misurerebbe puntando un quantum meter sotto la propria plafoniera,
+     * lo stesso ruolo che water_pump_flow_liters_per_hour gia' gioca per
+     * la pompa dell'acqua qui sopra.
+     */
+    double lighting_reference_ppfd_umol_m2_s = 1200.0;
+    /**
+     * Ore massime giornaliere di illuminazione supplementare (lampada
+     * accesa dopo il tramonto naturale — vedi Photoperiod) oltre le quali
+     * il ramo LIGHT forza lo spegnimento anche con un deficit DLI ancora
+     * aperto: un vero tetto configurato dall'agronomo, non un effetto
+     * collaterale del ritmo di controllo. Zero e' un valore legittimo
+     * ("mai supplire, solo sole") per le specie a cui l'agronomo non
+     * vuole mai aggiungere luce artificiale.
+     */
+    double maximum_supplemental_lighting_hours_per_day = 6.0;
 };
 
 /**
@@ -218,6 +255,16 @@ struct ControlRequest {
      * e non da una Strategy generica.
      */
     double daily_light_mol_m2_so_far = 0.0;
+    /**
+     * Ore di illuminazione SUPPLEMENTARE (lampada accesa fuori dalla
+     * finestra di luce naturale — vedi Photoperiod) gia' erogate oggi,
+     * PRIMA del contributo del ciclo corrente — stessa sequenza "leggo il
+     * cumulativo di finora, poi lo aggiorna il chiamante dopo la
+     * decisione" di daily_light_mol_m2_so_far sopra. Usato solo dal ramo
+     * LIGHT per rispettare OutputSafetyLimits::
+     * maximum_supplemental_lighting_hours_per_day.
+     */
+    double daily_supplemental_lighting_hours_so_far = 0.0;
     /** Indica che la valvola pH+ e fisicamente attiva. */
     bool ph_up_active = false;
     /** Indica che la valvola pH- e fisicamente attiva. */

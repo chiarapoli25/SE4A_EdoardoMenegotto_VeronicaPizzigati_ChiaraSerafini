@@ -422,7 +422,12 @@ TEST(RuntimeCommandProcessorTest, StuckSensorNeedsRepeatedObservation) {
 
 TEST(RuntimeCommandProcessorTest, DegradedIsolatesSharedPumpOnly) {
     auto recipe = load_demo_recipe();
-    recipe.phases.front().photoperiod = {0.0, 24.0};
+    // Fotoperiodo di default della ricetta demo (6-20): l'esecuzione a
+    // ore 0:00-0:02 sotto cade quindi in notte, dove il ramo LIGHT
+    // supplisce se il DLI e' ancora sotto il target (vedi
+    // control_system.cpp) — esattamente cio' che serve per dimostrare che
+    // il canale luce resta VIVO (comando non bloccato, uscita non nulla)
+    // nonostante il guasto sulla pompa qui sotto isoli le altre variabili.
     auto& soil_target =
         recipe.phases.front().targets[
             smarthydro::controlled_variable_index(
@@ -502,8 +507,16 @@ TEST(RuntimeCommandProcessorTest, DegradedIsolatesSharedPumpOnly) {
 }
 
 TEST(RuntimeCommandProcessorTest, StuckOnActuatorTriggersImmediateEmergency) {
+    auto recipe = load_demo_recipe();
+    // Fotoperiodo esteso a tutta la giornata: il ramo LIGHT comanda quindi
+    // sempre 0 (fase di luce naturale — vedi control_system.cpp), cosi'
+    // il guasto ACTUATOR_STUCK_ON iniettato sotto crea un vero
+    // disallineamento comando/uscita (comandato spento, fisicamente
+    // acceso) invece di confondersi con un'accensione supplementare
+    // notturna gia' legittima di suo.
+    recipe.phases.front().photoperiod = {0.0, 24.0};
     smarthydro::EdgeRuntime runtime(
-        load_demo_recipe(), {}, {}, deterministic_sensors());
+        std::move(recipe), {}, {}, deterministic_sensors());
     runtime.confirm_all_configurations();
     smarthydro::RuntimeCommandProcessor processor(runtime);
 
@@ -537,8 +550,16 @@ TEST(RuntimeCommandProcessorTest, StuckOnActuatorTriggersImmediateEmergency) {
 TEST(RuntimeCommandProcessorTest, ManualResetRequiresHealthyActuatorVerification) {
     smarthydro::OperationalStatePolicy policy;
     policy.healthy_steps_before_nominal = 1;
+    auto recipe = load_demo_recipe();
+    // Fotoperiodo esteso a tutta la giornata: come in
+    // StuckOnActuatorTriggersImmediateEmergency, serve un comando LIGHT
+    // naturalmente a 0 (fase di luce naturale) perche' il guasto
+    // ACTUATOR_STUCK_ON iniettato sotto sia un vero disallineamento
+    // comando/uscita, non un'accensione supplementare notturna gia'
+    // legittima di suo.
+    recipe.phases.front().photoperiod = {0.0, 24.0};
     smarthydro::EdgeRuntime runtime(
-        load_demo_recipe(),
+        std::move(recipe),
         {},
         {},
         deterministic_sensors(),
@@ -686,9 +707,15 @@ TEST(RuntimeCommandProcessorTest, EmergencyStopIsImmediateAndResetIsControlled) 
     const auto recovered = runtime.step(60.0);
 
     EXPECT_TRUE(stopped.success());
-    EXPECT_EQ(
-        runtime.actuator_output().lighting_power_watts,
-        0.0);
+    // Non un controllo sul valore della luce a questo punto: col ramo
+    // LIGHT ora a soglia sul deficit DLI (vedi control_system.cpp), ore
+    // 0:00 (l'ora di partenza della simulazione, fuori dalla finestra di
+    // luce naturale 6-20 della ricetta demo) e' legittimamente notte con
+    // deficit ancora aperto — la lampada supplementare si riaccende non
+    // appena il runtime torna operativo, ed e' esattamente cosi' che deve
+    // comportarsi. Quel che questo test verifica e' la macchina a stati
+    // (emergenza immediata, poi degradato, poi nominale), non un valore
+    // di luce specifico.
     EXPECT_TRUE(reset.success());
     EXPECT_EQ(
         verification.operational_state,
