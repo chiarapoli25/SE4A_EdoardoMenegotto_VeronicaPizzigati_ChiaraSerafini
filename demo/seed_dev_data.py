@@ -241,23 +241,23 @@ from datetime import datetime, timedelta, timezone
 # necessario in Python 3), quindi questo import funziona sia da
 # `python demo/seed_dev_data.py` (dalla radice) sia da dentro demo/, senza
 # bisogno di manipolare sys.path.
-from old_test.seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
-
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "pass123"
 # Configurabile via variabile d'ambiente cosi' lo STESSO script, senza
 # modifiche, funziona sia contro un backend locale (default) sia contro
 # l'indirizzo pubblico di un deploy Railway (SMARTHYDRO_BASE_URL=https://
 # <nome-servizio>.up.railway.app). Nota sull'account amministratore quando
 # BASE_URL e' remoto: questo script fa solo POST /auth/login (puro HTTP),
 # non puo' creare il primo account da solo (per scelta non esiste un
-# endpoint HTTP di registrazione, vedi demo/old_test/seed_users.py) — su
+# endpoint HTTP di registrazione, vedi demo/seed_users.py) — su
 # Railway demo/old_test/seed_users.py va eseguito UNA VOLTA dentro lo
-# stesso container (es. `railway run python demo/old_test/seed_users.py`,
+# stesso container (es. `railway run python demo/seed_users.py`,
 # cosi' scrive nello stesso
 # file SQLite che il backend in esecuzione sta davvero usando), non dal tuo
 # PC puntato all'URL pubblico: eseguito localmente scriverebbe in un
 # database SQLite locale, sul tuo PC, completamente scollegato da quello
 # del servizio remoto.
-BASE_URL = os.environ.get("SMARTHYDRO_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+BASE_URL = os.environ.get("SMARTHYDRO_BASE_URL", "https://smarthydro-production-2a53.up.railway.app").rstrip("/")
 EDGE_ID = "edge-serra-1"
 
 # Token di sessione ottenuto da login_as_admin() e allegato da request() a
@@ -1061,7 +1061,7 @@ def step7_lockdown_demo(run_suffix: str) -> None:
     degraded_event = poll_events_until(
         zone_id,
         lambda e: e.get("event_type") == "StateChanged"
-        and e.get("payload", {}).get("current_state") == "Degraded",
+        and e.get("payload",demo/old_test/seed_users.py {}).get("current_state") == "Degraded",
         "StateChanged -> Degraded (pre-lockdown)",
         since=since,
     )
@@ -1307,6 +1307,14 @@ def verify_state_sequence(
 
 
 def main() -> None:
+    connection = get_connection()
+        try:
+            init_db(connection)
+            for username, password, role, display_name in SEED_ACCOUNTS:
+                _upsert_user(connection, username, password, role, display_name)
+        finally:
+            connection.close()
+            
     start_time = time.monotonic()
     run_suffix = str(int(time.time() * 1000))
 
