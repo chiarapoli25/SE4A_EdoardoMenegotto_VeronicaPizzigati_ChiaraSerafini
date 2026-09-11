@@ -234,6 +234,20 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+import sqlite3
+import sys
+from pathlib import Path
+
+# Aggiungi la radice del repository al path per poter importare il backend
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from backend.app.core.database import get_connection, init_db
+from backend.app.features.users.models import UserRole
+from backend.app.features.users.repository import UsernameConflict, create_user
+from backend.app.features.users.security import hash_password
+
 # Modulo non nel pacchetto backend, ora dentro demo/old_test/ (spostato li'
 # insieme a seed_test_scenario.py/run_end_to_end.py). Python mette la
 # cartella dello script (demo/) in sys.path[0] quando lo lanci direttamente,
@@ -243,6 +257,10 @@ from datetime import datetime, timedelta, timezone
 # bisogno di manipolare sys.path.
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "pass123"
+
+SEED_ACCOUNTS = (
+    (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
+)
 # Configurabile via variabile d'ambiente cosi' lo STESSO script, senza
 # modifiche, funziona sia contro un backend locale (default) sia contro
 # l'indirizzo pubblico di un deploy Railway (SMARTHYDRO_BASE_URL=https://
@@ -347,6 +365,23 @@ QUARANTINE_ZONES = [
     # quindi non esiste piu' un "r5-s2" da seedare qui.
 ]
 
+def _upsert_user(
+    connection: sqlite3.Connection,
+    username: str,
+    password: str,
+    role: UserRole,
+    display_name: str,
+) -> None:
+    try:
+        create_user(connection, username, password, role, display_name)
+        print(f"[seed] utente creato: {username} (ruolo={role.value})")
+    except UsernameConflict:
+        connection.execute(
+            "UPDATE users SET password_hash = ?, role = ?, display_name = ? WHERE username = ?",
+            (hash_password(password), role.value, display_name, username),
+        )
+        connection.commit()
+        print(f"[seed] utente gia' esistente, password/ruolo aggiornati: {username} (ruolo={role.value})")
 
 def _parse_json_body(text: str) -> dict:
     """Interpreta il corpo di una risposta HTTP come JSON, senza mai
@@ -1308,13 +1343,13 @@ def verify_state_sequence(
 
 def main() -> None:
     connection = get_connection()
-        try:
-            init_db(connection)
-            for username, password, role, display_name in SEED_ACCOUNTS:
-                _upsert_user(connection, username, password, role, display_name)
-        finally:
-            connection.close()
-            
+    try:
+        init_db(connection)
+        for username, password, role, display_name in SEED_ACCOUNTS:
+            _upsert_user(connection, username, password, role, display_name)
+    finally:
+        connection.close()
+
     start_time = time.monotonic()
     run_suffix = str(int(time.time() * 1000))
 
