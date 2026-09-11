@@ -91,15 +91,18 @@ Topologia (stessa forma delle versioni precedenti dello script):
   POI avanzata fino all'ultima fase una volta rientrata Nominal), r4-s2
   (dimostrazione lockdown per violazione di safety_range, vedi sotto; NON
   avanzata di fase)
-- Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 5 piante
-  quarantenate, backdatate oltre la soglia di rilascio del frontend (vedi
-  BACKDATING QUARANTENA sotto)
+- Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 2 piante
+  già in quarantena fin dal primissimo istante (backdate istantaneo,
+  puramente illustrativo — vedi QUARANTINE_INSTANT_PLANT_SOURCES/
+  ensure_instant_quarantine_plants()) + altre 5 piante che entrano in
+  quarantena solo dopo l'attesa reale del Passo 8, backdatate oltre la
+  soglia di rilascio del frontend (vedi BACKDATING QUARANTENA sotto)
 
 Ogni zona online (con un Edge assegnato) riceve anche una pianta residente
 non quarantenata, di specie coerente con la ricetta della zona (vedi
 ensure_resident_plants()): senza questo, un settore Nominal/Degraded/
 EmergencyLockdown normale non avrebbe mai alcuna pianta a proprio nome, a
-differenza delle 5 piante del Reparto 5 (che sono sempre e solo in
+differenza delle 7 piante del Reparto 5 (che sono sempre e solo in
 quarantena).
 
 AVANZAMENTO DI FASE (AdvanceRecipePhase) — ogni ricetta di catalogo ha 4
@@ -144,6 +147,15 @@ con una singola PATCH il quarantined_at già backdatato di
 QUARANTINE_BACKDATE. Chi guarda la demo vede quindi il tempo di
 quarantena scorrere con lo stesso spirito accelerato del resto della
 serra, invece di un salto invisibile.
+
+Perche' i 3 minuti di attesa reale non lascino il Reparto 5 vuoto proprio
+all'inizio della demo (scopo puramente illustrativo: chi apre subito la
+dashboard deve vedere gia' qualcosa in quarantena, non un settore vuoto),
+ensure_instant_quarantine_plants() registra SUBITO, con backdate
+istantaneo (nessuna attesa, stesso margine QUARANTINE_BACKDATE), altre 2
+piante distinte — vedi QUARANTINE_INSTANT_PLANT_SOURCES — prima ancora
+che parta l'attesa del Passo 8. Popolazione separata dalle 5 piante del
+Passo 8: id diversi, nessuna sovrapposizione.
 
 ACCOUNT AGRONOMO NOMINATI: oltre all'admin, SEED_ACCOUNTS include quattro
 account agronomo con username/password fissi (mario/elena/antonio/alice),
@@ -383,6 +395,19 @@ QUARANTINE_MINUTES_PER_SECOND = 10.0
 QUARANTINE_REAL_WAIT_SECONDS = (
     QUARANTINE_BACKDATE.total_seconds() / 60.0 / QUARANTINE_MINUTES_PER_SECOND
 )
+
+# Puramente illustrativo: senza queste, il Reparto 5 resterebbe vuoto per
+# i primi QUARANTINE_REAL_WAIT_SECONDS (3 minuti) di ogni demo, cioe'
+# esattamente il momento in cui chi guarda apre piu' probabilmente la
+# dashboard per la prima volta. Backdate ISTANTANEO (stesso margine
+# QUARANTINE_BACKDATE, nessuna attesa reale — a differenza delle 5 piante
+# del Passo 8), popolazione distinta (id "plant-early-*", non "plant-N"):
+# vedi ensure_instant_quarantine_plants(). Zone di origine scelte fra
+# quelle gia' note a zone_species in quel punto di main() (dopo il Passo 1).
+QUARANTINE_INSTANT_PLANT_SOURCES = [
+    ("plant-early-1", "r2-s1"),
+    ("plant-early-2", "r4-s1"),
+]
 
 # Quante volte al secondo la console viene aggiornata con lo stato di
 # avanzamento durante le attese lunghe (Passo 7): puramente cosmetico, per
@@ -950,6 +975,33 @@ def ensure_resident_plants(zone_species: dict[str, str], edge_zone_ids: list[str
         ensure_plant(f"resident-{zone_id}", species, zone_id)
 
 
+def ensure_instant_quarantine_plants(zone_species: dict[str, str]) -> None:
+    """Popola il Reparto 5 con qualche pianta già in quarantena fin dal
+    primissimo istante della demo — backdate ISTANTANEO (nessuna attesa
+    reale, a differenza delle 5 piante del Passo 8), puramente
+    illustrativo: vedi QUARANTINE_INSTANT_PLANT_SOURCES per i dettagli e
+    il perché. Popolazione distinta da quella del Passo 8 (id
+    "plant-early-*"), stesso margine QUARANTINE_BACKDATE, stessa
+    ensure_quarantine() usata li'."""
+    print(
+        "\n[seed] --- Passo 1quater: piante già in quarantena "
+        f"(backdate istantaneo di {QUARANTINE_BACKDATE}, illustrativo) ---"
+    )
+    backdate_at = datetime.now(timezone.utc) - QUARANTINE_BACKDATE
+    for plant_id, home_zone in QUARANTINE_INSTANT_PLANT_SOURCES:
+        species = zone_species.get(home_zone)
+        if not species:
+            print(f"[seed] avviso: nessuna specie nota per {home_zone}, salto {plant_id}")
+            continue
+        ensure_plant(plant_id, species, home_zone)
+        ensure_quarantine(
+            plant_id,
+            "r5-s1",
+            "controllo fitosanitario di routine",
+            quarantined_at=backdate_at,
+        )
+
+
 def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) -> None:
     """Fa avanzare `zone_id` fino all'ultima fase della sua ricetta con
     AdvanceRecipePhase ripetuti (vedi la nota AVANZAMENTO DI FASE in cima
@@ -1452,6 +1504,7 @@ def main() -> None:
         ensure_zone(zone_id, name, dept, sector, {"plant_species": None})
 
     ensure_resident_plants(zone_species, edge_zone_ids)
+    ensure_instant_quarantine_plants(zone_species)
 
     print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) ---")
     for zone_id in edge_zone_ids:
