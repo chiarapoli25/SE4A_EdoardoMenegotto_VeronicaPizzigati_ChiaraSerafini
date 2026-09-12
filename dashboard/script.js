@@ -77,6 +77,25 @@ const QUARANTINE_MIN_RELEASE_MS = 24 * 60 * 60 * 1000;
 // there is only ever one valid destination for PATCH /plants/{id}/quarantine.
 const QUARANTINE_ZONE_ID = "r5-s1";
 
+// Purely visual, client-side countdown shown on each quarantine tile so a
+// demo viewer sees time actually passing instead of finding "Fai uscire"
+// already enabled with no explanation. Quarantine zones never run a
+// cultivation cycle (see topology docs), so there is no time_scale to piggy-
+// back on here — this is a local fake clock, independent of and never
+// written back to the real quarantined_at/backend release check above.
+// QUARANTINE_VISUAL_TOTAL_MS is how much *displayed* time counts down;
+// QUARANTINE_VISUAL_ACCEL is how much faster than real time it runs (12x =
+// 1 displayed minute every 5 real seconds, matching the "un minuto mostrato
+// a schermo ogni pochi secondi reali" request). Together: a 5-minute
+// displayed countdown finishes in 25 real seconds — enough to visibly watch
+// it run down during a demo, without waiting anywhere near real time. Both
+// are display-only: the actual gate a viewer cares about
+// (QUARANTINE_MIN_RELEASE_MS/quarantined_at) is combined with this in
+// quarantineVisualDone()/canRelease below.
+const QUARANTINE_VISUAL_TOTAL_MS = 5 * 60 * 1000;
+const QUARANTINE_VISUAL_ACCEL = 12;
+const QUARANTINE_VISUAL_TICK_MS = 1000;
+
 // simKey is a SEPARATE field from sensorField: sensorField names the live
 // telemetry sample field (GET /zones/{id}/telemetry, "..._estimate_..."
 // for the three nutrients), simKey names the raw Edge batch-simulation
@@ -523,6 +542,13 @@ const STATE = {
   quarantinePlants: [],
   quarantinePlantsLoaded: false,
 
+  // Purely visual per-plant countdown clocks for the quarantine tiles (see
+  // QUARANTINE_VISUAL_* above), keyed by plant id. Each entry is just the
+  // Date.now() the clock started counting down from locally — never sent to
+  // the backend and never derived from a network response after creation,
+  // so a poll tick can refresh quarantinePlants without resetting it.
+  quarantineVisualClock: {},
+
   // Per-plant transient UI state, keyed by plant id — shared between the
   // zone-detail plant list and the quarantine detail tiles, since plant ids
   // are unique across both. Each entry may carry: quarantineFormOpen,
@@ -689,6 +715,45 @@ function quarantineReleaseWait(iso) {
   const minutes = totalMinutes % 60;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+/** Lazily starts (and returns) plant `id`'s visual countdown clock — the
+ * real Date.now() it began counting down from. Started once per plant id
+ * per page load; a poll tick re-render must call this instead of writing
+ * STATE.quarantineVisualClock directly so it doesn't restart on refresh. */
+function ensureQuarantineVisualClock(id) {
+  if (!(id in STATE.quarantineVisualClock)) {
+    STATE.quarantineVisualClock[id] = Date.now();
+  }
+  return STATE.quarantineVisualClock[id];
+}
+
+/** Milliseconds of DISPLAYED time left on plant `id`'s visual countdown
+ * (never negative). Purely local/derived — recomputing from Date.now() on
+ * every call is what makes a 1s ticker enough to animate it. */
+function quarantineVisualRemainingMs(id) {
+  const startedAt = ensureQuarantineVisualClock(id);
+  const elapsedDisplayMs = (Date.now() - startedAt) * QUARANTINE_VISUAL_ACCEL;
+  return Math.max(0, QUARANTINE_VISUAL_TOTAL_MS - elapsedDisplayMs);
+}
+
+/** True once plant `id`'s visual countdown has run down to zero. */
+function quarantineVisualDone(id) {
+  return quarantineVisualRemainingMs(id) <= 0;
+}
+
+/** "3:45"-style mm:ss readout of the displayed time left. */
+function fmtQuarantineVisualRemaining(id) {
+  const totalSeconds = Math.ceil(quarantineVisualRemainingMs(id) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** 0-100 progress toward the visual countdown reaching zero, for the bar. */
+function quarantineVisualProgressPercent(id) {
+  const remaining = quarantineVisualRemainingMs(id);
+  return Math.round((1 - remaining / QUARANTINE_VISUAL_TOTAL_MS) * 100);
 }
 
 /** Dotted-path get/set into a plain nested object/array draft — used by the
@@ -898,13 +963,18 @@ const NUTRIENT_PREDICTIVE_GAINS = {
 // (es. l'evapotraspirazione, che un attuatore mono-direzionale come la
 // pompa non puo' mai contrastare "tirando giu'" il valore).
 const PID_INTEGRAL_TIME_SECONDS = 4 * 3600;
-// Tempo di integrazione del Predictive per N/P/K — molto piu' lungo di
-// quello del PID: vedi _PREDICTIVE_INTEGRAL_TIME_SECONDS in parameters.py.
-// Il dosaggio dei fertilizzanti e' troppo lento/raro (gated dall'irrigazione,
-// minimo un'ora fra dosi) perche' un errore di poche ore — normale durante
-// la salita verso un nuovo setpoint di fase — vada scambiato per un bias
-// stazionario da correggere subito.
+// La pompa interpreta il comando come litri per singola irrigazione: vicino
+// al target serve una pendenza piu' dolce per non creare un ciclo limite con
+// media sistematicamente sopra il setpoint (stesso fattore del backend).
+const SOIL_MOISTURE_PID_RESPONSE_FACTOR = 0.25;
+// Tempo di integrazione per eventuali usi Predictive non nutritivi; per
+// N/P/K l'integrale e' disabilitato sotto, perche' la dose integra gia'
+// fisicamente una massa che persiste nel substrato.
 const PREDICTIVE_INTEGRAL_TIME_SECONDS = 3 * 24 * 3600;
+// Il comando N/P/K e' una dose persistente nel substrato, non un livello
+// continuo: correggiamo progressivamente per evitare grandi salti di
+// concentrazione nei piccoli volumi radicali (stesso fattore del backend).
+const NUTRIENT_DOSE_RESPONSE_FACTOR = 0.10;
 
 function buildStrategyParameters(strategy, target, variableKey) {
   const setpoint = target ? target.setpoint : 0;
@@ -929,7 +999,8 @@ function buildStrategyParameters(strategy, target, variableKey) {
     // trascurabile, comportandosi come un bang-bang travestito da PID.
     const [commandMin, commandMax] = doseOnly ? [0.0, 3.0] : NON_DOSE_COMMAND_LIMITS[variableKey];
     const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
-    const proportionalGain = commandMax / margin;
+    const proportionalGain = (commandMax / margin)
+      * (variableKey === "soil_moisture" ? SOIL_MOISTURE_PID_RESPONSE_FACTOR : 1.0);
     const integralGain = proportionalGain / PID_INTEGRAL_TIME_SECONDS;
     return {
       setpoint, proportional_gain: proportionalGain, integral_gain: integralGain,
@@ -946,7 +1017,8 @@ function buildStrategyParameters(strategy, target, variableKey) {
     // response_gain scalato sulla banda della fase, stessa formula e stessa
     // ragione del proportional_gain del PID sopra.
     const margin = target ? Math.max(max - setpoint, setpoint - min, 1e-6) : 1.0;
-    const responseGain = commandMax / margin;
+    const responseGain = (commandMax / margin)
+      * (doseOnly ? NUTRIENT_DOSE_RESPONSE_FACTOR : 1.0);
     // water_dilution_gain/substrate_gain hanno senso solo per un dosaggio
     // di fertilizzante (correggono la stima N/P/K per la diluizione data
     // dall'acqua appena irrigata e per il fattore del substrato — vedi
@@ -956,12 +1028,11 @@ function buildStrategyParameters(strategy, target, variableKey) {
     const [waterDilutionGain, substrateGain] = doseOnly
       ? NUTRIENT_PREDICTIVE_GAINS[variableKey]
       : [0.0, 0.0];
-    // Stessa idea del PID sopra, ma con una costante di tempo molto più
-    // lunga (PREDICTIVE_INTEGRAL_TIME_SECONDS): il dosaggio dei fertilizzanti
-    // è troppo lento/raro perché un errore di poche ore significhi un bias
-    // reale da correggere, invece del normale transitorio di una salita
-    // verso un nuovo setpoint di fase.
-    const integralGain = responseGain / PREDICTIVE_INTEGRAL_TIME_SECONDS;
+    // N/P/K non integrano una seconda volta l'errore: la dose somministrata
+    // e' gia' una massa persistente nel substrato.
+    const integralGain = doseOnly
+      ? 0.0
+      : responseGain / PREDICTIVE_INTEGRAL_TIME_SECONDS;
     return {
       setpoint, prediction_horizon_steps: 1.0, response_gain: responseGain, neutral_command: 0.0,
       command_minimum: commandMin, command_maximum: commandMax,
@@ -3111,6 +3182,7 @@ function renderSimulationResult(sim) {
   const result = activeSimulationPreview(sim);
   const gridView = sim.chartView === "grid";
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
+  const selectedStrategy = result.recipe.strategies?.[varMeta.key] || "—";
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
     ${greenhouse ? `
@@ -3131,6 +3203,7 @@ function renderSimulationResult(sim) {
           ${VARIABLES.map((v) => `<option value="${v.key}" ${sim.chartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
         </select>`}
         ${!gridView && sim.chartVariable === "light" ? renderLightDaySelect(sim, result) : ""}
+        ${gridView ? "" : `<span class="hint">Strategia: <b>${escapeHtml(selectedStrategy)}</b></span>`}
         <button type="button" class="chart-view-toggle" data-action="sim-chart-view-toggle">
           ${gridView ? "◧ Un grafico alla volta" : "▦ Vedi tutti i grafici"}
         </button>
@@ -3157,7 +3230,7 @@ function renderSimulationResult(sim) {
         ? `<div class="sim-chart-grid">
             ${VARIABLES.map((v) => `
               <div class="sim-chart-grid-cell">
-                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""}</div>
+                <div class="sim-chart-grid-title">${escapeHtml(varLegendLabel(v))}${v.key === "light" ? " · minimo di fase" : ""} · ${escapeHtml(result.recipe.strategies?.[v.key] || "—")}</div>
                 <canvas id="simulation-chart-${v.key}" class="sim-chart-grid-canvas"></canvas>
               </div>`).join("")}
           </div>`
@@ -4945,6 +5018,7 @@ function closeModal() {
   STATE.addPlantError = null;
   STATE.quarantinePlants = [];
   STATE.quarantinePlantsLoaded = false;
+  STATE.quarantineVisualClock = {};
   STATE.plantUi = {};
 }
 
@@ -5031,10 +5105,24 @@ async function openQuarantineModal() {
   STATE.quarantinePlantsLoaded = false;
   STATE.plantUi = {};
   STATE.returnTo = null;
+  // Fresh visual countdowns every time the pop-up is opened (see
+  // QUARANTINE_VISUAL_* / ensureQuarantineVisualClock): each plant tile
+  // starts its accelerated clock from "now", independent of the real
+  // quarantined_at, purely so a demo viewer sees it run from the start.
+  STATE.quarantineVisualClock = {};
 
   document.getElementById("modal-overlay").classList.remove("hidden");
   renderModal();
   setPoll("modal", tickQuarantineModal, MODAL_POLL_MS);
+  // Local 1s ticker, separate from the network "modal" poll above: it only
+  // re-renders so the visual countdown text/bar animates smoothly between
+  // network refreshes, it never calls the backend (see closeModal for the
+  // matching cleanup via STATE.adhocIntervals).
+  const iv = setInterval(() => {
+    if (STATE.modalKind !== "quarantine") { clearInterval(iv); return; }
+    renderModalIfSafe();
+  }, QUARANTINE_VISUAL_TICK_MS);
+  STATE.adhocIntervals.push(iv);
 }
 
 async function tickQuarantineModal() {
@@ -5553,19 +5641,31 @@ function renderQuarantineModal() {
 
 /**
  * One tile per quarantined plant: species, entry reason, live elapsed time,
- * "Fai uscire" (disabled until QUARANTINE_MIN_RELEASE_MS has passed, 409
- * surfaced inline instead of a generic error) and, distinctly styled,
- * "Rimuovi definitivamente" — the real fix for a plant stuck here because
- * its origin sector no longer exists (see the Home alarm above).
+ * a purely visual accelerated countdown (see QUARANTINE_VISUAL_* — never
+ * touches quarantined_at or the server-side release check, just gives a
+ * demo viewer something to watch actually count down), "Fai uscire"
+ * (disabled until BOTH the real QUARANTINE_MIN_RELEASE_MS gate has passed
+ * AND the visual countdown reaches zero, 409 surfaced inline instead of a
+ * generic error) and, distinctly styled, "Rimuovi definitivamente" — the
+ * real fix for a plant stuck here because its origin sector no longer
+ * exists (see the Home alarm above).
  */
 function renderQuarantineTile(p) {
   const ui = STATE.plantUi[p.id] || {};
   const rSending = ui.releaseStatus === "sending";
   const dSending = ui.deleteStatus === "sending";
-  const canRelease = quarantineReleaseAllowed(p.quarantined_at) && !rSending;
+  const realAllowed = quarantineReleaseAllowed(p.quarantined_at);
+  const visualDone = quarantineVisualDone(p.id);
+  const canRelease = realAllowed && visualDone && !rSending;
   const wait = quarantineReleaseWait(p.quarantined_at);
   const releaseLabel = rSending ? "Uscita…" : "Fai uscire";
-  const releaseTitle = !quarantineReleaseAllowed(p.quarantined_at) ? `Disponibile tra ${wait}` : "";
+  const releaseTitle = !realAllowed
+    ? `Disponibile tra ${wait}`
+    : !visualDone
+      ? "Attendi il conto alla rovescia qui sopra"
+      : "";
+  const visualLabel = visualDone ? "Pronta" : fmtQuarantineVisualRemaining(p.id);
+  const visualPercent = quarantineVisualProgressPercent(p.id);
 
   return `
     <div class="quarantine-tile">
@@ -5575,9 +5675,16 @@ function renderQuarantineTile(p) {
       </div>
       <div class="quarantine-tile-row"><span class="k">Motivo</span><span class="v">${escapeHtml(p.quarantine_reason || "—")}</span></div>
       <div class="quarantine-tile-row"><span class="k">In quarantena da</span><span class="v mono">${fmtElapsed(p.quarantined_at)}</span></div>
+      <div class="quarantine-visual-clock">
+        <div class="quarantine-visual-clock-row">
+          <span class="k">Osservazione residua</span>
+          <span class="v mono">${visualLabel}</span>
+        </div>
+        <div class="quarantine-visual-bar"><div class="quarantine-visual-bar-fill" style="width:${visualPercent}%"></div></div>
+      </div>
       ${ui.releaseError ? `<div class="zone-danger-error">${escapeHtml(ui.releaseError)}</div>` : ""}
       <div class="quarantine-tile-actions">
-        <button type="button" class="btn btn-primary" data-action="release-plant" data-plant-id="${escapeAttr(p.id)}" ${canRelease ? "" : "disabled"} title="${escapeAttr(releaseTitle)}">${releaseLabel}${!canRelease && !rSending && wait ? ` (tra ${wait})` : ""}</button>
+        <button type="button" class="btn btn-primary" data-action="release-plant" data-plant-id="${escapeAttr(p.id)}" ${canRelease ? "" : "disabled"} title="${escapeAttr(releaseTitle)}">${releaseLabel}${!canRelease && !rSending && !visualDone ? ` (${visualLabel})` : !canRelease && !rSending && wait ? ` (tra ${wait})` : ""}</button>
       </div>
       ${renderPlantRemoveBlock(p, ui, dSending)}
     </div>

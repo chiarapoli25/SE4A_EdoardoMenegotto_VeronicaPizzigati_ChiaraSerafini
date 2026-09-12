@@ -766,6 +766,16 @@ a:hover { color: var(--accent-dark); }
 .quarantine-tile-row .v { font-weight: 500; text-align: right; }
 .quarantine-tile-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
 
+/* Purely visual accelerated countdown (see QUARANTINE_VISUAL_* in script.js)
+   — an in-demo fake clock, unrelated to the real quarantined_at/backend
+   release check just above it. */
+.quarantine-visual-clock { padding: 6px 0 4px; border-bottom: 1px solid #f0f3f1; }
+.quarantine-visual-clock-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+.quarantine-visual-clock-row .k { color: var(--ink-mute); }
+.quarantine-visual-clock-row .v { font-weight: 600; color: #8a4f28; }
+.quarantine-visual-bar { height: 5px; border-radius: 3px; background: #f0e6dc; overflow: hidden; }
+.quarantine-visual-bar-fill { height: 100%; background: #c98a4a; transition: width 1s linear; }
+
 /* "Stato impianto" + "Allarmi recenti": a full-width row below the
    department grid, the two cards side by side within it (was ".home-aside",
    renamed since it's no longer beside anything). */

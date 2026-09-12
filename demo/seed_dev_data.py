@@ -85,7 +85,9 @@ Topologia (stessa forma delle versioni precedenti dello script):
   (OFFLINE: nessun assigned_edge_id, mai — stesso principio di r2-s2 in
   demo/seed_test_scenario.py: non è una disconnessione simulata a metà
   scenario, è una zona che non ha mai avuto un Edge)
-- Reparto 3: r3-s1 (Nominal, avanzata fino all'ultima fase)
+- Reparto 3: r3-s1 (Nominal, avanzata fino all'ultima fase); r3-s2 esiste
+  solo per pochi istanti durante il Passo 1 (vedi ALLARMI "QUARANTENA
+  ORFANA" sotto) e NON è più presente a fine script
 - Reparto 4: r4-s1 (dimostrazione InjectFault persistente -> Degraded ->
   EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal,
   POI avanzata fino all'ultima fase una volta rientrata Nominal), r4-s2
@@ -96,7 +98,10 @@ Topologia (stessa forma delle versioni precedenti dello script):
   puramente illustrativo — vedi QUARANTINE_INSTANT_PLANT_SOURCES/
   ensure_instant_quarantine_plants()) + altre 5 piante che entrano in
   quarantena solo dopo l'attesa reale del Passo 8, backdatate oltre la
-  soglia di rilascio del frontend (vedi BACKDATING QUARANTENA sotto)
+  soglia di rilascio del frontend (vedi BACKDATING QUARANTENA sotto) + 1
+  pianta orfana (home_zone_id punta a r3-s2, non a un settore del Reparto
+  5 — vedi ALLARMI "QUARANTENA ORFANA" sotto): 8 piante in quarantena in
+  totale, 7 "del Reparto 5" in senso stretto (nate lì) più questa
 
 Ogni zona online (con un Edge assegnato) riceve anche una pianta residente
 non quarantenata, di specie coerente con la ricetta della zona (vedi
@@ -255,6 +260,80 @@ Per questo: r1-s2 riceve un `sensor_dropout` con `duration_seconds` corto
 solo ciclo -> Degraded -> auto-recupero. r4-s1 riceve lo stesso fault ma
 persistente (nessun duration_seconds) -> Degraded -> EmergencyLockdown
 dopo 3 cicli -> ResetFault + ResetEmergency -> Degraded -> Nominal.
+
+ALLARMI: copertura delle categorie della pagina Allarmi (dashboard/script.js)
+— verificato leggendo computeFlaggedZones/computeOrphanQuarantineGroups/
+isAlarmEvent/eventBadgeMeta/activeZoneCardMeta/renderOrphanGroupCard, non
+assunto. Prima di questo giro lo script copriva già: GUASTO+Degraded
+(r1-s2), EmergencyLockdown sia da escalation (r4-s1) sia da violazione di
+safety_range (r4-s2), SETTORE OFFLINE (r2-s2), Registro eventi (storico di
+tutti questi) e Piante in osservazione (le 8 piante di quarantena sopra).
+Restavano scoperte due card di "Situazioni attive":
+
+- DEGRADED persistente: sia r1-s2 sia r4-s1 finiscono la demo Nominal (per
+  costruzione — auto-recupero l'una, reset manuale l'altra), quindi nessuna
+  card "DEGRADED" resta visibile a script concluso, anche se lo stato
+  esiste per qualche minuto durante la corsa. Non ancora risolto: vedi la
+  nota "DEGRADED PERSISTENTE" più sotto sul perché non c'è (ancora) uno
+  scenario per questo, parallela alla nota su CommandFailed in cima al file.
+
+- QUARANTENA ORFANA: nessuno scenario cancellava mai una zona con una
+  pianta già in quarantena che la usa come home_zone_id. Aggiunta con
+  ensure_orphan_quarantine_scenario() (ORPHAN_QUARANTINE_ZONE_ID = r3-s2):
+  crea un settore temporaneo del Reparto 3 mai attivato, vi mette in
+  quarantena una pianta dedicata, poi lo cancella con DELETE /zones/{id} —
+  che non tocca mai plants/plant_movements (zones/repository.py, verificato
+  leggendo il codice), lasciando la pianta orfana. Puramente transitoria:
+  a fine script quella zona non esiste più, quindi non aumenta il numero
+  di settori della demo.
+
+DEGRADED PERSISTENTE — investigato e per ora ACCANTONATO, stesso spirito
+della nota su CommandFailed in cima al file (una tecnica verificata dal
+vivo, non solo a codice, e scartata perché il comportamento reale non è
+abbastanza affidabile per uno script di demo). La FSM (edge_runtime_fsm.cpp
+update_operational_state()) ha UN solo caso che resta Degraded per sempre
+senza mai escalare a EmergencyLockdown: un fault RECOVERABLE con
+rule=="model_limit_incompatible", che fault_detector.cpp genera SOLO per i
+tre nutrienti (N/P/K) quando il valore stimato esce dal safety_range della
+ricetta — a differenza di soil_moisture/ph/light, dove la stessa violazione
+è invece CRITICAL (EmergencyLockdown immediato, il meccanismo di r4-s2).
+A differenza di r4-s2, però, il campione INIZIALE di un nutriente è sempre
+disegnato dentro il suo allowed_range (near_setpoint() in
+edge_runtime_core.cpp, mai nella finestra allargata usata per
+soil_moisture), quindi non può mai nascere già fuori da un safety_range
+stretto: serve un allontanamento vero durante la corsa, non un campionamento
+fortunato.
+
+Provato dal vivo in questa sessione (ambiente isolato, backend+Edge reali,
+non solo lettura del codice): una ricetta con safety_range dell'azoto
+ristretto appena sotto il suo allowed_range, poi un InjectFault persistente
+su target_type=actuator/target=nitrogen_valve/mode=actuator_stuck_off per
+bloccare SOLO il dosaggio (isolamento legittimo, lo stesso che la FSM
+applicherebbe da sola una volta rilevato il fault, vedi
+apply_degraded_isolation()) — nell'idea, l'assorbimento passivo (
+nitrogen_uptake_milligrams_per_hour in environment_simulator.hpp) avrebbe
+dovuto far scendere la stima con dosaggio bloccato. Osservato invece, per
+oltre 7 minuti reali (~28 cicli di controllo a time_scale=60) con la valvola
+confermata chiusa (GET /zones/{id}/actuators/latest): la stima
+nitrogen_estimate_mg_per_liter NON scende in modo monotono, oscilla in una
+banda ampia (osservato 38-54 mg/L, sia sopra sia sotto l'allowed_range di
+partenza) e in un tratto è persino SALITA oltre il massimo atteso — coerente
+col commento già presente in environment_simulator.hpp su
+initial_soil_moisture_percent: quando il terriccio si asciuga la stessa
+massa di nutriente si ritrova concentrata in meno acqua, e quando viene
+irrigato si diluisce, producendo oscillazioni di concentrazione dello stesso
+ordine di grandezza (se non maggiori) del lento assorbimento passivo che si
+voleva sfruttare. Il risultato pratico: nessun margine di safety_range
+abbastanza stretto da scattare in pochi minuti reali resterebbe anche
+affidabile (rischierebbe di scattare per un giro di irrigazione qualunque,
+anche senza alcun InjectFault, rendendo lo scenario non riproducibile a
+comando) né abbastanza largo da restare silenzioso finché non lo si vuole
+innescare. Nessun'altra regola RECOVERABLE della FSM gode della stessa
+esenzione dall'escalation (solo model_limit_incompatible), quindi non c'è
+un meccanismo alternativo pronto da provare — se in futuro emergesse un modo
+affidabile per pilotare la concentrazione di un nutriente in modo
+deterministico (es. un profilo di irrigazione dedicato), questa nota va
+rivista.
 """
 
 from __future__ import annotations
@@ -444,6 +523,16 @@ QUARANTINE_ZONES = [
     # backend ora lo impone esplicitamente (400 su qualunque altro valore),
     # quindi non esiste piu' un "r5-s2" da seedare qui.
 ]
+
+# Zona TEMPORANEA per lo scenario "QUARANTENA ORFANA" (vedi
+# ensure_orphan_quarantine_scenario() sotto e la nota ALLARMI "QUARANTENA
+# ORFANA" in cima al file): un secondo settore del Reparto 3, mai attivato,
+# creato solo per essere subito cancellato con DELETE /zones/{id}. Sta FUORI
+# da PRODUCTION_ZONES apposta, stesso motivo di LOCKDOWN_SAFETY_DEMO_ZONE_ID
+# sopra: niente coltivazione, niente Edge, vita brevissima — non deve mai
+# entrare nel ciclo generico pick_recipes()/ensure_cultivation().
+ORPHAN_QUARANTINE_ZONE_ID = "r3-s2"
+ORPHAN_QUARANTINE_PLANT_ID = "plant-orphan-1"
 
 def _upsert_user(
     connection: sqlite3.Connection,
@@ -678,6 +767,68 @@ def ensure_zone(zone_id: str, name: str, department: int, sector: int, payload_e
         print(f"[seed] {zone_id} già esistente, aggiornata (status {status})")
         return
     raise SystemExit(f"[seed] errore creando {zone_id}: {status} {body}")
+
+
+def delete_zone(zone_id: str) -> None:
+    """DELETE /zones/{id} — puro input legittimo (stesso comando che un
+    Amministratore invierebbe dal pannello), usato SOLO da
+    ensure_orphan_quarantine_scenario() per lo scenario "QUARANTENA ORFANA".
+    Il backend (zones/repository.py delete_zone(), verificato leggendo il
+    codice, non assunto) NON tocca mai plants/plant_movements in una
+    DELETE: qualunque pianta con home_zone_id=zone_id resta cosi' com'era,
+    con un riferimento ormai orfano — esattamente il meccanismo dietro
+    computeOrphanQuarantinePlants()/renderOrphanGroupCard() lato dashboard.
+    Tollera un 404 (zona gia' assente, es. rerun) come non-errore."""
+    status, body = request("DELETE", f"/zones/{zone_id}")
+    if status == 204:
+        print(
+            f"[seed] {zone_id} eliminata: qualunque pianta con "
+            f"home_zone_id={zone_id!r} resta ora orfana (nessuna cascata "
+            "lato backend, per costruzione)"
+        )
+    elif status == 404:
+        print(f"[seed] {zone_id} già assente (probabile rerun), nulla da eliminare")
+    else:
+        print(f"[seed] avviso: impossibile eliminare {zone_id} (status {status}) {body}")
+
+
+def ensure_orphan_quarantine_scenario(plant_species: str) -> None:
+    """Scenario "QUARANTENA ORFANA" (vedi la nota ALLARMI in cima al file):
+    l'UNICA card di "Situazioni attive" che, prima di questa funzione,
+    nessuno scenario di questo script produceva mai (renderOrphanGroupCard
+    in dashboard/script.js, distinta dalle altre tre card di zona — vedi
+    activeZoneCardMeta — perche' non e' una ZONA in stato anomalo, e' una
+    PIANTA la cui zona di origine non esiste più).
+
+    Crea ORPHAN_QUARANTINE_ZONE_ID (un secondo settore del Reparto 3, MAI
+    attivato: niente Edge assegnato, niente POST /cultivations — resta
+    lifecycle_state=Idle dalla creazione alla cancellazione, soddisfacendo
+    da sola le precondizioni di DELETE /zones/{id}: active_cultivation_id
+    is None e lifecycle_state in {Idle, Error}, vedi zones/repository.py),
+    vi registra e mette subito in quarantena UNA pianta dedicata
+    (ORPHAN_QUARANTINE_PLANT_ID, popolazione distinta da tutte le altre),
+    poi CANCELLA la zona con delete_zone(). Il risultato e' una pianta in
+    quarantena il cui home_zone_id punta a una zona ormai inesistente.
+
+    Puramente transitoria: a fine script ORPHAN_QUARANTINE_ZONE_ID non
+    esiste più, quindi — a differenza di ogni altro scenario di questo file
+    — NON aumenta il numero di settori mostrati nella demo (vedi la nota
+    ALLARMI in cima al file sul perché questo rispetta comunque l'indicazione
+    di riusare zone/piante esistenti invece di moltiplicare i settori)."""
+    ensure_zone(
+        ORPHAN_QUARANTINE_ZONE_ID,
+        "Reparto 3 - Settore 2 (mai attivato)",
+        3,
+        2,
+        {"plant_species": plant_species},
+    )
+    ensure_plant(ORPHAN_QUARANTINE_PLANT_ID, plant_species, ORPHAN_QUARANTINE_ZONE_ID)
+    ensure_quarantine(
+        ORPHAN_QUARANTINE_PLANT_ID,
+        "r5-s1",
+        "trasferita in quarantena per chiusura del settore di origine",
+    )
+    delete_zone(ORPHAN_QUARANTINE_ZONE_ID)
 
 
 def ensure_cultivation(zone_id: str, recipe_id: str) -> None:
@@ -1502,6 +1653,14 @@ def main() -> None:
 
     for zone_id, name, dept, sector in QUARANTINE_ZONES:
         ensure_zone(zone_id, name, dept, sector, {"plant_species": None})
+
+    # --- Scenario "QUARANTENA ORFANA" (Situazioni attive) — vedi la nota
+    # ALLARMI in cima al file: crea+quarantena+cancella una zona temporanea
+    # del Reparto 3, riusando la specie di r3-s1 invece di introdurre
+    # un'altra ricetta di catalogo. DOPO che r5-s1 esiste già (serve come
+    # quarantine_zone_id) e DOPO che zone_species["r3-s1"] è già popolato
+    # dal ciclo per-reparto qui sopra.
+    ensure_orphan_quarantine_scenario(zone_species["r3-s1"])
 
     ensure_resident_plants(zone_species, edge_zone_ids)
     ensure_instant_quarantine_plants(zone_species)
