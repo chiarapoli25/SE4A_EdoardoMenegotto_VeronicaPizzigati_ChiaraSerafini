@@ -100,9 +100,15 @@ def _fertilizer_keys() -> tuple[str, ...]:
 
 def _active_actuators(step: dict[str, Any]) -> dict[str, bool]:
     output = step.get("actuators", {}).get("output", {})
+    delivered = step.get("delivered", {})
     valves = output.get("fertilizer_valves_open", {})
     return {
-        "water_pump": bool(output.get("water_pump_on")),
+        # Un controllo rapido puo fermare la pompa prima della fine del
+        # campione da 15 minuti. In quel caso lo stato finale e' OFF, ma nel
+        # campione e' stata comunque erogata acqua e l'intervento deve restare
+        # visibile nel grafico e negli intervalli attuatore.
+        "water_pump": bool(output.get("water_pump_on")) or
+            float(delivered.get("water_liters") or 0.0) > 0.0,
         "lighting": float(output.get("lighting_power_watts") or 0.0) > 0.0,
         **{f"valve_{key}": bool(valves.get(key)) for key in _fertilizer_keys()},
     }
@@ -158,10 +164,16 @@ def _actuator_intensity(step: dict[str, Any]) -> dict[str, float]:
     _active_actuators() sopra.
     """
     output = step.get("actuators", {}).get("output", {})
+    delivered = step.get("delivered", {})
     valves = output.get("fertilizer_valves_open", {})
     light_command = step.get("decisions", {}).get("light", {}).get("command")
     return {
-        "water_pump_intensity": 1.0 if output.get("water_pump_on") else 0.0,
+        "water_pump_intensity": (
+            1.0
+            if output.get("water_pump_on") or
+            float(delivered.get("water_liters") or 0.0) > 0.0
+            else 0.0
+        ),
         "light_intensity": max(
             0.0, min(1.0, float(light_command or 0.0) / 100.0)
         ),
@@ -552,6 +564,14 @@ class SimulationManager:
                 "id": target.recipe.id,
                 "plant_type": target.recipe.plant_type,
                 "version": target.recipe.version,
+                # La Strategy e' globale ma viene stampata nella ricetta
+                # prima del run: conservarne lo snapshot rende esplicito
+                # quale legge di controllo ha prodotto ciascun grafico.
+                "strategies": {
+                    controller.variable.value:
+                        controller.selected_strategy.value
+                    for controller in target.recipe.controllers
+                },
             },
             duration_seconds=record.job.duration_seconds,
             series=_reduce_series(steps),

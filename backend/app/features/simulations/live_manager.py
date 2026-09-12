@@ -276,6 +276,11 @@ class LiveSimulationManager:
                             "id": target.recipe.id,
                             "plant_type": target.recipe.plant_type,
                             "version": target.recipe.version,
+                            "strategies": {
+                                controller.variable.value:
+                                    controller.selected_strategy.value
+                                for controller in target.recipe.controllers
+                            },
                         },
                         duration_seconds=record.horizon_seconds,
                         series=_reduce_series(steps),

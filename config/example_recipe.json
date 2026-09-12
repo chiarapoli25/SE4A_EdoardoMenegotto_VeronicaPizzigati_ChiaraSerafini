@@ -133,7 +133,7 @@
         "maximum_daily_dose_milliliters": 20,
         "minimum_seconds_between_doses": 900,
         "ph_settling_time_seconds": 1800,
-        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "lighting_reference_ppfd_umol_m2_s": 1400,
         "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
@@ -163,7 +163,7 @@
         "maximum_daily_dose_milliliters": 20,
         "minimum_seconds_between_doses": 900,
         "ph_settling_time_seconds": 1800,
-        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "lighting_reference_ppfd_umol_m2_s": 1400,
         "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
@@ -194,7 +194,7 @@
         "maximum_daily_dose_milliliters": 5,
         "minimum_seconds_between_doses": 900,
         "ph_settling_time_seconds": 1800,
-        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "lighting_reference_ppfd_umol_m2_s": 1400,
         "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
@@ -228,7 +228,7 @@
         "maximum_daily_dose_milliliters": 12,
         "minimum_seconds_between_doses": 3600,
         "ph_settling_time_seconds": 1800,
-        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "lighting_reference_ppfd_umol_m2_s": 1400,
         "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
@@ -262,7 +262,7 @@
         "maximum_daily_dose_milliliters": 8,
         "minimum_seconds_between_doses": 3600,
         "ph_settling_time_seconds": 1800,
-        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "lighting_reference_ppfd_umol_m2_s": 1400,
         "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",
@@ -296,7 +296,7 @@
         "maximum_daily_dose_milliliters": 12,
         "minimum_seconds_between_doses": 3600,
         "ph_settling_time_seconds": 1800,
-        "lighting_reference_ppfd_umol_m2_s": 1200,
+        "lighting_reference_ppfd_umol_m2_s": 1400,
         "maximum_supplemental_lighting_hours_per_day": 6
       },
       "confirmation_state": "PENDING_CONFIRMATION",

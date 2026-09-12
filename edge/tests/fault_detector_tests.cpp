@@ -116,6 +116,13 @@ TEST(FaultDetectorTest, DetectsFrozenValueAfterConfiguredCycles) {
         "frozen_value"), nullptr);
 }
 
+TEST(FaultDetectorTest, DefaultPolicyAllowsStableQuantizedPh) {
+    smarthydro::FaultDetectorConfig config;
+
+    EXPECT_FALSE(config.values[smarthydro::observed_value_index(
+        smarthydro::ObservedValue::PH)].detect_frozen);
+}
+
 TEST(FaultDetectorTest, ValidatesNutrientsAgainstModelLimitsAndFiniteness) {
     smarthydro::FaultDetectorConfig config;
     disable_frozen_detection(config);

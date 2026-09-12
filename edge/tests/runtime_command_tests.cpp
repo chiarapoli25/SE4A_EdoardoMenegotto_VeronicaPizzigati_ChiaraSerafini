@@ -422,12 +422,10 @@ TEST(RuntimeCommandProcessorTest, StuckSensorNeedsRepeatedObservation) {
 
 TEST(RuntimeCommandProcessorTest, DegradedIsolatesSharedPumpOnly) {
     auto recipe = load_demo_recipe();
-    // Fotoperiodo di default della ricetta demo (6-20): l'esecuzione a
-    // ore 0:00-0:02 sotto cade quindi in notte, dove il ramo LIGHT
-    // supplisce se il DLI e' ancora sotto il target (vedi
-    // control_system.cpp) — esattamente cio' che serve per dimostrare che
-    // il canale luce resta VIVO (comando non bloccato, uscita non nulla)
-    // nonostante il guasto sulla pompa qui sotto isoli le altre variabili.
+    // Il test dimostra che il canale luce resta VIVO (decisione non
+    // bloccata) nonostante il guasto sulla pompa isoli le altre variabili.
+    // Non richiede la luce fisicamente accesa: il nuovo rilevatore PPFD
+    // deve, anzi, mantenerla spenta finche' non ha confermato il crepuscolo.
     auto& soil_target =
         recipe.phases.front().targets[
             smarthydro::controlled_variable_index(
@@ -499,7 +497,7 @@ TEST(RuntimeCommandProcessorTest, DegradedIsolatesSharedPumpOnly) {
     EXPECT_NE(
         light_decision.status,
         smarthydro::ControlDecisionStatus::BLOCKED);
-    EXPECT_GT(isolated.actuator_output.lighting_power_watts, 0.0);
+    EXPECT_DOUBLE_EQ(isolated.actuator_output.lighting_power_watts, 0.0);
     EXPECT_DOUBLE_EQ(isolated.delivered_water_liters, 0.0);
     EXPECT_DOUBLE_EQ(
         isolated.actuator_command.requested_irrigation_volume_liters,
@@ -707,15 +705,11 @@ TEST(RuntimeCommandProcessorTest, EmergencyStopIsImmediateAndResetIsControlled) 
     const auto recovered = runtime.step(60.0);
 
     EXPECT_TRUE(stopped.success());
-    // Non un controllo sul valore della luce a questo punto: col ramo
-    // LIGHT ora a soglia sul deficit DLI (vedi control_system.cpp), ore
-    // 0:00 (l'ora di partenza della simulazione, fuori dalla finestra di
-    // luce naturale 6-20 della ricetta demo) e' legittimamente notte con
-    // deficit ancora aperto — la lampada supplementare si riaccende non
-    // appena il runtime torna operativo, ed e' esattamente cosi' che deve
-    // comportarsi. Quel che questo test verifica e' la macchina a stati
-    // (emergenza immediata, poi degradato, poi nominale), non un valore
-    // di luce specifico.
+    // Il test verifica la macchina a stati (emergenza immediata, poi
+    // degradato, poi nominale), non un valore di luce specifico. All'ora
+    // iniziale 0:00 il ramo LIGHT ora mantiene la lampada spenta: e' la
+    // notte prima dell'alba, quindi il contributo solare della giornata
+    // non e' ancora completato.
     EXPECT_TRUE(reset.success());
     EXPECT_EQ(
         verification.operational_state,

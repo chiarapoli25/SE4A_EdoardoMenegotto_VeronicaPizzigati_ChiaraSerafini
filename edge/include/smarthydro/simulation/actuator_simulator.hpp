@@ -60,7 +60,7 @@ struct ActuatorConfig {
         20.0, 20.0, 20.0, 20.0, 20.0};
     /**
      * Potenza elettrica massima delle lampade, in watt. Alzata da 200 a
-     * 600: con lamp_ppfd_umol_m2_s_per_watt=2.0 (EnvironmentConfig), 200W
+     * 700: con lamp_ppfd_umol_m2_s_per_watt=2.0 (EnvironmentConfig), 200W
      * davano solo 400 umol/(m2 s) di picco lampada — a piena potenza per
      * l'intero fotoperiodo piu' lungo (15h) fanno appena ~21.6 mol/m2/
      * giorno, INSUFFICIENTI da soli a coprire il fabbisogno delle specie a
@@ -70,13 +70,13 @@ struct ActuatorConfig {
      * accesa quasi sempre per quelle specie (osservato empiricamente), il
      * totale giornaliero restava sempre sotto il MINIMO di banda, non
      * solo sotto il setpoint — un tetto di capacita' dell'attuatore, non
-     * un problema di meteo o di logica di controllo. A 600W (1200
-     * umol/(m2 s) di picco) la lampada da sola in un fotoperiodo di 15h
-     * arriva a ~64.8 mol/m2/giorno, sopra il target piu' alto del
-     * catalogo con margine anche in assenza pressoche' totale di sole
-     * naturale.
+     * un problema di meteo o di logica di controllo. I 700W attuali
+     * (1400 umol/(m2 s) di picco) aumentano moderatamente il margine del
+     * 16,7%: sufficiente a recuperare i deficit DLI che restavano nei
+     * giorni nuvolosi senza cambiare la strategia ON/OFF o il limite di
+     * ore supplementari.
      */
-    double maximum_lighting_power_watts = 600.0;
+    double maximum_lighting_power_watts = 700.0;
 };
 
 /** @brief Richieste logiche prodotte manualmente o da un controllore. */

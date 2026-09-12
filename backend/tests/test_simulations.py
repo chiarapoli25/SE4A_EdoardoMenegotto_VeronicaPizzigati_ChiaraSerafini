@@ -10,6 +10,8 @@ from backend.app.features.simulations import manager as manager_module
 from backend.app.features.simulations.manager import (
     SimulationBusy,
     SimulationManager,
+    _active_actuators,
+    _actuator_intensity,
     _reduce_series,
 )
 from backend.app.features.simulations.models import SimulationCreate
@@ -64,6 +66,14 @@ def test_one_week_batch_is_non_operational_and_ephemeral(
     assert result["source_label"] == "Scenario simulato — non operativo"
     assert result["non_operational"] is True
     assert result["step_seconds"] == 900
+    assert result["recipe"]["strategies"] == {
+        "soil_moisture": "Threshold",
+        "light": "Threshold",
+        "ph": "PID",
+        "nitrogen": "Predictive",
+        "phosphorus": "Predictive",
+        "potassium": "Predictive",
+    }
     assert 1 <= len(result["series"]) <= 1000
     assert result["summary"]["control_cycles"] == 7 * 24 * 4
     after = {
@@ -116,6 +126,17 @@ def test_reduction_preserves_phase_changes() -> None:
     assert phases[change_index - 1] == "Radicazione"
     assert reduced[change_index]["start_seconds"] == 1200 * 900
     assert len(reduced) <= 1000
+
+
+def test_partial_irrigation_remains_visible_after_fast_cutoff() -> None:
+    step = {
+        "actuators": {"output": {"water_pump_on": False}},
+        "delivered": {"water_liters": 0.2},
+        "decisions": {},
+    }
+
+    assert _active_actuators(step)["water_pump"] is True
+    assert _actuator_intensity(step)["water_pump_intensity"] == 1.0
 
 
 def test_batch_validation_rejects_limits_and_non_quarter_hour_steps(

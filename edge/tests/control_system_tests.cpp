@@ -384,7 +384,7 @@ TEST(RecipeControlSystemTest, NutrientsIgnoreMeasuredValuesAndRequireValidHistor
         std::string::npos);
 }
 
-TEST(RecipeControlSystemTest, LightIsOnOffOnDailyDliDeficitOutsideNaturalDaylight) {
+TEST(RecipeControlSystemTest, LightIsOnOnlyAfterSolarDaylightCompletes) {
     // VegetativeGrowth's light target (config/example_recipe.json) e' un
     // DLI di 29.2 mol/m^2/giorno, finestra di luce naturale 6h-20h (14h),
     // tetto di illuminazione supplementare 6h/giorno.
@@ -417,7 +417,8 @@ TEST(RecipeControlSystemTest, LightIsOnOffOnDailyDliDeficitOutsideNaturalDayligh
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(daylight.status, smarthydro::ControlDecisionStatus::APPLIED);
     EXPECT_DOUBLE_EQ(daylight.command, 0.0);
-    EXPECT_EQ(daylight.message, "natural daylight phase");
+    EXPECT_EQ(
+        daylight.message, "solar descent not confirmed from PPFD");
 
     // Esattamente all'alba (6.0, estremo incluso della finestra) e appena
     // prima del tramonto (19.99): ancora dentro la finestra, ancora
@@ -434,29 +435,33 @@ TEST(RecipeControlSystemTest, LightIsOnOffOnDailyDliDeficitOutsideNaturalDayligh
             .command,
         0.0);
 
-    // Dopo il tramonto (20.0 esatto, fuori dalla finestra 6h-20h) con un
-    // deficit ancora aperto e nessuna ora supplementare ancora erogata
-    // oggi: la lampada si accende, ON/OFF (100%, mai un valore intermedio
-    // — niente PID, niente proporzionale sul PPFD istantaneo).
+    // Il runtime autorizza l'accensione soltanto dopo aver osservato il
+    // picco PPFD e il successivo calo stabile. Questo test e' del solo
+    // ControlSystem, quindi simula il latch gia' confermato.
     request.hour_of_day = 20.0;
+    request.solar_descent_confirmed = true;
     const auto dusk =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
     EXPECT_EQ(dusk.status, smarthydro::ControlDecisionStatus::APPLIED);
     EXPECT_DOUBLE_EQ(dusk.command, 100.0);
     EXPECT_EQ(dusk.message, "");
 
-    // In piena notte (2.0), stesso discorso: il fotoperiodo non e'
-    // "l'unica finestra in cui e' permesso accendere" (vecchio
-    // significato) ma la finestra di luce NATURALE — fuori da essa la
-    // lampada supplisce se serve.
+    // Un nuovo giorno azzera il latch PPFD: anche se e' buio, la lampada
+    // non puo' accendersi prima che sia stato visto il picco solare e il
+    // suo calo successivo.
     request.hour_of_day = 2.0;
-    const auto night =
+    request.solar_descent_confirmed = false;
+    const auto pre_dawn =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);
-    EXPECT_EQ(night.status, smarthydro::ControlDecisionStatus::APPLIED);
-    EXPECT_DOUBLE_EQ(night.command, 100.0);
+    EXPECT_EQ(pre_dawn.status, smarthydro::ControlDecisionStatus::APPLIED);
+    EXPECT_DOUBLE_EQ(pre_dawn.command, 0.0);
+    EXPECT_EQ(
+        pre_dawn.message, "solar descent not confirmed from PPFD");
 
-    // Target di giornata gia' raggiunto (DLI so_far >= setpoint): la
-    // lampada non supplisce oltre, anche di notte.
+    // Dopo il tramonto il target di giornata gia' raggiunto (DLI so_far >=
+    // setpoint) mantiene la lampada spenta.
+    request.hour_of_day = 20.0;
+    request.solar_descent_confirmed = true;
     request.daily_light_mol_m2_so_far = 29.2;
     const auto met =
         system.execute(smarthydro::ControlledVariable::LIGHT, request);

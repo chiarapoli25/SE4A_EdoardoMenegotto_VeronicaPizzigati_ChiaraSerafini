@@ -271,9 +271,9 @@ def _safety_limits(
         "maximum_daily_dose_milliliters": maximum_daily_milliliters,
         "minimum_seconds_between_doses": minimum_seconds_between_doses,
         "ph_settling_time_seconds": 1800.0,
-        # Taratura assunta della plafoniera simulata: 600W (ActuatorConfig::
+        # Taratura assunta della plafoniera simulata: 700W (ActuatorConfig::
         # maximum_lighting_power_watts) * 2.0 umol/(m2 s W) (EnvironmentConfig
-        # ::lamp_ppfd_umol_m2_s_per_watt) = 1200 umol/(m2 s) da accesa — la
+        # ::lamp_ppfd_umol_m2_s_per_watt) = 1400 umol/(m2 s) da accesa — la
         # stessa relazione gia' usata sopra per
         # water_pump_flow_liters_per_hour=2.0 (identico alla portata
         # simulata della pompa). Il controllore LIGHT comanda ON/OFF (vedi
@@ -283,7 +283,7 @@ def _safety_limits(
         # un valore che il controllo scopre dal simulatore, e' la stessa
         # calibrazione che un agronomo misurerebbe puntando un quantum
         # meter sotto la propria plafoniera in sede di commissioning.
-        "lighting_reference_ppfd_umol_m2_s": 1200.0,
+        "lighting_reference_ppfd_umol_m2_s": 1400.0,
         # Tetto di illuminazione supplementare notturna: un valore
         # prudente per ogni ricetta (nessuna specie del catalogo ha oggi
         # un fabbisogno che lo saturi in condizioni meteo tipiche — vedi
@@ -379,7 +379,11 @@ def _predictive_parameters(
     return {
         "setpoint": setpoint,
         "prediction_horizon_steps": 1.0,
-        "response_gain": command_max / margin,
+        # La dose resta nel substrato anche dopo la chiusura della valvola:
+        # una correzione piena gia' al bordo della banda produceva il dente
+        # di sega osservato soprattutto nelle succulente. Dose progressiva,
+        # massimo ancora raggiungibile per deficit pari a dieci bande.
+        "response_gain": 0.10 * command_max / margin,
         "neutral_command": 0.0,
         "command_minimum": 0.0,
         "command_maximum": command_max,
@@ -387,6 +391,7 @@ def _predictive_parameters(
         "water_dilution_gain": dilution,
         "cumulative_dose_gain": 0.0,
         "substrate_gain": substrate,
+        "integral_gain": 0.0,
     }
 
 

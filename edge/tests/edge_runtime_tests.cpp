@@ -230,6 +230,74 @@ TEST(EdgeRuntimeTest, ExecutesConfirmedRecipeOnPhysicalSimulators) {
         900.0);
 }
 
+TEST(EdgeRuntimeTest, EnablesLightOnlyAfterPpfdPeakAndPersistentDusk) {
+    auto sensors = constant_sensor_array();
+    sensors[smarthydro::sensor_channel_index(
+        smarthydro::SensorChannel::LIGHT)] =
+        std::make_unique<SequenceSensor>(
+            smarthydro::SensorChannel::LIGHT,
+            std::vector<std::optional<double>>{
+                0.0, 100.0, 400.0, 400.0,
+                10.0, 10.0, 10.0, 10.0, 10.0});
+
+    smarthydro::EdgeRuntime runtime(
+        load_demo_recipe(),
+        std::move(sensors),
+        std::make_unique<smarthydro::ActuatorSimulatorAdapter>(),
+        std::make_unique<smarthydro::EnvironmentSimulatorAdapter>(
+            smarthydro::EnvironmentConfig{}, 23U));
+    runtime.confirm_all_configurations();
+
+    // Il picco (400 PPFD) non basta: durante la discesa filtrata il
+    // controllore deve aspettare due campioni da 15 minuti sotto la soglia
+    // di crepuscolo. Fino al primo campione basso, la lampada non parte.
+    for (int step = 0; step < 8; ++step) {
+        const auto result = runtime.step(900.0);
+        EXPECT_DOUBLE_EQ(result.actuator_output.lighting_power_watts, 0.0);
+        EXPECT_DOUBLE_EQ(result.actuator_command.lighting_percent, 0.0);
+    }
+
+    const auto dusk_confirmed = runtime.step(900.0);
+    EXPECT_GT(dusk_confirmed.actuator_output.lighting_power_watts, 0.0);
+    EXPECT_DOUBLE_EQ(
+        dusk_confirmed.actuator_command.lighting_percent, 100.0);
+}
+
+TEST(EdgeRuntimeTest, SupervisesUpperMoistureThresholdWithinLongStep) {
+    auto recipe = load_demo_recipe();
+    const auto water_index =
+        smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::SOIL_MOISTURE);
+    auto& soil_target = recipe.phases.front().targets[water_index];
+    soil_target.setpoint = 67.0;
+    soil_target.allowed_range = {66.0, 68.0};
+    soil_target.safety_range = {0.0, 100.0};
+
+    smarthydro::EnvironmentConfig environment_config;
+    environment_config.initial_soil_moisture_percent = 65.0;
+    smarthydro::EdgeRuntime runtime(
+        std::move(recipe),
+        {},
+        environment_config,
+        deterministic_sensors());
+
+    const auto result = runtime.step(900.0);
+
+    ASSERT_GT(result.decisions[water_index].command, 0.0);
+    // Il comando iniziale richiede 0.5 L, ma il controllo rapido deve
+    // interromperlo appena la misura supera il 68%, senza attendere la fine
+    // del campione da 15 minuti.
+    EXPECT_GT(result.delivered_water_liters, 0.0);
+    EXPECT_LT(
+        result.delivered_water_liters,
+        result.decisions[water_index].command);
+    EXPECT_FALSE(result.actuator_output.water_pump_on);
+    EXPECT_DOUBLE_EQ(
+        result.actuator_output.remaining_irrigation_volume_liters,
+        0.0);
+    EXPECT_LT(result.environment_state.soil_moisture_percent, 75.0);
+}
+
 TEST(EdgeRuntimeTest, NutrientControlRequiresTheResistiveProbeEstimate) {
     auto sensor_config = deterministic_sensors();
     sensor_config.soil_conductivity.dropout_probability = 1.0;
@@ -396,7 +464,7 @@ TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
     // solo se il DLI di oggi e' ancora sotto il target. Con l'intera
     // giornata dichiarata "naturale" qui, quel momento non arriva mai: il
     // canale luce resta comunque "non bloccato" (verificato sopra, status
-    // APPLIED con message "natural daylight phase"), semplicemente non ha
+    // APPLIED con un messaggio di vincolo solare), semplicemente non ha
     // motivo di accendersi.
     EXPECT_DOUBLE_EQ(
         first_failure.actuator_output.lighting_power_watts,
@@ -453,6 +521,42 @@ TEST(EdgeRuntimeTest, EscalatesPersistentSensorFailureThroughDegraded) {
             event.type,
             smarthydro::EdgeEventType::EMERGENCY_LOCKDOWN_ENTERED);
     }
+}
+
+TEST(EdgeRuntimeTest, NutrientProcessExcursionDoesNotStopIrrigation) {
+    auto recipe = load_demo_recipe();
+    const auto nitrogen_index = smarthydro::controlled_variable_index(
+        smarthydro::ControlledVariable::NITROGEN);
+    auto& target = recipe.phases.front().targets[nitrogen_index];
+    target.setpoint = 5.0;
+    target.allowed_range = {0.0, 10.0};
+    target.safety_range = {0.0, 10.0};
+
+    smarthydro::EnvironmentConfig environment;
+    // Diverso dal default, quindi environment_for_recipe() lo conserva:
+    // la stima N resta deliberatamente sopra il limite agronomico.
+    environment.initial_nitrogen_mg_per_liter = 100.0;
+    auto sensor_config = deterministic_sensors();
+    smarthydro::EdgeRuntime runtime(
+        std::move(recipe), {}, environment, sensor_config);
+
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        const auto result = runtime.step(60.0);
+        EXPECT_EQ(
+            result.operational_state,
+            smarthydro::OperationalState::DEGRADED);
+        EXPECT_EQ(
+            result.decisions[nitrogen_index].status,
+            smarthydro::ControlDecisionStatus::BLOCKED);
+        const auto water_index = smarthydro::controlled_variable_index(
+            smarthydro::ControlledVariable::SOIL_MOISTURE);
+        EXPECT_NE(
+            result.decisions[water_index].message,
+            "runtime is in EmergencyLockdown");
+    }
+    EXPECT_NE(
+        runtime.operational_state(),
+        smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
 }
 
 TEST(EdgeRuntimeTest, AutomaticallyRecoversFromDegradedAfterHealthyCycles) {

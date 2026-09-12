@@ -217,6 +217,9 @@ private:
     ControlledValues<ValueRange> active_safety_ranges() const;
     void reset_histories_if_needed();
     SensorReadings read_sensors();
+    void update_solar_descent_detector(
+        const SensorReadings& readings,
+        double delta_time_seconds);
     void reset_actuator_observation() noexcept;
     void record_actuator_observation(
         const ActuatorCommand& command,
@@ -282,14 +285,23 @@ private:
     // non ha una fase di riferimento come le dosi, il target e' sempre
     // "oggi", quindi non serve un secondo indice di reset dedicato.
     DliAccumulator daily_light_accumulator_;
-    // Ore di illuminazione SUPPLEMENTARE (lampada comandata accesa FUORI
-    // dalla finestra di luce naturale — vedi Photoperiod) gia' erogate
-    // oggi, in secondi per la stessa precisione di calcolo di
+    // Ore di illuminazione SUPPLEMENTARE (lampada comandata accesa DOPO
+    // la conferma PPFD del fronte discendente) gia' erogate oggi, in
+    // secondi per la stessa precisione di calcolo di
     // delta_time_seconds. Azzerato insieme a daily_light_accumulator_.
     // Non e' un DliAccumulator (misura ore comandate, non mol/m^2): resta
     // un contatore dedicato, piu' semplice di quanto giustifichi
     // condividere la stessa classe per una grandezza diversa.
     double daily_supplemental_lighting_seconds_ = 0.0;
+    // Stato giornaliero del rilevatore di tramonto basato sul PPFD: la
+    // lampada e' mantenuta spenta finche' non e' stato visto un picco e,
+    // dopo quel picco, un livello molto basso stabile. Il latch non torna
+    // indietro fino al giorno successivo, percio' il PPFD prodotto dalla
+    // lampada non puo' confondere il rilevatore.
+    std::optional<double> smoothed_natural_ppfd_;
+    double daily_peak_natural_ppfd_ = 0.0;
+    double low_ppfd_duration_seconds_ = 0.0;
+    bool solar_descent_confirmed_ = false;
     std::uint64_t next_sequence_number_ = 0;
     OperationalState operational_state_ = OperationalState::NOMINAL;
     std::size_t consecutive_recoverable_faults_ = 0;

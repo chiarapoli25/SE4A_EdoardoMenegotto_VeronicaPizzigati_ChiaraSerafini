@@ -74,7 +74,12 @@ FaultDetectorConfig::FaultDetectorConfig() {
     values[observed_value_index(ObservedValue::POTASSIUM)] =
         {{0.0, 10000.0}, 150.0, 1.0e-6, false};
     values[observed_value_index(ObservedValue::PH)] =
-        {{0.0, 14.0}, 1.0, 1.0e-6, true};
+        // Il pH del substrato cambia molto lentamente ed e' quantizzato a
+        // 0,01 dalla configurazione standard del sensore. Otto campioni
+        // uguali a distanza di 15 minuti sono quindi un comportamento
+        // normale, non la prova di una sonda bloccata. La plausibilita', i
+        // dropout e la risposta dell'attuatore restano comunque verificati.
+        {{0.0, 14.0}, 1.0, 1.0e-6, false};
     values[observed_value_index(ObservedValue::LIGHT)] =
         {{0.0, 3000.0}, 1000.0, 1.0e-6, true};
 }

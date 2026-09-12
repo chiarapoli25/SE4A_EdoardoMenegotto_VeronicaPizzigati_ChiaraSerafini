@@ -143,14 +143,6 @@ ControllerParameters parameters_for_phase(
     throw std::invalid_argument("unknown strategy");
 }
 
-bool hour_in_photoperiod(double hour, const Photoperiod& photoperiod) {
-    double relative = std::fmod(hour - photoperiod.start_hour + 24.0, 24.0);
-    if (relative < 0.0) {
-        relative += 24.0;
-    }
-    return relative < photoperiod.duration_hours;
-}
-
 std::optional<double> source_value(
     ControlInputSource input_source,
     const ControllerInput& input) {
@@ -500,14 +492,15 @@ ControlDecision RecipeControlSystem::execute(
         // sempre questo, qualunque Strategy sia selezionata.
         //
         // La differenza rispetto a quel primo tentativo e' QUANDO la
-        // lampada puo' intervenire: mai durante la finestra di luce
-        // NATURALE (Photoperiod — vedi il suo commento in questo header:
-        // e' l'ipotesi dell'agronomo su alba/tramonto, non piu' una
-        // finestra "supplire e' permesso"), cosi' il sole ha sempre tutta
-        // la giornata per fare la sua parte prima che la lampada tocchi
-        // qualcosa. Solo DOPO IL TRAMONTO, se il DLI maturato oggi e'
-        // ancora sotto il target di fase, la lampada supplisce — e solo
-        // finche' non si e' gia' raggiunto il tetto configurato di ore
+        // lampada puo' intervenire: soltanto dopo che il PPFD misurato ha
+        // visto un picco giornaliero e poi un calo basso e persistente.
+        // Non e' quindi un orario fisso: la notte prima dell'alba resta
+        // bloccata e in estate/inverno il rilevatore segue il sole reale.
+        // Cosi' il sole ha sempre tutta la giornata per fare la sua parte
+        // prima che la lampada tocchi qualcosa. Solo sul fronte discendente,
+        // se il DLI maturato oggi e' ancora sotto il target di fase, la
+        // lampada supplisce — e solo finche' non si e' gia' raggiunto il tetto
+        // configurato di ore
         // supplementari giornaliere (OutputSafetyLimits::
         // maximum_supplemental_lighting_hours_per_day): un vero limite
         // dell'agronomo, non un effetto collaterale della legge di
@@ -516,12 +509,10 @@ ControlDecision RecipeControlSystem::execute(
         // per un deficit strutturale o un'instabilita' da guadagno
         // eccessivo — vedi la cronologia git di questo file per i
         // dettagli empirici di ciascun tentativo).
-        const bool is_natural_daylight =
-            hour_in_photoperiod(request.hour_of_day, active.photoperiod);
-        if (is_natural_daylight) {
+        if (!request.solar_descent_confirmed) {
             decision.command = 0.0;
             decision.status = ControlDecisionStatus::APPLIED;
-            decision.message = "natural daylight phase";
+            decision.message = "solar descent not confirmed from PPFD";
             return decision;
         }
 
