@@ -5866,8 +5866,9 @@ function renderZonePlants(zone) {
     <div class="live-head"><span class="title">Piante di questo settore</span><span class="ro">${plants.length} registrat${plants.length === 1 ? "a" : "e"}</span></div>
     ${body}
     ${STATE.addPlantError ? `<div class="zone-danger-error">${escapeHtml(STATE.addPlantError)}</div>` : ""}
-    <div style="display:flex;justify-content:flex-end;margin-top:14px">
-      <button type="button" class="btn" data-action="add-plant" data-zone-id="${escapeAttr(zone.id)}" ${addSending ? "disabled" : ""}>${addSending ? "Aggiunta…" : "+ Aggiungi pianta"}</button>
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:14px">
+      <input type="number" id="add-plant-count" class="form-num" min="1" max="500" step="1" value="1" style="width:70px" ${addSending ? "disabled" : ""}>
+      <button type="button" class="btn" data-action="add-plant" data-zone-id="${escapeAttr(zone.id)}" ${addSending ? "disabled" : ""}>${addSending ? "Aggiunta…" : "+ Aggiungi piante"}</button>
     </div>
   `;
 }
@@ -5993,69 +5994,38 @@ async function deleteZoneNow() {
 /* ------------------------------------------------------------------ */
 
 /**
- * id is auto-generated as "{zone_id}-p{n}" (n = 1 past the highest existing
- * suffix already used by a plant with home_zone_id === zone_id), species and
- * home_zone_id come from the zone itself — nothing is asked from the user,
- * per spec.
+ * Registra una o piu' piante in blocco invece che una alla volta: il
+ * numero viene dal campo accanto al pulsante "+ Aggiungi piante" (letto
+ * dal DOM al click, stesso schema di startCultivation) — richiesta
+ * esplicita per non dover ripetere il click una pianta per volta quando
+ * un settore ne conta decine. Riusa registerPlantsInZone (stessa
+ * generazione id "{zone_id}-p{n}", stessa anti-collisione) gia'
+ * introdotta per il campo equivalente di "Avvia coltivazione".
  */
 async function addPlantToZone(zoneId) {
   if (STATE.addPlantStatus === "sending") return;
   const zone = STATE.zones.find((z) => z.id === zoneId) || STATE.modalZone;
   if (!zone) return;
 
+  const countInput = document.getElementById("add-plant-count");
+  const rawCount = countInput ? countInput.value.trim() : "1";
+  const count = rawCount === "" ? 1 : Number(rawCount);
+  if (!Number.isInteger(count) || count < 1 || count > 500) {
+    STATE.addPlantError = "Numero di piante non valido (1-500).";
+    renderModal();
+    return;
+  }
+
   STATE.addPlantStatus = "sending";
   STATE.addPlantError = null;
   renderModal();
-
-  const prefix = `${zoneId}-p`;
   try {
-    // The next free number can NOT be derived from STATE.modalPlants (or
-    // any current_zone_id-filtered list, i.e. GET /plants?zone_id=...): a
-    // plant that started in this zone and was later quarantined keeps
-    // home_zone_id === zoneId forever, but its current_zone_id moves to
-    // r5-s1 — so a current_zone_id query is blind to it and its number
-    // could be reused. GET /plants has no home_zone_id filter, so ask the
-    // backend for every plant and filter client-side by home_zone_id here
-    // — always the backend's live state, never a locally-held counter (one
-    // would reset on every page reload and reintroduce this exact bug).
-    const allPlants = await apiGet("/plants", { limit: 1000 });
-    const usedNumbers = allPlants
-      .filter((p) => p.home_zone_id === zoneId)
-      .map((p) => p.id)
-      .filter((id) => id.startsWith(prefix))
-      .map((id) => Number(id.slice(prefix.length)))
-      .filter((n) => Number.isInteger(n) && n > 0);
-    let n = usedNumbers.length ? Math.max(...usedNumbers) + 1 : 1;
-
-    // Belt-and-braces on top of the home_zone_id lookup above: POST
-    // /plants is idempotent by (id, species, home_zone_id), so if a
-    // concurrent add from elsewhere races this one and the id picked above
-    // gets taken first, the backend would silently hand back that OTHER
-    // record instead of erroring — its current_zone_id would then not be
-    // this zone. Treat that as "id taken" and move to the next number
-    // instead of showing someone else's plant as freshly added here.
-    const MAX_ATTEMPTS = 20;
-    let created = null;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      const candidate = await apiPost("/plants", {
-        id: `${prefix}${n}`,
-        species: zone.plant_species,
-        home_zone_id: zoneId,
-      });
-      if (candidate.current_zone_id === zoneId) { created = candidate; break; }
-      n += 1;
-    }
+    const created = await registerPlantsInZone(zone, count);
     if (STATE.modalZoneId !== zoneId) return; // modal changed meanwhile
-    if (!created) {
-      STATE.addPlantStatus = null;
-      STATE.addPlantError = "Impossibile generare un id pianta libero, riprova.";
-      renderModal();
-      return;
-    }
-    STATE.modalPlants = [...(STATE.modalPlants || []), created];
+    STATE.modalPlants = [...(STATE.modalPlants || []), ...created];
     STATE.addPlantStatus = null;
     renderModal();
-    showToast(`Pianta ${created.id} aggiunta.`);
+    showToast(count === 1 ? `Pianta ${created[0].id} aggiunta.` : `${created.length} piante aggiunte.`);
   } catch (err) {
     if (STATE.modalZoneId !== zoneId) return;
     STATE.addPlantStatus = null;
