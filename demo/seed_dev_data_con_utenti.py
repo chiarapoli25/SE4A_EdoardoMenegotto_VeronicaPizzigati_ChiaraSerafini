@@ -1176,6 +1176,7 @@ def step7_lockdown_demo(run_suffix: str) -> None:
     zone_id = LOCKDOWN_DEMO_ZONE_ID
     fault_id = f"demo-persistent-dropout-{zone_id}-{run_suffix}"
     since = datetime.now(timezone.utc)
+    
     print(f"\n[seed] --- Passo 7 (opzionale): fault persistente su {zone_id} ---")
     print(
         "[seed] Nota: invece di tre comandi InjectFault separati e ravvicinati, "
@@ -1201,11 +1202,11 @@ def step7_lockdown_demo(run_suffix: str) -> None:
         return
 
     degraded_event = poll_events_until(
-    zone_id,
-    lambda e: e.get("event_type") == "StateChanged"
-    and e.get("payload", {}).get("current_state") == "Degraded",
-    "StateChanged -> Degraded (pre-lockdown)",
-    since=since,
+        zone_id,
+        lambda e: e.get("event_type") == "StateChanged"
+        and e.get("payload", {}).get("current_state") == "Degraded",
+        "StateChanged -> Degraded (pre-lockdown)",
+        since=since,
     )
     if degraded_event is None:
         print(f"[seed] avviso: {zone_id} non è mai passata a Degraded, salto il resto del punto 7")
@@ -1228,93 +1229,16 @@ def step7_lockdown_demo(run_suffix: str) -> None:
         return
     print(f"[seed] {zone_id} è entrata in EmergencyLockdown (3 cicli recuperabili consecutivi).")
 
-    # ResetFault deve essere REALMENTE applicato (status 'succeeded', non solo
-    # accodato) prima di inviare ResetEmergency: il reset manuale viene
-    # valutato dalla FSM al ciclo successivo e rifiutato in silenzio se il
-    # detector osserva ancora il guasto (vedi README). Per questo aspettiamo
-    # l'esito di ResetFault invece di accodare i due comandi a raffica.
-    print(f"[seed] invio ResetFault su {zone_id} e attendo il suo esito prima di ResetEmergency...")
-    reset_fault_status = enqueue_and_wait_command(
-        zone_id,
-        f"reset-fault-{fault_id}",
-        "ResetFault",
-        {"fault_id": fault_id},
-    )
-    if reset_fault_status != "succeeded":
-        print(
-            f"[seed] avviso: ResetFault su {zone_id} non è andato a buon fine "
-            f"(esito: {reset_fault_status!r}) — salto ResetEmergency perché la FSM "
-            f"osserverebbe ancora il guasto e rifiuterebbe il reset manuale."
-        )
-        return
-
-    reset_sent_at = datetime.now(timezone.utc)
-    reset_emergency_status = enqueue_and_wait_command(
-        zone_id,
-        f"reset-emergency-{zone_id}-{run_suffix}",
-        "ResetEmergency",
-        {},
-    )
-    if reset_emergency_status != "succeeded":
-        print(
-            f"[seed] avviso: ResetEmergency su {zone_id} non è andato a buon fine "
-            f"(esito: {reset_emergency_status!r}); non posso verificare il recupero."
-        )
-        return
-
-    degraded_after_reset = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "StateChanged"
-        and e.get("payload", {}).get("current_state") == "Degraded"
-        and e.get("payload", {}).get("previous_state") == "EmergencyLockdown",
-        "StateChanged -> Degraded (dopo reset manuale)",
-        since=reset_sent_at,
-    )
-    if degraded_after_reset is None:
-        print(
-            f"[seed] avviso: {zone_id} non risulta rientrata in Degraded dopo il reset "
-            f"manuale entro il timeout, anche se ResetEmergency è stato accettato dal "
-            f"comando — la FSM applica la transizione al ciclo di controllo successivo."
-        )
-        return
-    print(
-        f"[seed] {zone_id} è rientrata in Degraded dopo il reset manuale "
-        f"({degraded_after_reset['payload'].get('previous_state')} -> "
-        f"{degraded_after_reset['payload'].get('current_state')})."
-    )
-
-    nominal_event = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "StateChanged"
-        and e.get("payload", {}).get("current_state") == "Nominal"
-        and e.get("payload", {}).get("previous_state") == "Degraded",
-        "StateChanged -> Nominal (recupero automatico dopo reset)",
-        since=reset_sent_at,
-    )
-    if nominal_event is not None:
-        print(f"[seed] {zone_id} è tornata Nominal automaticamente dopo qualche ciclo sano.")
-    else:
-        print(
-            f"[seed] avviso: {zone_id} non è ancora tornata Nominal entro il timeout; "
-            f"il recupero automatico potrebbe richiedere ancora qualche ciclo (prova a "
-            f"controllare GET /zones/{zone_id} tra poco)."
-        )
-
-    # --- Verifica finale: la sequenza ESATTA e ORDINATA degli StateChanged,
-    # non solo la presenza isolata di ciascuno stato osservata sopra passo
-    # per passo (utile per il progresso a video, ma non basta da sola: uno
-    # stato mancante o fuori ordine potrebbe comunque passare inosservato
-    # se si guarda solo "esiste un evento Degraded da qualche parte"). ---
-    verify_state_sequence(
-        zone_id,
-        since=since,
-        expected=[
-            ("Nominal", "Degraded"),
-            ("Degraded", "EmergencyLockdown"),
-            ("EmergencyLockdown", "Degraded"),
-            ("Degraded", "Nominal"),
-        ],
-    )
+    # =========================================================================
+    # MODIFICA: AUTOMATISMO RIMOSSO
+    # Lo script ora si ferma qui e lascia il settore in EmergencyLockdown.
+    # L'utente deve operare il ResetFault e il ResetEmergency dalla Dashboard.
+    # =========================================================================
+    print(f"\n[seed] *** INTERVENTO MANUALE RICHIESTO ***")
+    print(f"[seed] Il settore {zone_id} è ora bloccato in EmergencyLockdown.")
+    print(f"[seed] Vai sulla Dashboard per completare lo scenario:")
+    print(f"[seed] 1. Ripara il guasto (invia ResetFault)")
+    print(f"[seed] 2. Sblocca il settore (invia ResetEmergency)")
 
 
 def step_safety_lockdown_demo(since: datetime) -> None:
