@@ -1,4 +1,11 @@
-"""Persistenza e transizioni dei cicli colturali."""
+"""@file
+@brief Persistenza e macchina a stati dei cicli colturali (Cultivation).
+
+@details Un ciclo nasce con create_and_activate() e transita fra gli stati
+di CultivationState accodando comandi Edge asincroni (vedi
+commands.repository); apply_command_result() e apply_edge_projection()
+riportano nel ciclo l'esito reale osservato dall'Edge.
+"""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -12,14 +19,15 @@ from .models import Cultivation, CultivationAction, CultivationCreate, Cultivati
 
 
 class CultivationConflict(Exception):
-    """La zona o il ciclo non consentono la transizione richiesta."""
+    """@brief La zona o il ciclo non consentono la transizione richiesta."""
 
 
 class CultivationInvalid(Exception):
-    """Specie, ricetta o reparto non sono compatibili."""
+    """@brief Specie, ricetta o reparto non sono compatibili."""
 
 
 def _from_row(row: tuple) -> Cultivation:
+    """@brief Converte una riga SQLite in un ciclo colturale."""
     return Cultivation(
         id=row[0],
         zone_id=row[1],
@@ -36,6 +44,7 @@ def _from_row(row: tuple) -> Cultivation:
     )
 
 
+## @brief Colonne condivise dalle query che materializzano una coltivazione.
 _COLUMNS = """
     id, zone_id, plant_species, recipe_id, recipe_version, state,
     recipe_completed, created_at, started_at, ended_at, archived_at,
@@ -47,6 +56,7 @@ def get_cultivation(
     connection: sqlite3.Connection,
     cultivation_id: str,
 ) -> Cultivation | None:
+    """@brief Cerca un ciclo colturale tramite identificativo."""
     row = connection.execute(
         f"SELECT {_COLUMNS} FROM cultivations WHERE id = ?",
         (cultivation_id,),
@@ -60,6 +70,7 @@ def list_cultivations(
     zone_id: str | None = None,
     include_archived: bool = True,
 ) -> list[Cultivation]:
+    """@brief Elenca i cicli, con filtro opzionale per zona e archivio."""
     conditions: list[str] = []
     parameters: list[str] = []
     if zone_id is not None:
@@ -79,6 +90,7 @@ def create_and_activate(
     connection: sqlite3.Connection,
     request: CultivationCreate,
 ) -> CultivationAction:
+    """@brief Crea il ciclo, lo associa alla zona e accoda l'attivazione."""
     zone = get_zone(connection, request.zone_id)
     if zone is None:
         raise CultivationInvalid(f"zone {request.zone_id!r} not found")
@@ -186,6 +198,7 @@ def _enqueue_action(
     next_state: CultivationState,
     allowed_states: set[CultivationState],
 ) -> CultivationAction:
+    """@brief Applica una transizione e accoda il relativo comando Edge."""
     cultivation = get_cultivation(connection, cultivation_id)
     if cultivation is None:
         raise CultivationInvalid(f"cultivation {cultivation_id!r} not found")
@@ -220,6 +233,7 @@ def _enqueue_action(
 
 
 def pause_cultivation(connection: sqlite3.Connection, cultivation_id: str) -> CultivationAction:
+    """@brief Porta un ciclo in pausa tramite comando asincrono."""
     return _enqueue_action(
         connection,
         cultivation_id,
@@ -230,6 +244,7 @@ def pause_cultivation(connection: sqlite3.Connection, cultivation_id: str) -> Cu
 
 
 def resume_cultivation(connection: sqlite3.Connection, cultivation_id: str) -> CultivationAction:
+    """@brief Riprende un ciclo in pausa tramite comando asincrono."""
     return _enqueue_action(
         connection,
         cultivation_id,
@@ -243,7 +258,7 @@ def _finalize_stop_without_edge(
     connection: sqlite3.Connection,
     cultivation: Cultivation,
 ) -> CultivationAction:
-    """Chiude uno StopCultivation il cui settore e' offline.
+    """@brief Chiude uno StopCultivation il cui settore e' offline.
 
     Nessun Edge collegato potra' mai confermare il comando, quindi la
     coltivazione resterebbe bloccata in "stopping" per sempre (vedi lo
@@ -278,6 +293,7 @@ def _finalize_stop_without_edge(
 
 
 def terminate_cultivation(connection: sqlite3.Connection, cultivation_id: str) -> CultivationAction:
+    """@brief Termina il ciclo, gestendo anche una zona Edge offline."""
     cultivation = get_cultivation(connection, cultivation_id)
     if cultivation is None:
         raise CultivationInvalid(f"cultivation {cultivation_id!r} not found")
@@ -319,6 +335,7 @@ def apply_command_result(
     command_type: str,
     result: RuntimeCommandResultCreate,
 ) -> None:
+    """@brief Proietta l'esito di un comando sul ciclo colturale attivo."""
     row = connection.execute(
         "SELECT active_cultivation_id FROM zones WHERE id = ?",
         (zone_id,),
@@ -393,6 +410,7 @@ def apply_edge_projection(
     lifecycle_state: str | None = None,
     recipe_completed: bool | None = None,
 ) -> None:
+    """@brief Allinea il ciclo con lo stato operativo comunicato dall'Edge."""
     row = connection.execute(
         "SELECT active_cultivation_id FROM zones WHERE id = ?",
         (zone_id,),

@@ -1,4 +1,6 @@
-"""Persistenza SQLite degli eventi Edge."""
+"""@file
+@brief Persistenza SQLite degli eventi Edge e proiezione sullo stato zona.
+"""
 
 import json
 import sqlite3
@@ -8,11 +10,11 @@ from .models import EdgeEvent, EdgeEventCreate
 
 
 class EdgeEventConflict(Exception):
-    """Segnala il riuso di un event_id con contenuto differente."""
+    """@brief Segnala il riuso di un event_id con contenuto differente."""
 
 
 def _phase_name(payload: dict, key: str) -> str | None:
-    """Estrae un nome fase sicuro dai payload Edge non tipizzati."""
+    """@brief Estrae un nome fase sicuro dai payload Edge non tipizzati."""
     value = payload.get(key)
     if isinstance(value, str) and 0 < len(value) <= 100:
         return value
@@ -24,7 +26,17 @@ def _apply_recipe_state(
     zone_id: str,
     event: EdgeEventCreate,
 ) -> None:
-    """Aggiorna subito la proiezione corrente, mantenendo l'evento storico."""
+    """@brief Aggiorna subito la proiezione corrente, mantenendo l'evento storico.
+
+    @details Ogni evento tipizzato aggiorna solo le colonne di `zones` che
+    gli competono (stato ciclo, stato operativo, strategia, fase, velocità
+    simulata); il resto degli eventi non tipizzati qui viene comunque
+    conservato nella tabella storica da save_event(), ma non proietta nulla.
+    `projection_updated_at` funge da guardia idempotente: un evento più
+    vecchio di quello già proiettato viene scartato senza toccare le
+    colonne, cosi' eventi fuori ordine (retry, rete) non regrediscono lo
+    stato mostrato in dashboard.
+    """
     projection_time = event.recorded_at.astimezone(timezone.utc).isoformat()
     stored_projection = connection.execute(
         "SELECT projection_updated_at FROM zones WHERE id = ?",
@@ -157,6 +169,7 @@ def _apply_recipe_state(
 
 
 def _event_from_row(row: tuple) -> EdgeEvent:
+    """@brief Converte una riga SQLite nel modello di evento Edge."""
     return EdgeEvent(
         event_id=row[0],
         edge_id=row[1],
@@ -175,7 +188,17 @@ def save_event(
     zone_id: str,
     event: EdgeEventCreate,
 ) -> EdgeEvent:
-    """Salva una sola volta un evento o riproduce quello identico."""
+    """@brief Salva una sola volta un evento o riproduce quello identico.
+
+    @details `event_id` è la chiave di idempotenza: un retry con lo stesso
+    id e lo stesso contenuto restituisce l'evento già salvato invece di
+    duplicarlo; lo stesso id con contenuto diverso solleva
+    EdgeEventConflict. Al salvataggio applica la proiezione (vedi
+    _apply_recipe_state) e marca la zona online.
+
+    @throws EdgeEventConflict Se `event_id` è già usato con un payload
+        differente.
+    """
     recorded_at = event.recorded_at.astimezone(timezone.utc)
     received_at = datetime.now(timezone.utc)
     payload_data = json.dumps(event.payload, sort_keys=True, separators=(",", ":"))
@@ -236,6 +259,7 @@ def save_event(
 
 
 def get_event(connection: sqlite3.Connection, event_id: str) -> EdgeEvent | None:
+    """@brief Restituisce un evento tramite identificativo, se presente."""
     row = connection.execute(
         """
         SELECT event_id, edge_id, boot_id, zone_id, event_type,
@@ -253,6 +277,7 @@ def list_events(
     zone_id: str,
     limit: int = 100,
 ) -> list[EdgeEvent]:
+    """@brief Elenca cronologicamente gli ultimi eventi di una zona."""
     rows = connection.execute(
         """
         SELECT event_id, edge_id, boot_id, zone_id, event_type,

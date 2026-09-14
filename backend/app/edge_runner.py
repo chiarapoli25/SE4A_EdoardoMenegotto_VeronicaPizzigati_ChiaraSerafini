@@ -1,4 +1,6 @@
-"""Esecuzione controllata dell'Edge C++ e validazione del suo output JSON."""
+"""@file
+@brief Esecuzione controllata dell'Edge C++ e validazione del suo output JSON.
+"""
 
 from __future__ import annotations
 
@@ -9,30 +11,34 @@ from pathlib import Path
 from typing import Any
 
 
+## @brief Directory radice del progetto risolta rispetto a questo modulo.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+## @brief Directory nella quale CMake deposita i binari Edge.
 EDGE_SIMULATOR_BIN_DIR = PROJECT_ROOT / "edge" / "build" / "bin"
+## @brief Percorso predefinito del simulatore Edge per build single-config.
 DEFAULT_EDGE_EXECUTABLE = EDGE_SIMULATOR_BIN_DIR / "edge_simulator"
+## @brief Timeout massimo, in secondi, di una simulazione batch.
 EDGE_TIMEOUT_SECONDS = 20
 
 
 class EdgeUnavailable(RuntimeError):
-    """L'eseguibile Edge non è disponibile o non è avviabile."""
+    """@brief L'eseguibile Edge non è disponibile o non è avviabile."""
 
 
 class EdgeTimedOut(RuntimeError):
-    """La simulazione non è terminata entro il timeout."""
+    """@brief La simulazione non è terminata entro EDGE_TIMEOUT_SECONDS."""
 
 
 class EdgeExecutionFailed(RuntimeError):
-    """L'Edge ha rifiutato la ricetta o ha terminato con un errore."""
+    """@brief L'Edge ha rifiutato la ricetta o ha terminato con un errore."""
 
 
 class EdgeOutputInvalid(RuntimeError):
-    """L'Edge non ha prodotto il contratto JSON atteso."""
+    """@brief L'Edge non ha prodotto il contratto JSON atteso."""
 
 
 def edge_is_ready(executable: Path) -> bool:
-    """Controlla esistenza e permesso di esecuzione senza avviare processi.
+    """@brief Controlla esistenza e permesso di esecuzione senza avviare processi.
 
     Il controllo del permesso di esecuzione (os.access(..., os.X_OK)) viene
     saltato su Windows: li' non esiste un bit di esecuzione per-file
@@ -54,12 +60,12 @@ def edge_is_ready(executable: Path) -> bool:
 
 
 def _edge_simulator_candidates() -> list[Path]:
-    """Ogni percorso in cui un edge_simulator compilato può trovarsi.
+    """@brief Ogni percorso in cui un edge_simulator compilato può trovarsi.
 
     Un generatore CMake a singola configurazione (Makefiles/Ninja, il caso
     storico su Linux/macOS) mette l'eseguibile direttamente in bin/. I
     generatori multi-configurazione di Windows (Visual Studio) lo mettono
-    invece in una sottocartella bin/<Config>/ a seconda della
+    invece in una sottocartella `bin/Config/` a seconda della
     configurazione scelta in fase di build (Debug o Release), con
     estensione .exe. Si prova ciascuna combinazione nell'ordine
     bin/, bin/Debug/, bin/Release/, senza assumere la piattaforma
@@ -76,7 +82,7 @@ def _edge_simulator_candidates() -> list[Path]:
 
 
 def configured_edge_executable() -> Path:
-    """Legge il percorso del simulatore batch, con fallback locale.
+    """@brief Legge il percorso del simulatore batch, con fallback locale.
 
     Un override esplicito via variabile d'ambiente ha sempre precedenza
     assoluta e non viene validato qui (lo fa edge_is_ready quando serve
@@ -105,7 +111,14 @@ def run_edge_simulation(
     steps: int,
     step_seconds: float,
 ) -> dict[str, Any]:
-    """Avvia l'Edge senza shell e restituisce il documento JSON validato."""
+    """@brief Avvia l'Edge senza shell e restituisce il documento JSON validato.
+
+    @throws EdgeUnavailable Se l'eseguibile non esiste o non è avviabile.
+    @throws EdgeTimedOut Se supera EDGE_TIMEOUT_SECONDS.
+    @throws EdgeExecutionFailed Se il processo termina con exit code non zero.
+    @throws EdgeOutputInvalid Se lo stdout non è JSON, o manca del contratto
+        atteso (metadati ricetta, numero di step, chiavi di ogni ciclo).
+    """
     if not edge_is_ready(executable):
         raise EdgeUnavailable(
             f"Edge executable not available at {executable}"
