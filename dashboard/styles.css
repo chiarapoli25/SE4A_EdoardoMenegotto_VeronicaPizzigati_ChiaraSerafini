@@ -53,10 +53,10 @@ a:hover { color: var(--accent-dark); }
 .hidden { display: none !important; }
 
 /* ---------- login screen ---------- */
-/* No real authentication — nothing here is checked by the backend. Purely
-   a local, cosmetic identity (name + role) shown next to actions in the
-   sidebar, persisted in this browser's localStorage only. See
-   DEMO_USER_KEY / loadDemoUser() / enterApp() in script.js. */
+/* Real authentication backed by server-side sessions. The browser persists
+   only the opaque token; identity and role are revalidated through /auth/me
+   before the application shell is shown. See SESSION_TOKEN_KEY, init() and
+   enterApp() in script.js. */
 
 .login-screen {
   min-height: 100vh;
@@ -671,6 +671,23 @@ a:hover { color: var(--accent-dark); }
   font: 400 10.5px/1.2 var(--mono); color: var(--ink-mute);
   background: #f4f8f5; border-radius: 7px; padding: 5px 7px;
 }
+.sector-actuator-indicators {
+  display: flex; align-items: center; gap: 5px; margin-top: 8px;
+}
+.sector-actuator-indicators:empty { display: none; }
+.actuator-indicator {
+  display: inline-flex; align-items: center; gap: 4px;
+  border-radius: 999px; padding: 4px 6px;
+  font: 600 9px/1 var(--mono); letter-spacing: .02em;
+  animation: actuatorIndicatorIn .24s cubic-bezier(.2,.9,.3,1);
+}
+.actuator-indicator svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.actuator-indicator-lighting { color: #9a6900; background: #fff4c9; box-shadow: 0 0 11px rgba(248, 196, 42, .55); }
+.actuator-indicator-water_pump { color: #176e9b; background: #def3ff; box-shadow: 0 0 10px rgba(53, 173, 224, .35); }
+@keyframes actuatorIndicatorIn {
+  from { opacity: 0; transform: scale(.7); }
+  to { opacity: 1; transform: scale(1); }
+}
 .sector-row-arrow { flex: none; align-self: center; color: var(--accent); font-size: 14px; }
 
 .sector-slot-empty {
@@ -765,16 +782,6 @@ a:hover { color: var(--accent-dark); }
 .quarantine-tile-row .k { color: var(--ink-mute); }
 .quarantine-tile-row .v { font-weight: 500; text-align: right; }
 .quarantine-tile-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
-
-/* Purely visual accelerated countdown (see QUARANTINE_VISUAL_* in script.js)
-   — an in-demo fake clock, unrelated to the real quarantined_at/backend
-   release check just above it. */
-.quarantine-visual-clock { padding: 6px 0 4px; border-bottom: 1px solid #f0f3f1; }
-.quarantine-visual-clock-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 6px; }
-.quarantine-visual-clock-row .k { color: var(--ink-mute); }
-.quarantine-visual-clock-row .v { font-weight: 600; color: #8a4f28; }
-.quarantine-visual-bar { height: 5px; border-radius: 3px; background: #f0e6dc; overflow: hidden; }
-.quarantine-visual-bar-fill { height: 100%; background: #c98a4a; transition: width 1s linear; }
 
 /* "Stato impianto" + "Allarmi recenti": a full-width row below the
    department grid, the two cards side by side within it (was ".home-aside",
@@ -894,7 +901,7 @@ a:hover { color: var(--accent-dark); }
 .cols-control { grid-template-columns: .8fr 1.6fr 1.4fr 1fr .9fr 1.5fr .5fr; }
 .cols-advanced { grid-template-columns: 1.6fr .8fr .7fr .7fr 1.9fr; }
 .cols-global-strategy { grid-template-columns: 1.6fr 2.2fr 1.4fr; }
-.cols-users { grid-template-columns: 1.4fr 1.4fr 1fr 1.3fr; }
+.cols-users { grid-template-columns: 1.4fr 1.4fr 1fr 1.3fr 1.2fr; }
 
 .var-name { font-size: 13px; font-weight: 500; }
 .var-unit { font: 400 10.5px var(--mono); color: var(--ink-faint); margin-top: 2px; }
@@ -996,6 +1003,23 @@ a:hover { color: var(--accent-dark); }
 .btn-live-reset { color: var(--ink-mute); }
 .live-error-hint { font-size: 11.5px; color: var(--danger); cursor: help; }
 
+/* Pannello "Piante" del pop-up live (renderLiveQuarantinePanel) — elenco
+   compatto con un tasto per pianta per spostarla/richiamarla dalla
+   quarantena SIMULATA (solo questa riproduzione, mai la quarantena
+   reale). */
+.live-quarantine-plant-list {
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 220px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.live-quarantine-plant-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 10px; background: #fff;
+}
+.live-quarantine-plant-row.quarantined { background: var(--warn-soft); }
+.live-quarantine-plant-id { font: 600 12px var(--mono); color: var(--ink-mute); }
+.live-quarantine-toggle-btn { padding: 5px 10px; font-size: 11.5px; white-space: nowrap; }
+
 /* Riga di sola lettura nel pop-up (stato/velocità/ciclo/tempo trascorso) —
    vedi renderLiveStatusLine. */
 .live-status-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 18px; }
@@ -1016,9 +1040,9 @@ a:hover { color: var(--accent-dark); }
 .sector-live-strip:empty { display: none; }
 .live-strip-phase { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 92px; }
 .live-strip-value { white-space: nowrap; color: var(--ink-mute); font-weight: 400; }
-.live-strip-actuators { display: flex; gap: 3px; margin-left: auto; }
-.live-actuator-dot { width: 6px; height: 6px; border-radius: 50%; background: #d8e4dc; flex: none; }
-.live-actuator-dot.on { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.live-strip-actuators { display: flex; gap: 4px; margin-left: auto; }
+.live-strip-actuators .actuator-indicator { padding: 4px; }
+.live-strip-actuators .actuator-indicator svg { width: 12px; height: 12px; }
 
 /* ---------- Simulatore page: theme, intro banner, sector grid ---------- */
 /* Uses the --sim palette (aliased to the app's normal green --accent) —
@@ -1112,6 +1136,36 @@ a:hover { color: var(--accent-dark); }
   background: #fff; border-radius: 26px; box-shadow: 0 30px 80px rgba(6, 26, 19, .4);
   animation: shPop .22s cubic-bezier(.2,.9,.3,1);
 }
+
+/* Il simulatore e' una superficie di analisi, non un semplice dettaglio:
+   sfrutta quasi tutto lo schermo senza modificare gli altri pop-up. */
+.modal-content.simulation-modal-content {
+  width: min(1480px, 100%);
+  max-height: calc(100vh - 32px);
+}
+.simulation-modal-content .chart-canvas-wrap { height: clamp(320px, 52vh, 560px); }
+.simulation-modal-content .sim-chart-grid-cell canvas { height: 172px; }
+
+/* Barra di navigazione del grafico: gli stessi gesti dello scope sono
+   disponibili anche come pulsanti, quindi restano scopribili e usabili da
+   tastiera/touch. */
+.sim-chart-navigation {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  margin: 2px 0 10px;
+}
+.sim-chart-navigation .hint { margin-right: 4px; }
+.sim-chart-nav-btn {
+  min-width: 32px; height: 30px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 9px; background: #f7fbf9;
+  color: var(--ink-soft); font: 600 15px/1 var(--sans); cursor: pointer;
+}
+.sim-chart-nav-btn:hover { background: var(--accent-soft); border-color: rgba(31,122,81,.35); color: var(--accent-dark); }
+.sim-chart-nav-reset { font-size: 11px; font-weight: 500; }
+.sim-chart-viewport-label { font: 500 10.5px var(--mono); color: var(--ink-mute); min-width: 94px; }
+.sim-chart-navigation-help { font-size: 11px; color: var(--ink-faint); }
+.chart-canvas-wrap canvas { touch-action: none; cursor: grab; outline: none; }
+.chart-canvas-wrap canvas:active { cursor: grabbing; }
+.chart-canvas-wrap canvas:focus-visible { border-radius: 14px; outline: 2px solid rgba(31,122,81,.5); outline-offset: 2px; }
 
 .zone-header {
   padding: 24px 28px 20px;
@@ -1366,10 +1420,24 @@ a:hover { color: var(--accent-dark); }
 
 /* ---------- Utenti (pagina dedicata, admin-only) ---------- */
 
-.cols-users { grid-template-columns: 1.4fr 1.2fr .8fr 1.3fr; }
+.cols-users { grid-template-columns: 1.4fr 1.2fr .8fr 1.3fr 1.4fr; }
 
 .role-admin { color: var(--accent-dark); background: var(--accent-soft); }
 .role-agronomo { color: var(--ink-mute); background: var(--line-soft); }
+
+.user-row-action { display: flex; justify-content: flex-end; min-width: 0; }
+.user-action-btn {
+  border: 1px solid var(--line); background: #fff; border-radius: 8px;
+  padding: 6px 9px; font: 500 10.5px var(--sans); color: var(--ink-mute);
+  white-space: nowrap; cursor: pointer;
+}
+.user-action-btn:hover { background: #f2f8f4; }
+.user-action-btn:disabled { cursor: default; opacity: .6; }
+.user-action-btn.danger { color: var(--danger); border-color: rgba(193, 90, 74, .35); }
+.user-action-btn.danger:hover { background: var(--danger-soft); }
+.user-delete-confirm { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.user-delete-confirm > span { font-size: 10.5px; color: var(--ink-mute); white-space: nowrap; }
+.user-protected-label { font: 500 10px var(--mono); color: var(--ink-faint); }
 
 .user-create-form {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px;
@@ -1525,6 +1593,9 @@ a:hover { color: var(--accent-dark); }
   .controls-grid { grid-template-columns: 1fr 1fr; }
   .chart-actuators-grid { grid-template-columns: 1fr; }
   .sim-chart-grid { grid-template-columns: 1fr; }
+  .modal-overlay { padding: 14px; }
+  .modal-content.simulation-modal-content { max-height: calc(100vh - 28px); }
+  .simulation-modal-content .chart-canvas-wrap { height: min(48vh, 390px); }
   .data-table-head, .data-table-row { overflow-x: auto; }
   .alerts-grid { grid-template-columns: 1fr; }
   .event-row { flex-wrap: wrap; }

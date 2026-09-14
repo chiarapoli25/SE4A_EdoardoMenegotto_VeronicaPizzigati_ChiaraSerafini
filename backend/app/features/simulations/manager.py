@@ -1,4 +1,6 @@
-"""Esecutore singolo per anteprime batch isolate dal runtime operativo."""
+"""@file
+@brief Esecutore singolo per anteprime batch isolate dal runtime operativo.
+"""
 
 from __future__ import annotations
 
@@ -29,41 +31,52 @@ from .models import (
 )
 
 
+## @brief Minuti di conservazione di un job concluso.
 EXPIRY_MINUTES = 30
+## @brief Numero massimo di campioni inviati ai grafici della dashboard.
 MAX_CHART_POINTS = 1000
+## @brief Timeout massimo di una singola invocazione dell'Edge.
 BATCH_TIMEOUT_SECONDS = 60.0
 
 
 class SimulationBusy(Exception):
-    """Un altro scenario sta gia usando l'unico worker batch."""
+    """@brief Un altro scenario sta gia usando l'unico worker batch."""
 
 
 class SimulationInvalid(Exception):
-    """La richiesta non individua nulla di simulabile (es. serra intera
+    """@brief La richiesta non individua nulla di simulabile.
+
+    @details Per esempio, una serra intera
     senza alcun settore con una ricetta assegnata)."""
 
 
 class SimulationMissing(Exception):
-    """Il job non esiste o la sua anteprima e scaduta."""
+    """@brief Il job non esiste o la sua anteprima e scaduta."""
 
 
 class SimulationNotReady(Exception):
-    """Il risultato non e ancora disponibile."""
+    """@brief Il risultato non e ancora disponibile."""
 
 
 @dataclass(frozen=True)
 class _Target:
-    """Una singola ricetta da simulare — un settore reale in modalita' serra
+    """@brief Una singola ricetta da simulare.
+
+    @details Rappresenta un settore reale in modalita serra
     intera (zone_id valorizzato), oppure l'unica ricetta scelta a mano nella
     modalita' storica per singolo settore (zone_id None)."""
 
     recipe: Recipe
+    ## @brief Zona reale del target; assente per una ricetta isolata.
     zone_id: str | None = None
 
 
 @dataclass
 class _Record:
+    """@brief Stato interno mutabile di un job batch e del processo Edge."""
+
     job: SimulationJob
+    ## @brief Target ordinati che compongono il job.
     targets: list[_Target]
     # Seed meteo condiviso da OGNI target di questa run (uno per settore in
     # modalita' serra intera, uno solo in modalita' ricetta isolata) — vedi
@@ -76,29 +89,37 @@ class _Record:
     # sequenza, run dopo run, perche' il valore non dipendeva da nulla di
     # specifico alla run. Qui il seed e' fresco a ogni simulazione e resta
     # comunque condiviso da tutti i settori della stessa serra.
+    ## @brief Seed meteo condiviso da tutti i target del job.
     environment_seed: int = field(default_factory=lambda: secrets.randbits(32))
+    ## @brief Segnale cooperativo di annullamento.
     cancel: threading.Event = field(default_factory=threading.Event)
     # Un esito per target, nello stesso ordine di `targets`. La modalita'
     # storica per singolo settore ha sempre esattamente un target: result()
     # la spacchetta in un oggetto singolo per non cambiare il contratto HTTP
     # esistente (vedi SimulationManager.result).
+    ## @brief Risultati nello stesso ordine dei target, quando disponibili.
     results: list[SimulationPreview] | None = None
+    ## @brief Processo Edge attualmente in esecuzione.
     process: subprocess.Popen[str] | None = None
 
     @property
     def is_greenhouse(self) -> bool:
+        """@brief Indica che il job rappresenta una o piu zone reali."""
         return len(self.targets) != 1 or self.targets[0].zone_id is not None
 
 
 def _now() -> datetime:
+    """@brief Restituisce l'istante UTC corrente con timezone."""
     return datetime.now(timezone.utc)
 
 
 def _fertilizer_keys() -> tuple[str, ...]:
+    """@brief Restituisce gli identificatori stabili delle valvole di dosaggio."""
     return ("nitrogen", "phosphorus", "potassium", "ph-up", "ph-down")
 
 
 def _active_actuators(step: dict[str, Any]) -> dict[str, bool]:
+    """@brief Deriva gli attuatori intervenuti durante un singolo step."""
     output = step.get("actuators", {}).get("output", {})
     delivered = step.get("delivered", {})
     valves = output.get("fertilizer_valves_open", {})
@@ -115,6 +136,7 @@ def _active_actuators(step: dict[str, Any]) -> dict[str, bool]:
 
 
 def _actuator_intervals(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """@brief Ricostruisce intervalli contigui di attivazione dagli step Edge."""
     intervals: list[dict[str, Any]] = []
     open_since: dict[str, float] = {}
     previous_end = 0.0
@@ -185,6 +207,7 @@ def _actuator_intensity(step: dict[str, Any]) -> dict[str, float]:
 
 
 def _numeric_values(step: dict[str, Any]) -> dict[str, float]:
+    """@brief Estrae dal campione i valori numerici utili alla riduzione."""
     merged = {
         **step.get("sensors", {}),
         **step.get("models", {}),
@@ -198,6 +221,7 @@ def _numeric_values(step: dict[str, Any]) -> dict[str, float]:
 
 
 def _reduce_series(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """@brief Riduce una serie lunga preservando estremi e andamento dei grafici."""
     if not steps:
         return []
     segments: list[list[dict[str, Any]]] = []
@@ -250,6 +274,7 @@ def _reduce_series(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _phase_targets(recipe: Recipe) -> list[dict[str, Any]]:
+    """@brief Proietta fasi e target della ricetta nel formato dei grafici."""
     cursor = 0.0
     result: list[dict[str, Any]] = []
     for phase in recipe.phases:
@@ -286,6 +311,7 @@ def _phase_targets(recipe: Recipe) -> list[dict[str, Any]]:
 
 
 def _summary(steps: list[dict[str, Any]], intervals: list[dict[str, Any]]) -> dict[str, Any]:
+    """@brief Calcola consumi, tempi attivi e numero di cicli della simulazione."""
     water = sum(float(step.get("delivered", {}).get("water_liters") or 0.0) for step in steps)
     fertilizer = {key: 0.0 for key in _fertilizer_keys()}
     for step in steps:
@@ -315,8 +341,10 @@ def execute_edge_steps(
     on_process: Callable[[subprocess.Popen[str]], None] | None = None,
     environment_seed: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Avvia l'Edge batch su una singola ricetta e restituisce i suoi step
-    grezzi (non ancora ridotti/riassunti). Isolato da SimulationManager
+    """@brief Avvia l'Edge batch e restituisce gli step grezzi di una ricetta.
+
+    @details Gli step non sono ancora ridotti o riassunti. La funzione e
+    isolata da SimulationManager
     stesso perche' LiveSimulationManager (live_manager.py) lo riusa
     identico: la fisica e' la stessa identica chiamata Edge — deterministica,
     senza alcuna dipendenza dal tempo reale — solo quello che succede DOPO
@@ -325,6 +353,11 @@ def execute_edge_steps(
     InterruptedError/TimeoutError/RuntimeError esattamente come prima
     quando era il corpo di _run_target — i chiamanti restano invariati.
 
+    @param recipe Ricetta completa da serializzare per il simulatore Edge.
+    @param steps_count Numero esatto di step richiesti.
+    @param cancel_event Segnale condiviso per interrompere il processo.
+    @param progress_cb Callback opzionale invocata con gli step completati.
+    @param on_process Callback opzionale che riceve il processo appena avviato.
     @param environment_seed Seed meteo passato a --environment-seed
         (EnvironmentSimulator, environment_simulator.cpp): STESSO valore per
         ogni settore della stessa run di simulazione (vedi _Record.
@@ -333,6 +366,10 @@ def execute_edge_steps(
         letterale fisso di prima. None lascia il vecchio default per-zona
         del CLI (usato solo da chiamate dirette non orchestrate da qui,
         es. test).
+    @return Sequenza completa degli step grezzi prodotti dall'Edge.
+    @throws InterruptedError Se il chiamante richiede l'annullamento.
+    @throws TimeoutError Se il processo supera il timeout batch.
+    @throws RuntimeError Se l'eseguibile manca, fallisce o restituisce dati incompleti.
     """
     executable = configured_edge_executable()
     if not edge_is_ready(executable):
@@ -412,12 +449,23 @@ def execute_edge_steps(
 
 
 class SimulationManager:
+    """@brief Coordina l'unico worker batch e conserva i risultati effimeri.
+
+    @details Il manager serializza le simulazioni batch, esegue l'Edge fuori
+    dal runtime operativo e restituisce copie profonde dei record osservabili.
+    """
+
     def __init__(self) -> None:
+        """@brief Inizializza archivio in memoria, lock e worker singolo."""
+        ## @brief Protegge record e transizioni concorrenti.
         self._lock = threading.Lock()
+        ## @brief Job indicizzati tramite identificatore.
         self._records: dict[str, _Record] = {}
+        ## @brief Worker singolo che serializza le simulazioni batch.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="batch-simulation")
 
     def _cleanup(self) -> None:
+        """@brief Elimina i risultati conclusi che hanno superato la scadenza."""
         now = _now()
         expired = [
             run_id
@@ -428,7 +476,9 @@ class SimulationManager:
             self._records.pop(run_id, None)
 
     def create(self, request: SimulationCreate, recipe: Recipe) -> SimulationJob:
-        """Anteprima isolata di una singola ricetta, mai legata a un settore
+        """@brief Avvia l'anteprima isolata di una singola ricetta.
+
+        @details Non e mai legata a un settore
         reale — il percorso storico, invariato. Vedi create_greenhouse per
         l'intera serra."""
         return self._create([_Target(recipe=recipe)], request)
@@ -438,7 +488,9 @@ class SimulationManager:
         request: SimulationCreate,
         targets: list[tuple[str, Recipe]],
     ) -> SimulationJob:
-        """Un'unica simulazione che copre ogni settore produttivo con una
+        """@brief Avvia un'unica simulazione per tutti i settori produttivi.
+
+        @details Ogni settore deve avere una
         ricetta assegnata, tutti sullo stesso arco temporale — "il tempo
         passa per tutti allo stesso modo". Ogni settore resta comunque un
         run dell'Edge indipendente (nessuna interazione fisica fra settori
@@ -457,6 +509,7 @@ class SimulationManager:
         )
 
     def _create(self, targets: list[_Target], request: SimulationCreate) -> SimulationJob:
+        """@brief Registra un job validato e ne pianifica l'esecuzione."""
         with self._lock:
             self._cleanup()
             if any(
@@ -480,10 +533,12 @@ class SimulationManager:
             )
             record = _Record(job=job, targets=targets)
             self._records[run_id] = record
+            ## @brief Funzione di calcolo batch eseguita dal pool del manager.
             self._executor.submit(self._execute, run_id)
             return job.model_copy(deep=True)
 
     def get(self, run_id: str) -> SimulationJob:
+        """@brief Restituisce una copia dello stato corrente del job."""
         with self._lock:
             self._cleanup()
             record = self._records.get(run_id)
@@ -492,7 +547,9 @@ class SimulationManager:
             return record.job.model_copy(deep=True)
 
     def result(self, run_id: str) -> SimulationPreview | list[SimulationPreview]:
-        """Un oggetto singolo per la modalita' storica per singolo settore
+        """@brief Restituisce le anteprime prodotte da un job completato.
+
+        @details Un oggetto singolo per la modalita per singolo settore
         (contratto HTTP invariato), una lista — un elemento per settore,
         stesso ordine di creazione — per la modalita' serra intera."""
         with self._lock:
@@ -507,6 +564,7 @@ class SimulationManager:
             return record.results[0].model_copy(deep=True)
 
     def cancel_or_discard(self, run_id: str) -> None:
+        """@brief Annulla il processo attivo oppure elimina un record concluso."""
         with self._lock:
             record = self._records.get(run_id)
             if record is None:
@@ -519,6 +577,7 @@ class SimulationManager:
                 self._records.pop(run_id, None)
 
     def _update_progress(self, record: _Record, completed: int) -> None:
+        """@brief Aggiorna contatore e percentuale complessiva del job."""
         record.job.completed_steps = min(completed, record.job.total_steps)
         record.job.progress_percent = round(
             record.job.completed_steps / record.job.total_steps * 100.0,
@@ -534,7 +593,9 @@ class SimulationManager:
         steps_per_target: int,
         step_offset: int,
     ) -> SimulationPreview:
-        """Un'esecuzione Edge per un singolo target (settore o ricetta
+        """@brief Esegue l'Edge per un singolo target del job.
+
+        @details Il target puo essere un settore o una ricetta
         isolata). step_offset e' quanti step di ALTRI target precedenti sono
         gia' stati completati in questa stessa esecuzione — serve solo a far
         avanzare il progresso complessivo del job, non incide sul contenuto
@@ -581,6 +642,7 @@ class SimulationManager:
         )
 
     def _execute(self, run_id: str) -> None:
+        """@brief Esegue in sequenza tutti i target e finalizza il record."""
         with self._lock:
             record = self._records.get(run_id)
             if record is None:
@@ -629,4 +691,5 @@ class SimulationManager:
                 record.process = None
 
 
+## @brief Istanza applicativa condivisa dal router delle simulazioni batch.
 simulation_manager = SimulationManager()
