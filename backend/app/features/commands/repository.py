@@ -1,4 +1,6 @@
-"""Persistenza SQLite dei comandi destinati alle zone."""
+"""@file
+@brief Persistenza SQLite dei comandi destinati alle zone.
+"""
 
 import json
 import sqlite3
@@ -13,10 +15,11 @@ from .models import (
 
 
 class RuntimeCommandConflict(Exception):
-    """Segnala un command_id riutilizzato con dati incompatibili."""
+    """@brief Segnala un command_id riutilizzato con dati incompatibili."""
 
 
 def _command_from_row(row: tuple) -> RuntimeCommand:
+    """@brief Converte una riga SQLite nel modello di dominio del comando."""
     return RuntimeCommand(
         command_id=row[0],
         zone_id=row[1],
@@ -34,6 +37,7 @@ def get_command(
     connection: sqlite3.Connection,
     command_id: str,
 ) -> RuntimeCommand | None:
+    """@brief Restituisce il comando identificato da `command_id`, se presente."""
     row = connection.execute(
         """
         SELECT command_id, zone_id, command_type, payload_data, status,
@@ -53,6 +57,7 @@ def create_command(
     *,
     commit: bool = True,
 ) -> RuntimeCommand:
+    """@brief Inserisce un comando idempotente nella coda persistente."""
     created_at = datetime.now(timezone.utc)
     payload_data = json.dumps(command.payload, sort_keys=True, separators=(",", ":"))
     try:
@@ -96,6 +101,7 @@ def list_pending_commands(
     zone_id: str,
     limit: int = 100,
 ) -> list[RuntimeCommand]:
+    """@brief Elenca, in ordine di creazione, i comandi pendenti della zona."""
     rows = connection.execute(
         """
         SELECT command_id, zone_id, command_type, payload_data, status,
@@ -116,6 +122,7 @@ def complete_command(
     command_id: str,
     result: RuntimeCommandResultCreate,
 ) -> RuntimeCommand | None:
+    """@brief Registra l'esito finale e aggiorna le proiezioni colturali."""
     existing = get_command(connection, command_id)
     if existing is None or existing.zone_id != zone_id:
         return None

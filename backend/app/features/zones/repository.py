@@ -125,7 +125,7 @@ def refresh_zone_connectivity(
     now: datetime | None = None,
     threshold_seconds: float | None = None,
 ) -> None:
-    """Ricalcola e persiste online/offline dall'ultimo contatto ricevuto."""
+    """@brief Ricalcola e persiste online/offline dall'ultimo contatto ricevuto."""
     reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     threshold = (
         offline_threshold_seconds()
@@ -212,7 +212,7 @@ def list_zones_for_edge(
 
 
 def _zone_is_running(connection: sqlite3.Connection, zone_id: str) -> bool:
-    """Consulta la proiezione corrente senza rileggere lo storico eventi."""
+    """@brief Consulta la proiezione corrente senza rileggere lo storico eventi."""
     row = connection.execute(
         """
         SELECT lifecycle_state
@@ -229,7 +229,7 @@ def _has_incompatible_plants(
     zone_id: str,
     plant_species: str,
 ) -> bool:
-    """Verifica esemplari presenti o destinati a tornare nella zona."""
+    """@brief Verifica esemplari presenti o destinati a tornare nella zona."""
     row = connection.execute(
         """
         SELECT 1

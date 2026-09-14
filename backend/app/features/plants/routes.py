@@ -1,4 +1,6 @@
-"""Endpoint HTTP dell'anagrafica piante e della quarantena."""
+"""@file
+@brief Endpoint HTTP dell'anagrafica piante e della quarantena.
+"""
 
 import sqlite3
 
@@ -18,6 +20,7 @@ from .repository import (
 )
 
 
+## @brief Router FastAPI per anagrafica, spostamenti e quarantena delle piante.
 router = APIRouter(prefix="/plants", tags=["plants"])
 
 
@@ -26,7 +29,7 @@ def register_plant(
     plant: PlantCreate,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Plant:
-    """Registra una pianta nel relativo settore produttivo di origine."""
+    """@brief Registra una pianta nel relativo settore produttivo di origine."""
     home_zone = get_zone(connection, plant.home_zone_id)
     if home_zone is None:
         raise HTTPException(
@@ -56,7 +59,7 @@ def read_plants(
     limit: int = Query(default=100, ge=1, le=1000),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[Plant]:
-    """Elenca le piante filtrandole per posizione o flag di quarantena."""
+    """@brief Elenca le piante filtrandole per posizione o flag di quarantena."""
     return list_plants(
         connection,
         zone_id=zone_id,
@@ -70,6 +73,7 @@ def read_plant(
     plant_id: str,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Plant:
+    """@brief Restituisce una singola pianta o risponde HTTP 404."""
     plant = get_plant(connection, plant_id)
     if plant is None:
         raise HTTPException(status_code=404, detail=f"plant {plant_id!r} not found")
@@ -82,7 +86,7 @@ def update_plant_quarantine(
     update: PlantQuarantineUpdate,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Plant:
-    """Imposta il flag e sposta la pianta in quarantena o nel reparto origine."""
+    """@brief Imposta il flag e sposta la pianta in quarantena o nel reparto origine."""
     plant = get_plant(connection, plant_id)
     if plant is None:
         raise HTTPException(status_code=404, detail=f"plant {plant_id!r} not found")
@@ -128,6 +132,7 @@ def read_plant_movements(
     limit: int = Query(default=100, ge=1, le=1000),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[PlantMovement]:
+    """@brief Restituisce lo storico degli spostamenti di una pianta."""
     if get_plant(connection, plant_id) is None:
         raise HTTPException(status_code=404, detail=f"plant {plant_id!r} not found")
     return list_plant_movements(connection, plant_id, limit)
