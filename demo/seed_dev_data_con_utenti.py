@@ -1540,13 +1540,15 @@ def main() -> None:
         f"al ritmo di 1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min, prima di "
         "registrarlo) ---"
     )
-    narrate_wait(
-        f"quarantena: attendo {QUARANTINE_REAL_WAIT_SECONDS:.0f}s reali "
-        f"(equivalenti a {QUARANTINE_BACKDATE} di quarantena al ritmo di "
-        f"1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min) prima di registrare "
-        "l'inizio quarantena delle 5 piante...",
-        QUARANTINE_REAL_WAIT_SECONDS,
-    )
+    
+    #    narrate_wait(
+    #        f"quarantena: attendo {QUARANTINE_REAL_WAIT_SECONDS:.0f}s reali "
+    #        f"(equivalenti a {QUARANTINE_BACKDATE} di quarantena al ritmo di "
+    #        f"1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min) prima di registrare "
+    #        "l'inizio quarantena delle 5 piante...",
+    #        QUARANTINE_REAL_WAIT_SECONDS,
+    #   )
+    
     quarantine_backdate_at = datetime.now(timezone.utc) - QUARANTINE_BACKDATE
     plant_sources = [
         ("plant-1", zone_species["r1-s1"], "r1-s1"),
