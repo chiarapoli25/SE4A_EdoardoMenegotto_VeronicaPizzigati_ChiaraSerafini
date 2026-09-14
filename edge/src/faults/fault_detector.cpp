@@ -1,3 +1,9 @@
+/**
+ * @file fault_detector.cpp
+ * @brief Implementazione di FaultDetector: plausibilita' fisica, sensori
+ *     congelati/mancanti e coerenza comando-risposta degli attuatori.
+ */
+
 #include <smarthydro/faults/fault_detector.hpp>
 
 #include <algorithm>
@@ -9,20 +15,24 @@
 namespace smarthydro {
 namespace {
 
+/** @brief Numero di canali attuatore osservati (pompa, luce, 5 valvole). */
 constexpr std::size_t kActuatorCount = 7;
 
+/** @brief Canale osservato con il range di sicurezza di ricetta, se applicabile. */
 struct ValueObservation {
     ObservedValue channel;
     const std::optional<double>* value;
     std::optional<ValueRange> model_range;
 };
 
+/** @brief True per N/P/K, le tre stime di modello anziche' letture dirette. */
 bool is_nutrient(ObservedValue value) noexcept {
     return value == ObservedValue::NITROGEN ||
            value == ObservedValue::PHOSPHORUS ||
            value == ObservedValue::POTASSIUM;
 }
 
+/** @brief Messaggio diagnostico per un valore fuori da un intervallo. */
 std::string range_diagnostic(
     double value,
     const ValueRange& range,
@@ -33,6 +43,7 @@ std::string range_diagnostic(
     return output.str();
 }
 
+/** @brief Messaggio diagnostico per un rapporto comando/risposta insufficiente. */
 std::string ratio_diagnostic(double ratio, double minimum) {
     std::ostringstream output;
     output << "observed response ratio " << ratio
@@ -40,6 +51,7 @@ std::string ratio_diagnostic(double ratio, double minimum) {
     return output.str();
 }
 
+/** @brief Rifiuta una policy con soglie non finite o intervalli invertiti. */
 void validate_policy(const ObservedValuePolicy& policy) {
     if (!std::isfinite(policy.physical_range.minimum) ||
         !std::isfinite(policy.physical_range.maximum) ||
