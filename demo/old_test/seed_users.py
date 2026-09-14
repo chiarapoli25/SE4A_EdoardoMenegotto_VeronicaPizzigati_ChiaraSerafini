@@ -3,13 +3,13 @@
 # amministratore. Le password in chiaro vivono SOLO in questo file: qualunque
 # altro script demo/ che debba autenticarsi la importa da qui (ADMIN_USERNAME /
 # ADMIN_PASSWORD), non la ripete. Gli account agronomo di esempio non sono
-# più qui: vedi NAMED_AGRONOMO_ACCOUNTS in demo/seed_test_scenario.py.
+# più qui: vedi NAMED_AGRONOMO_ACCOUNTS in demo/old_test/seed_test_scenario.py.
 
 """Seed degli account di autenticazione della dashboard SmartHydro.
 
 USO:
 
-    python demo/seed_users.py
+    python demo/old_test/seed_users.py
 
 A differenza degli altri script in demo/ (che parlano col backend solo via
 HTTP), questo script scrive DIRETTAMENTE nel database SQLite: non esiste —
@@ -45,9 +45,9 @@ from pathlib import Path
 # A differenza degli altri script in demo/, questo importa direttamente il
 # pacchetto backend (nessun endpoint HTTP di registrazione, vedi sopra):
 # garantisce che la radice del repository sia su sys.path indipendentemente
-# dalla cwd da cui viene lanciato (`python demo/seed_users.py` dalla radice,
-# oppure `python seed_users.py` da dentro demo/).
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+# dalla cwd da cui viene lanciato (`python demo/old_test/seed_users.py`
+# dalla radice, oppure `python seed_users.py` da dentro demo/old_test/).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -58,14 +58,14 @@ from backend.app.features.users.security import hash_password
 
 # NOTA: questa e' l'UNICA riga di questo repository in cui una password
 # compare in chiaro, a parte l'output di questo script. Chi consuma questa
-# credenziale (demo/seed_dev_data.py, demo/seed_test_scenario.py, la persona
+# credenziale (demo/seed_dev_data.py, demo/old_test/seed_test_scenario.py, la persona
 # che testa la dashboard) la importa da qui.
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "pass123"
 
 # L'account agronomo generico ("agronomo"/pass) e' stato rimosso: i quattro
 # account agronomo nominati (mario/elena/antonio/alice, vedi
-# NAMED_AGRONOMO_ACCOUNTS in demo/seed_test_scenario.py) lo sostituiscono per
+# NAMED_AGRONOMO_ACCOUNTS in demo/old_test/seed_test_scenario.py) lo sostituiscono per
 # ogni test/demo che richieda un utente non amministratore.
 SEED_ACCOUNTS = (
     (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
@@ -107,7 +107,7 @@ def main() -> None:
     print(f"[seed]   amministratore -> username={ADMIN_USERNAME!r} password={ADMIN_PASSWORD!r}")
     print(
         "[seed] nessun account agronomo generico: crealo dal pannello \"Utenti\" "
-        "oppure esegui demo/seed_test_scenario.py (account nominati mario/elena/"
+        "oppure esegui demo/old_test/seed_test_scenario.py (account nominati mario/elena/"
         "antonio/alice, vedi NAMED_AGRONOMO_ACCOUNTS)."
     )
     print("=" * 78)

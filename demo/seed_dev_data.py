@@ -2,7 +2,7 @@
 # Usa questo prima di una consegna/esame, per verificare che il sistema
 # vero (non simulato) si comporti correttamente.
 # Per popolare rapidamente la dashboard durante lo sviluppo, usa invece
-# demo/seed_test_scenario.py (non richiede l'Edge).
+# demo/old_test/seed_test_scenario.py (non richiede l'Edge).
 #
 # NOTA su r4-s2 (CommandFailed): lo scenario storico "CommandFailed per
 # volume di irrigazione oltre il limite fisico dell'attuatore (5.0 L)" non
@@ -83,7 +83,7 @@ Topologia (stessa forma delle versioni precedenti dello script):
   di fase, resta nella sua fase iniziale per tutta la demo)
 - Reparto 2: r2-s1 (Nominal, avanzata fino all'ultima fase), r2-s2
   (OFFLINE: nessun assigned_edge_id, mai — stesso principio di r2-s2 in
-  demo/seed_test_scenario.py: non è una disconnessione simulata a metà
+  demo/old_test/seed_test_scenario.py: non è una disconnessione simulata a metà
   scenario, è una zona che non ha mai avuto un Edge)
 - Reparto 3: r3-s1 (Nominal, avanzata fino all'ultima fase); r3-s2 esiste
   solo per pochi istanti durante il Passo 1 (vedi ALLARMI "QUARANTENA
@@ -167,7 +167,7 @@ account agronomo con username/password fissi (mario/elena/antonio/alice),
 creati (o aggiornati se già esistenti) con lo stesso identico meccanismo
 dell'admin — scrittura diretta nel database via _upsert_user(), prima di
 qualunque chiamata HTTP. Stesse credenziali già usate in
-demo/seed_test_scenario.py (NAMED_AGRONOMO_ACCOUNTS).
+demo/old_test/seed_test_scenario.py (NAMED_AGRONOMO_ACCOUNTS).
 
 LOCKDOWN "DA SICUREZZA" (safety_range) su r4-s2 — terza transizione,
 qualitativamente diversa dalle due sopra: niente InjectFault, e niente
@@ -372,7 +372,7 @@ ADMIN_PASSWORD = "pass123"
 
 # Oltre all'admin, quattro account agronomo "umani" nominati, utili per
 # provare la dashboard con più account invece del solo admin/pass123.
-# Stesse credenziali già usate in demo/seed_test_scenario.py
+# Stesse credenziali già usate in demo/old_test/seed_test_scenario.py
 # (NAMED_AGRONOMO_ACCOUNTS), cosi' i due script restano coerenti. Creati
 # (o aggiornati se già esistenti) con lo stesso identico meccanismo
 # dell'admin (_upsert_user, scrittura diretta nel database), non via HTTP.
@@ -389,9 +389,9 @@ SEED_ACCOUNTS = (
 # <nome-servizio>.up.railway.app). Nota sull'account amministratore quando
 # BASE_URL e' remoto: questo script fa solo POST /auth/login (puro HTTP),
 # non puo' creare il primo account da solo (per scelta non esiste un
-# endpoint HTTP di registrazione, vedi demo/seed_users.py) — su
+# endpoint HTTP di registrazione, vedi demo/old_test/seed_users.py) — su
 # Railway demo/old_test/seed_users.py va eseguito UNA VOLTA dentro lo
-# stesso container (es. `railway run python demo/seed_users.py`,
+# stesso container (es. `railway run python demo/old_test/seed_users.py`,
 # cosi' scrive nello stesso
 # file SQLite che il backend in esecuzione sta davvero usando), non dal tuo
 # PC puntato all'URL pubblico: eseguito localmente scriverebbe in un

@@ -10,7 +10,7 @@ usa invece demo/seed_dev_data.py.
 
 USO: con il backend già avviato (uvicorn backend.app.main:app --reload):
 
-    python demo/seed_test_scenario.py
+    python demo/old_test/seed_test_scenario.py
 
 Lo script TERMINA da solo (nessun input() manuale, a differenza di
 seed_dev_data.py che aspetta l'avvio a mano dell'Edge reale) ed è pensato
@@ -70,7 +70,7 @@ avviato da questo script.
 
 AUTENTICAZIONE: come primo passo lo script prova il login su POST
 /auth/login con l'account amministratore di esempio (vedi
-demo/seed_users.py). Se il database e' ancora completamente vuoto (nessun
+demo/old_test/seed_users.py). Se il database e' ancora completamente vuoto (nessun
 utente, seed_users.py mai eseguito), ricorre invece a POST
 /auth/bootstrap-admin per crearsi al volo un amministratore usa-e-getta
 (vedi ensure_admin_token()) — sempre attraverso un endpoint reale, mai
@@ -104,6 +104,7 @@ script):
 from __future__ import annotations
 
 import json
+import os
 import random
 import time
 import urllib.error
@@ -111,12 +112,19 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 # Sibling module, non il pacchetto backend: Python mette la cartella dello
-# script (demo/) in sys.path[0] quando lo lanci direttamente, quindi questo
-# import funziona sia da `python demo/seed_test_scenario.py` (dalla radice)
-# sia da dentro demo/, senza bisogno di manipolare sys.path.
+# script (demo/old_test/) in sys.path[0] quando lo lanci direttamente, quindi
+# questo import funziona sia da `python demo/old_test/seed_test_scenario.py`
+# (dalla radice) sia da dentro demo/old_test/, senza bisogno di manipolare
+# sys.path.
 from seed_users import ADMIN_PASSWORD, ADMIN_USERNAME
 
-BASE_URL = "https://smarthydro-production-2a53.up.railway.app"
+# Default sul backend locale, coerente con l'USO documentato sopra (avviato
+# a mano o da avvia_demo.py/avvia_demo.bat, che lo eseguono SENZA impostare
+# questa variabile): un default sulla produzione qui manderebbe i dati demo
+# di ogni avvio automatico al deploy reale invece che al backend locale
+# appena avviato. SMARTHYDRO_BASE_URL punta altrove quando serve davvero
+# (es. contro un deploy Railway), stessa variabile di demo/seed_dev_data.py.
+BASE_URL = os.environ.get("SMARTHYDRO_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 # Quattro account agronomo "umani", creati (o saltati se già esistenti) via
 # POST /users con il token amministratore ottenuto da ensure_admin_token():
@@ -276,7 +284,7 @@ def ensure_admin_token() -> None:
             f"({ADMIN_USERNAME!r}): credenziali rifiutate (401) {body}, ma il "
             "database non risulta vuoto (esiste gia' almeno un account, "
             "probabilmente con un altro username/password). Hai gia' eseguito "
-            "`python demo/seed_users.py` contro questo stesso database, o e' "
+            "`python demo/old_test/seed_users.py` contro questo stesso database, o e' "
             "stato creato un amministratore con credenziali diverse?"
         )
 

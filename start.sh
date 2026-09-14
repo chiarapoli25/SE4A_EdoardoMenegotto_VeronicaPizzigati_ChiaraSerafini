@@ -13,7 +13,7 @@ set -u
 
 PORT="${PORT:-8000}"
 # Stesso edge-id usato ovunque nei nostri script demo (demo/seed_dev_data.py,
-# demo/seed_test_scenario.py): qualunque zona registrata con
+# demo/old_test/seed_test_scenario.py): qualunque zona registrata con
 # assigned_edge_id="edge-serra-1" viene scoperta automaticamente da questo
 # stesso processo, senza bisogno di alcuna opzione --zones/--zone-id.
 EDGE_ID="edge-serra-1"
