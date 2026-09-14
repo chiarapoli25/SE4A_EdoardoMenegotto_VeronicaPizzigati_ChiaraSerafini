@@ -40,14 +40,16 @@ def small_horizon(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(live_manager_module, "initial_steps_per_target", lambda targets: 4)
 
 
-def _register_zone(client: TestClient, zone_id: str, department: int, recipe_id: str) -> None:
+def _register_zone(
+    client: TestClient, zone_id: str, department: int, recipe_id: str, sector_number: int = 1,
+) -> None:
     assert client.post(
         "/zones",
         json={
             "id": zone_id,
             "name": f"Settore {zone_id}",
             "department_number": department,
-            "sector_number": 1,
+            "sector_number": sector_number,
             "plant_species": "Calathea",
             "active_recipe_id": recipe_id,
         },
@@ -215,6 +217,108 @@ def test_live_simulation_pause_freezes_elapsed_time(client_and_connection, small
     assert resumed.json()["status"] == "playing"
 
     client.delete(f"/simulations/live/{job_id}")
+
+
+def test_live_simulation_quarantine_never_touches_the_real_plant(
+    client_and_connection, small_horizon,
+) -> None:
+    """Spostare una pianta in quarantena SOLO per la riproduzione live non
+    deve mai toccare `plants.is_quarantined` reale ne' cambiare la serie
+    simulata del settore (il conteggio piante non e' un parametro della
+    fisica) — solo l'elenco esposto da LiveZoneSnapshot.
+    quarantined_plant_ids per quel settore."""
+    client, _ = client_and_connection
+    _register_zone(client, "r1-s1", 1, "recipe-calathea")
+    assert client.post(
+        "/plants",
+        json={"id": "plant-1", "species": "Calathea", "home_zone_id": "r1-s1"},
+    ).status_code == 201
+
+    created = client.post("/simulations/live", json={"speed_multiplier": 1.0})
+    job_id = created.json()["id"]
+    job = wait_for_computed(client, job_id)
+    before_sensors = job["zones"][0]["sensors"]
+    assert job["zones"][0]["quarantined_plant_ids"] == []
+
+    updated = client.post(
+        f"/simulations/live/{job_id}/quarantine",
+        json={"zone_id": "r1-s1", "plant_id": "plant-1", "quarantined": True},
+    )
+    assert updated.status_code == 200
+    zone = updated.json()["zones"][0]
+    assert zone["quarantined_plant_ids"] == ["plant-1"]
+    # La serie simulata (l'ultimo step rivelato) non cambia: il conteggio
+    # piante non e' un parametro della fisica, solo dell'elenco esposto.
+    assert zone["sensors"] == before_sensors
+
+    # La pianta reale non e' MAI stata toccata — nessuna quarantena vera.
+    real_plant = client.get("/plants/plant-1").json()
+    assert real_plant["is_quarantined"] is False
+    assert real_plant["current_zone_id"] == "r1-s1"
+
+    # Richiamabile — idempotente, e di nuovo isolato dal dato reale.
+    reverted = client.post(
+        f"/simulations/live/{job_id}/quarantine",
+        json={"zone_id": "r1-s1", "plant_id": "plant-1", "quarantined": False},
+    )
+    assert reverted.json()["zones"][0]["quarantined_plant_ids"] == []
+
+    client.delete(f"/simulations/live/{job_id}")
+
+
+def test_live_simulation_quarantine_rejects_a_plant_not_in_the_zone(
+    client_and_connection, small_horizon,
+) -> None:
+    client, _ = client_and_connection
+    _register_zone(client, "r1-s1", 1, "recipe-calathea")
+    _register_zone(client, "r1-s2", 1, "recipe-calathea", sector_number=2)
+    assert client.post(
+        "/plants",
+        json={"id": "plant-elsewhere", "species": "Calathea", "home_zone_id": "r1-s2"},
+    ).status_code == 201
+
+    created = client.post("/simulations/live", json={"speed_multiplier": 1.0})
+    job_id = created.json()["id"]
+    wait_for_computed(client, job_id)
+
+    response = client.post(
+        f"/simulations/live/{job_id}/quarantine",
+        json={"zone_id": "r1-s1", "plant_id": "plant-elsewhere", "quarantined": True},
+    )
+    assert response.status_code == 409
+
+    client.delete(f"/simulations/live/{job_id}")
+
+
+def test_current_live_simulation_lets_a_client_reattach_after_losing_the_id(
+    client_and_connection, small_horizon,
+) -> None:
+    """GET /simulations/live/current e' come la dashboard si riaggancia a
+    un run gia' attivo dopo un reload (STATE.liveSimulation locale torna
+    sempre a null a ogni visita alla pagina, vedi il commento in cima alla
+    sezione live in dashboard/script.js) — senza questo endpoint un client
+    che ha perso l'id non puo' ne' vedere lo stato reale ne' fermarlo
+    (⟲ Reset non conosce alcun id da cancellare)."""
+    client, _ = client_and_connection
+
+    # Nessun run: l'esito comune della stragrande maggioranza delle visite
+    # alla pagina, non un errore.
+    assert client.get("/simulations/live/current").json() is None
+
+    _register_zone(client, "r1-s1", 1, "recipe-calathea")
+    created = client.post("/simulations/live", json={"speed_multiplier": 1.0})
+    job_id = created.json()["id"]
+
+    current = client.get("/simulations/live/current")
+    assert current.status_code == 200
+    assert current.json()["id"] == job_id
+
+    # Una volta cancellato (es. "⟲ Reset" da un ALTRO client che l'id lo
+    # conosceva ancora), non deve piu' risultare "corrente" — la
+    # riproduzione cancellata resta interrogabile per id (stessa logica del
+    # batch) ma non e' piu' cio' a cui un client senza id si riaggancerebbe.
+    assert client.delete(f"/simulations/live/{job_id}").status_code == 204
+    assert client.get("/simulations/live/current").json() is None
 
 
 def test_only_one_live_simulation_can_run_at_a_time(client_and_connection, small_horizon) -> None:

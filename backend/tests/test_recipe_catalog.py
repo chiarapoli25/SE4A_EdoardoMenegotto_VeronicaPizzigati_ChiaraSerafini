@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from backend.app.core.database import init_db
+from backend.app.core.database import DEFAULT_DATABASE_PATH, get_connection, init_db
 from backend.app.features.recipes.catalog import (
     DEFAULT_CATALOG_PATH,
     load_recipe_catalog,
     seed_recipe_catalog,
 )
-from backend.app.features.recipes.repository import get_recipe
+from backend.app.features.recipes.repository import get_recipe, list_recipes
 
 
 def test_catalog_contains_one_json_file_for_each_recipe() -> None:
@@ -75,3 +75,43 @@ def test_unknown_shared_profile_identifies_the_recipe(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"recipe-calathea.*missing-profile"):
         load_recipe_catalog(catalog_directory)
+
+
+def test_list_recipes_skips_a_row_the_catalog_migration_cannot_reach(
+    tmp_path: Path,
+) -> None:
+    """@brief list_recipes() non deve 500 su una riga estranea al catalogo.
+
+    @details Regressione equivalente a quella osservata con il vecchio db
+    versionato nel repository (rimosso dal tracking: era la causa di
+    continui conflitti/dati sporchi, vedi storia del branch) — una riga
+    scritta prima dell'introduzione dei campi di illuminazione in
+    `OutputLimits` (`lighting_reference_ppfd_umol_m2_s` e
+    `maximum_supplemental_lighting_hours_per_day`) e MAI presente nel
+    catalogo JSON (quindi mai raggiunta da `seed_recipe_catalog`, che
+    ripara solo le ricette del catalogo) faceva sollevare a `list_recipes()`
+    una `ValidationError` non gestita da `routes.py`, restituendo 500 su
+    `GET /recipes`. Qui il db e' creato da zero, senza dipendere da alcun
+    file committato: la riga estranea viene inserita direttamente."""
+    connection = get_connection(str(tmp_path / "smarthydro.db"))
+    try:
+        init_db(connection)
+        stale_recipe = json.loads(
+            get_recipe(connection, "recipe-calathea").model_dump_json()
+        )
+        for controller in stale_recipe["controllers"]:
+            del controller["output_limits"]["lighting_reference_ppfd_umol_m2_s"]
+            del controller["output_limits"]["maximum_supplemental_lighting_hours_per_day"]
+        connection.execute(
+            "INSERT INTO recipes (id, version, data, updated_at) "
+            "VALUES ('recipe-orphan-stale', 1, ?, datetime('now'))",
+            (json.dumps(stale_recipe),),
+        )
+        connection.commit()
+
+        recipes = list_recipes(connection)
+    finally:
+        connection.close()
+
+    assert "recipe-orphan-stale" not in {r.id for r in recipes}
+    assert len(recipes) > 0

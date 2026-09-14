@@ -52,7 +52,7 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
-    """Restituisce i nomi delle colonne dichiarate nella tabella."""
+    """@brief Restituisce i nomi delle colonne dichiarate nella tabella."""
     return {
         row[1]
         for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -60,7 +60,7 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
 
 
 def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
-    """Ricrea le tabelle legacy aggiungendo `boot_id` senza perdere dati."""
+    """@brief Ricrea le tabelle legacy aggiungendo `boot_id` senza perdere dati."""
     if (
         _table_columns(connection, "telemetry_samples")
         and "boot_id" not in _table_columns(connection, "telemetry_samples")
@@ -150,7 +150,7 @@ def _migrate_edge_session_columns(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
-    """Aggiunge l'assegnazione Edge agli schemi creati da versioni precedenti."""
+    """@brief Aggiunge l'assegnazione Edge agli schemi creati da versioni precedenti."""
     if (
         _table_columns(connection, "zones")
         and "assigned_edge_id" not in _table_columns(connection, "zones")
@@ -161,7 +161,7 @@ def _migrate_zone_assignment_column(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_soil_probe_columns(connection: sqlite3.Connection) -> None:
-    """Aggiunge alle telemetrie legacy le stime prodotte dalle sonde nel suolo."""
+    """@brief Aggiunge alle telemetrie legacy le stime prodotte dalle sonde nel suolo."""
     columns = _table_columns(connection, "telemetry_samples")
     additions = {
         "soil_bulk_ec_ms_cm": "REAL",
@@ -179,7 +179,7 @@ def _migrate_soil_probe_columns(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_telemetry_state_columns(connection: sqlite3.Connection) -> None:
-    """Aggiunge lo snapshot operativo completo ai campioni precedenti."""
+    """@brief Aggiunge lo snapshot operativo completo ai campioni precedenti."""
     columns = _table_columns(connection, "telemetry_samples")
     additions = {
         "active_recipe_id": "TEXT NOT NULL DEFAULT 'legacy-unknown'",
@@ -199,7 +199,7 @@ def _migrate_telemetry_state_columns(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_zone_projection_columns(connection: sqlite3.Connection) -> None:
-    """Aggiunge la proiezione corrente senza derivarla dallo storico eventi."""
+    """@brief Aggiunge la proiezione corrente senza derivarla dallo storico eventi."""
     columns = _table_columns(connection, "zones")
     additions = {
         "lifecycle_state": "TEXT NOT NULL DEFAULT 'Idle'",
@@ -219,7 +219,7 @@ def _migrate_zone_projection_columns(connection: sqlite3.Connection) -> None:
 
 
 def _migrate_recipe_catalog_version(connection: sqlite3.Connection) -> None:
-    """Versiona il bootstrap senza trasformare i JSON in sorgente runtime."""
+    """@brief Versiona il bootstrap senza trasformare i JSON in sorgente runtime."""
     columns = _table_columns(connection, "recipe_catalog_imports")
     if columns and "catalog_version" not in columns:
         connection.execute(
@@ -233,7 +233,7 @@ def _migrate_recipe_catalog_version(connection: sqlite3.Connection) -> None:
 def _migrate_cultivation_completed_column(
     connection: sqlite3.Connection,
 ) -> None:
-    """Aggiunge lo stato finale esplicito alle zone create in precedenza."""
+    """@brief Aggiunge lo stato finale esplicito alle zone create in precedenza."""
     columns = _table_columns(connection, "zones")
     if columns and "cultivation_completed" not in columns:
         connection.execute(
@@ -248,7 +248,7 @@ def _migrate_cultivation_completed_column(
 def _migrate_zone_administrative_status_column(
     connection: sqlite3.Connection,
 ) -> None:
-    """Aggiunge lo stato amministrativo senza confonderlo con la connettivita."""
+    """@brief Aggiunge lo stato amministrativo senza confonderlo con la connettivita."""
     if (
         _table_columns(connection, "zones")
         and "administrative_status" not in _table_columns(connection, "zones")
@@ -263,7 +263,7 @@ def _migrate_zone_administrative_status_column(
 
 
 def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
-    """Estende i reparti a 1-5 e rende mista la composizione del quinto."""
+    """@brief Estende i reparti a 1-5 e rende mista la composizione del quinto."""
     columns = _table_columns(connection, "zones")
     if not columns:
         return
@@ -707,5 +707,5 @@ def init_db(connection: sqlite3.Connection) -> None:
     # Gli account non vengono piu' seminati automaticamente all'avvio: un
     # admin/pass123 cablato nel codice di startup e' un rischio di sicurezza
     # (vedi discussione merge del 2026-09-07). Il primo account si crea in
-    # modo esplicito con demo/seed_users.py.
+    # modo esplicito con demo/old_test/seed_users.py.
     connection.commit()

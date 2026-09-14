@@ -52,11 +52,17 @@ enum class FaultMode {
  * `duration_seconds` assente rende il fault persistente fino a ResetFault.
  */
 struct FaultSpecification {
+    /** @brief Identificatore stabile usato per reset e sostituzione. */
     std::string fault_id;
+    /** @brief Categoria del bersaglio: sensore oppure attuatore. */
     FaultTargetKind target_kind = FaultTargetKind::SENSOR;
+    /** @brief Nome stabile del componente da alterare. */
     std::string target = "soil_moisture";
+    /** @brief Effetto fisico simulato. */
     FaultMode mode = FaultMode::SENSOR_DROPOUT;
+    /** @brief Intensita opzionale richiesta dalla modalita scelta. */
     std::optional<double> value;
+    /** @brief Durata opzionale; assente significa fino al reset esplicito. */
     std::optional<double> duration_seconds;
 };
 

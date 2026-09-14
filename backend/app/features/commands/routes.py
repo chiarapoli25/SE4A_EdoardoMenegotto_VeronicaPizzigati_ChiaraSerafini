@@ -17,6 +17,7 @@ from .repository import (
     list_pending_commands,
 )
 
+## @brief Router FastAPI della coda di comandi destinata all'Edge.
 router = APIRouter(prefix="/zones/{zone_id}/commands", tags=["commands"])
 
 ## @brief command_type per cui il pannello Strategy invia oggi comandi che
@@ -30,6 +31,7 @@ ADMINISTRATOR_ONLY_COMMAND_TYPES = {
 
 
 def _require_zone(connection: sqlite3.Connection, zone_id: str) -> None:
+    """@brief Interrompe la richiesta con HTTP 404 se la zona non esiste."""
     if get_zone(connection, zone_id) is None:
         raise HTTPException(status_code=404, detail=f"zone {zone_id!r} not found")
 
@@ -63,6 +65,7 @@ def enqueue_command(
     connection: sqlite3.Connection = Depends(get_db),
     authorization: Annotated[str | None, Header()] = None,
 ) -> RuntimeCommand:
+    """@brief Accoda un comando per la zona applicando i vincoli di ruolo."""
     _require_zone(connection, zone_id)
     _require_administrator_if_strategy_command(
         command.command_type, connection, authorization
@@ -79,6 +82,7 @@ def read_pending_commands(
     limit: int = Query(default=100, ge=1, le=1000),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[RuntimeCommand]:
+    """@brief Restituisce i comandi non ancora conclusi della zona."""
     _require_zone(connection, zone_id)
     return list_pending_commands(connection, zone_id, limit)
 
@@ -90,6 +94,7 @@ def report_command_result(
     result: RuntimeCommandResultCreate,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> RuntimeCommand:
+    """@brief Acquisisce dall'Edge l'esito idempotente di un comando."""
     _require_zone(connection, zone_id)
     try:
         stored = complete_command(connection, zone_id, command_id, result)

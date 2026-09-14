@@ -5,7 +5,9 @@ import os
 import re
 
 
+## @brief Secondi senza contatti dopo i quali una zona risulta offline.
 DEFAULT_OFFLINE_THRESHOLD_SECONDS = 60.0
+## @brief Identificativo Edge adottato quando l'ambiente non lo specifica.
 DEFAULT_EDGE_ID = "smarthydro-edge"
 ## @brief Durata predefinita di una sessione della dashboard: 12 ore.
 DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60

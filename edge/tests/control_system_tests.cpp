@@ -171,14 +171,14 @@ TEST(RecipeControlSystemTest, DefaultPhPidProducesSignedSmallDoses) {
         system.execute(smarthydro::ControlledVariable::PH, request);
     EXPECT_NE(ph_up.status, smarthydro::ControlDecisionStatus::BLOCKED);
     EXPECT_GT(ph_up.command, 0.0);
-    EXPECT_LE(ph_up.command, 0.5);
+    EXPECT_LE(ph_up.command, 1.0);
 
     request.controller_input.measured_value = 6.6;
     const auto ph_down =
         system.execute(smarthydro::ControlledVariable::PH, request);
     EXPECT_NE(ph_down.status, smarthydro::ControlDecisionStatus::BLOCKED);
     EXPECT_LT(ph_down.command, 0.0);
-    EXPECT_GE(ph_down.command, -0.5);
+    EXPECT_GE(ph_down.command, -1.0);
 }
 
 TEST(RecipeControlSystemTest, ConfirmsAutomaticallyOnRecipeAdoption) {

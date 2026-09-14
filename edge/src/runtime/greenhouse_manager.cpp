@@ -1,3 +1,10 @@
+/**
+ * @file greenhouse_manager.cpp
+ * @brief Implementazione di GreenhouseManager: orchestra un EdgeRuntime per
+ *     settore e la macchina a stati Idle/Starting/Running/Paused/Stopping/Error
+ *     di ogni coltivazione (ZoneLifecycleState).
+ */
+
 #include <smarthydro/runtime/greenhouse_manager.hpp>
 
 #include <algorithm>

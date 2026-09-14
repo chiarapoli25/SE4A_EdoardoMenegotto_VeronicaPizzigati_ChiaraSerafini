@@ -105,7 +105,7 @@ def main() -> int:
 
     print("[avvia_demo] Carico i dati dimostrativi...")
     seed = subprocess.run(
-        [str(python), str(ROOT / "demo" / "seed_test_scenario.py")],
+        [str(python), str(ROOT / "demo" / "old_test" / "seed_test_scenario.py")],
         cwd=ROOT,
     )
     if seed.returncode != 0:

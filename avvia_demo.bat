@@ -5,14 +5,14 @@ REM
 REM Fa, in ordine:
 REM   1. Avvia il backend FastAPI (uvicorn) in una finestra separata.
 REM   2. Attende che risponda su /health.
-REM   3. Esegue demo\seed_users.py per creare (o aggiornare, se gia'
+REM   3. Esegue demo\old_test\seed_users.py per creare (o aggiornare, se gia'
 REM      esistono) gli account demo di autenticazione — rieseguibile senza
-REM      effetti collaterali: serve perche' demo\seed_test_scenario.py, dal
-REM      passo successivo, fa login come l'account amministratore di seed
+REM      effetti collaterali: serve perche' demo\old_test\seed_test_scenario.py,
+REM      dal passo successivo, fa login come l'account amministratore di seed
 REM      prima di popolare la demo, e su un database nuovo quell'account
 REM      non esisterebbe ancora.
-REM   4. Esegue demo\seed_test_scenario.py (POST dirette via API, nessun
-REM      Edge C++ richiesto) per popolare zone, ricette e piante in
+REM   4. Esegue demo\old_test\seed_test_scenario.py (POST dirette via API,
+REM      nessun Edge C++ richiesto) per popolare zone, ricette e piante in
 REM      quarantena in pochi secondi.
 REM   5. Apre la dashboard nel browser predefinito.
 REM
@@ -53,16 +53,16 @@ exit /b 1
 :backend_ready
 echo [avvia_demo] Backend pronto.
 
-echo [avvia_demo] Creo/aggiorno gli account demo con demo\seed_users.py...
-"%PYTHON%" "%ROOT%demo\seed_users.py"
+echo [avvia_demo] Creo/aggiorno gli account demo con demo\old_test\seed_users.py...
+"%PYTHON%" "%ROOT%demo\old_test\seed_users.py"
 if %ERRORLEVEL% NEQ 0 (
     echo [avvia_demo] ERRORE: seed_users.py e' terminato con un errore.
     pause
     exit /b 1
 )
 
-echo [avvia_demo] Popolo la demo con demo\seed_test_scenario.py (test RAPIDO, nessun Edge)...
-"%PYTHON%" "%ROOT%demo\seed_test_scenario.py"
+echo [avvia_demo] Popolo la demo con demo\old_test\seed_test_scenario.py (test RAPIDO, nessun Edge)...
+"%PYTHON%" "%ROOT%demo\old_test\seed_test_scenario.py"
 if %ERRORLEVEL% NEQ 0 (
     echo [avvia_demo] ERRORE: seed_test_scenario.py e' terminato con un errore.
     pause

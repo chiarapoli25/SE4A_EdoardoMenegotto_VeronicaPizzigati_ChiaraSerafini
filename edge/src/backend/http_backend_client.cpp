@@ -719,8 +719,10 @@ RuntimeCommandEnvelope runtime_command_from_json(
     }
 }
 
+/** @brief Implementazione PImpl del worker HTTP e dell'outbox persistente. */
 class HttpBackendClient::Impl {
 public:
+    /** @brief Valida la configurazione, prepara il trasporto e ricarica le cache. */
     Impl(
         EventBus& event_bus,
         std::vector<std::string> zone_ids,
@@ -760,6 +762,7 @@ public:
         stop();
     }
 
+    /** @brief Avvia il thread del worker se non e gia attivo. */
     void start() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (running_) {
@@ -770,6 +773,7 @@ public:
         worker_ = std::thread([this] { worker_loop(); });
     }
 
+    /** @brief Richiede l'arresto e attende la terminazione del worker. */
     void stop() noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -786,6 +790,7 @@ public:
         running_ = false;
     }
 
+    /** @brief Converte un evento in upload persistenti e risveglia il worker. */
     void enqueue_event(const EdgeDomainEvent& event) {
         auto new_uploads = uploads_from_event(event, config_);
         if (new_uploads.empty()) {
@@ -800,6 +805,7 @@ public:
         condition_.notify_all();
     }
 
+    /** @brief Sposta nel chiamante tutti i comandi ricevuti dalla rete. */
     std::vector<RemoteRuntimeCommand> take_commands() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<RemoteRuntimeCommand> result;
@@ -811,6 +817,7 @@ public:
         return result;
     }
 
+    /** @brief Sposta nel chiamante gli ID di zona scoperti dall'ultimo manifesto. */
     std::vector<std::string> take_discovered_zone_ids() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<std::string> result;
@@ -822,6 +829,7 @@ public:
         return result;
     }
 
+    /** @brief Sposta nel chiamante gli ID rimossi dall'ultimo manifesto valido. */
     std::vector<std::string> take_removed_zone_ids() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<std::string> result;
@@ -833,6 +841,7 @@ public:
         return result;
     }
 
+    /** @brief Accoda la consegna idempotente dell'esito di un comando. */
     void submit_result(
         const std::string& zone_id,
         const RuntimeCommandResult& result) {
@@ -854,11 +863,13 @@ public:
         condition_.notify_all();
     }
 
+    /** @brief Conta upload in attesa e attualmente in volo. */
     std::size_t pending_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return uploads_.size() + in_flight_uploads_;
     }
 
+    /** @brief Espone l'identificatore dell'avvio corrente. */
     const std::string& boot_id() const noexcept {
         return config_.boot_id;
     }

@@ -33,14 +33,19 @@ enum class ObservedValue : std::size_t {
     COUNT,
 };
 
+/** @brief Numero di canali reali, escluso il sentinella `COUNT`. */
 constexpr std::size_t kObservedValueCount =
     static_cast<std::size_t>(ObservedValue::COUNT);
 
 /** Limiti e dinamica massima plausibile di una singola grandezza. */
 struct ObservedValuePolicy {
+    /** @brief Intervallo fisicamente plausibile del canale. */
     ValueRange physical_range;
+    /** @brief Massima variazione plausibile per secondo. */
     double maximum_rate_per_second = 1.0;
+    /** @brief Differenza sotto la quale due campioni sono equivalenti. */
     double frozen_tolerance = 1.0e-9;
+    /** @brief Abilita il riconoscimento di una sequenza congelata. */
     bool detect_frozen = true;
 };
 
@@ -60,16 +65,22 @@ struct FaultDetectorConfig {
     double minimum_actuator_response_ratio = 0.50;
     /** Tolleranza sotto la quale comando e risposta sono considerati nulli. */
     double actuator_zero_tolerance = 1.0e-9;
+    /** @brief Policy indicizzate tramite `ObservedValue`. */
     std::array<ObservedValuePolicy, kObservedValueCount> values;
 };
 
 /** Evidenza prodotta dal detector e consumata dalla FSM. */
 struct DetectedFault {
+    /** @brief Sensore, modello o attuatore coinvolto. */
     std::string component;
+    /** @brief Regola diagnostica che ha prodotto l'evidenza. */
     std::string rule;
+    /** @brief Severita proposta alla FSM. */
     ControlFaultSeverity severity = ControlFaultSeverity::NONE;
+    /** @brief Dettaglio leggibile con valori osservati e attesi. */
     std::string diagnostic;
 
+    /** @brief Costruisce la chiave stabile usata per aggregare la persistenza. */
     std::string key() const;
 };
 
@@ -82,6 +93,7 @@ struct DetectedFault {
  */
 class FaultDetector {
 public:
+    /** @brief Inizializza il detector con soglie esplicite o predefinite. */
     explicit FaultDetector(FaultDetectorConfig config = {});
 
     /** Osserva letture e limiti della fase attiva. */
@@ -98,6 +110,7 @@ public:
 
     /** Azzera gli storici, per esempio quando viene caricata una ricetta. */
     void reset() noexcept;
+    /** @brief Espone la configurazione immutabile applicata dal detector. */
     const FaultDetectorConfig& config() const noexcept;
 
 private:
@@ -118,7 +131,9 @@ private:
     std::array<ActuatorState, 7> actuator_states_{};
 };
 
+/** @brief Converte un canale nell'indice dei relativi array di stato. */
 std::size_t observed_value_index(ObservedValue value);
+/** @brief Restituisce il nome stabile di un canale osservato. */
 const char* to_string(ObservedValue value) noexcept;
 
 }  // namespace smarthydro

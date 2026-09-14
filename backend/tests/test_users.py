@@ -204,6 +204,64 @@ def test_agronomo_cannot_list_accounts(client: TestClient) -> None:
     assert response.status_code == 403
 
 
+def test_admin_can_delete_an_agronomo_and_revoke_its_sessions(
+    client: TestClient,
+) -> None:
+    admin_token = _login(client, "admin")
+    agronomo_token = _login(client, "agronomo")
+
+    response = client.delete(
+        "/users/agronomo", headers=_auth_headers(admin_token)
+    )
+
+    assert response.status_code == 204
+    users_response = client.get("/users", headers=_auth_headers(admin_token))
+    assert users_response.status_code == 200
+    assert "agronomo" not in {
+        user["username"] for user in users_response.json()
+    }
+    # La cancellazione deve revocare anche token gia' emessi all'account.
+    me_response = client.get(
+        "/auth/me", headers=_auth_headers(agronomo_token)
+    )
+    assert me_response.status_code == 401
+
+
+def test_admin_cannot_delete_an_admin_account(client: TestClient) -> None:
+    token = _login(client, "admin")
+
+    response = client.delete("/users/admin", headers=_auth_headers(token))
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "only agronomist accounts can be deleted"
+    # Anche la sessione dell'amministratore deve restare valida.
+    assert client.get("/auth/me", headers=_auth_headers(token)).status_code == 200
+
+
+def test_agronomo_cannot_delete_users(client: TestClient) -> None:
+    token = _login(client, "agronomo")
+
+    response = client.delete(
+        "/users/agronomo", headers=_auth_headers(token)
+    )
+
+    assert response.status_code == 403
+
+
+def test_deleting_a_user_requires_a_token(client: TestClient) -> None:
+    response = client.delete("/users/agronomo")
+
+    assert response.status_code == 401
+
+
+def test_deleting_an_unknown_user_returns_not_found(client: TestClient) -> None:
+    token = _login(client, "admin")
+
+    response = client.delete("/users/inesistente", headers=_auth_headers(token))
+
+    assert response.status_code == 404
+
+
 @pytest.fixture()
 def empty_client() -> TestClient:
     """@brief Client su un database con la tabella `users` ancora vuota."""

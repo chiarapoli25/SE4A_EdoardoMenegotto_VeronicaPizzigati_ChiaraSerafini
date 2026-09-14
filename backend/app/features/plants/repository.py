@@ -1,4 +1,6 @@
-"""Persistenza SQLite delle piante e dei loro spostamenti."""
+"""@file
+@brief Persistenza SQLite delle piante e dei loro spostamenti.
+"""
 
 import sqlite3
 from datetime import datetime, timezone
@@ -7,10 +9,11 @@ from .models import Plant, PlantCreate, PlantMovement
 
 
 class PlantConflict(Exception):
-    """Segnala un identificativo pianta riutilizzato in modo incompatibile."""
+    """@brief Segnala un identificativo pianta riutilizzato in modo incompatibile."""
 
 
 def _plant_from_row(row: tuple) -> Plant:
+    """@brief Converte una riga SQLite nell'anagrafica di una pianta."""
     return Plant(
         id=row[0],
         species=row[1],
@@ -28,6 +31,7 @@ def get_plant(
     connection: sqlite3.Connection,
     plant_id: str,
 ) -> Plant | None:
+    """@brief Cerca una pianta tramite identificativo."""
     row = connection.execute(
         """
         SELECT id, species, home_zone_id, current_zone_id, is_quarantined,
@@ -44,6 +48,7 @@ def create_plant(
     connection: sqlite3.Connection,
     plant: PlantCreate,
 ) -> Plant:
+    """@brief Registra una pianta in modo idempotente nel settore di origine."""
     now = datetime.now(timezone.utc)
     try:
         connection.execute(
@@ -86,6 +91,7 @@ def list_plants(
     is_quarantined: bool | None = None,
     limit: int = 100,
 ) -> list[Plant]:
+    """@brief Elenca le piante applicando i filtri di posizione e quarantena."""
     conditions: list[str] = []
     parameters: list[str | int] = []
     if zone_id is not None:
@@ -118,8 +124,13 @@ def set_quarantine_state(
     reason: str | None,
     quarantined_at_override: datetime | None = None,
 ) -> Plant:
-    """Aggiorna flag e posizione e registra lo spostamento atomico.
+    """@brief Aggiorna flag e posizione e registra lo spostamento atomico.
 
+    @param connection Connessione SQLite sulla quale eseguire la transazione.
+    @param plant Stato corrente della pianta da spostare.
+    @param is_quarantined Nuovo stato di quarantena.
+    @param destination_zone_id Settore nel quale collocare la pianta.
+    @param reason Motivazione opzionale dello spostamento.
     @param quarantined_at_override Istante nel passato da registrare come
         inizio quarantena al posto di "adesso" (vedi il commento su
         PlantQuarantineUpdate.quarantined_at). Ignorato quando
@@ -192,6 +203,7 @@ def list_plant_movements(
     plant_id: str,
     limit: int = 100,
 ) -> list[PlantMovement]:
+    """@brief Restituisce in ordine cronologico gli spostamenti di una pianta."""
     rows = connection.execute(
         """
         SELECT id, plant_id, from_zone_id, to_zone_id, is_quarantined,

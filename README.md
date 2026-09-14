@@ -69,7 +69,7 @@ Dopo aver creato l'ambiente Python e installato le dipendenze del backend come
 descritto piu avanti, l'intero scenario Edge-backend si esegue con un comando:
 
 ```bash
-.venv/bin/python demo/run_end_to_end.py
+.venv/bin/python demo/old_test/run_end_to_end.py
 ```
 
 La demo configura e compila l'Edge, avvia un backend con database temporaneo e
@@ -1115,12 +1115,12 @@ startup era un rischio di sicurezza): su un database vuoto occorre eseguire
 una volta lo script esplicito
 
 ```bash
-python demo/seed_users.py
+python demo/old_test/seed_users.py
 ```
 
 che crea un account `admin` e un account `agronomo`; le password (diverse
 da `pass123`, generate per essere usate in locale) vengono stampate a video
-da questo comando e vivono solo li e in `demo/seed_users.py` stesso: non
+da questo comando e vivono solo li e in `demo/old_test/seed_users.py` stesso: non
 sono ripetute qui per lo stesso motivo per cui non vanno incollate altrove
 nel codice sorgente. Lo script e' rieseguibile senza effetti collaterali
 (su un username gia' esistente aggiorna password/ruolo invece di fallire).

@@ -2,7 +2,10 @@
 @brief Persistenza SQLite delle ricette versionate.
 """
 
+import logging
 import sqlite3
+
+from pydantic import ValidationError
 
 from ..control_strategy.repository import get_all as get_control_strategy_settings
 from .models import Recipe
@@ -87,11 +90,26 @@ def get_recipe(connection: sqlite3.Connection, recipe_id: str) -> Recipe | None:
 
 
 def list_recipes(connection: sqlite3.Connection) -> list[Recipe]:
-    """Elenca tutte le ricette SQLite ordinate per identificativo."""
+    """Elenca tutte le ricette SQLite ordinate per identificativo.
+
+    @details Le ricette del catalogo si auto-riparano ad ogni avvio
+    (seed_recipe_catalog): una riga scritta con uno schema piu' vecchio ma
+    MAI presente nel catalogo JSON (quindi mai raggiunta da quella
+    migrazione — es. un record demo scritto a mano) resterebbe invece
+    bloccata su uno schema superato per sempre. Una riga simile viene
+    saltata qui, non propagata come 500 sull'intero elenco: un singolo
+    record orfano non deve mai rendere illeggibili tutte le altre ricette
+    valide."""
     rows = connection.execute(
-        "SELECT data FROM recipes ORDER BY id"
+        "SELECT id, data FROM recipes ORDER BY id"
     ).fetchall()
-    return [
-        _stamp_global_strategy(connection, Recipe.model_validate_json(row[0]))
-        for row in rows
-    ]
+    recipes: list[Recipe] = []
+    for recipe_id, data in rows:
+        try:
+            recipes.append(_stamp_global_strategy(connection, Recipe.model_validate_json(data)))
+        except ValidationError:
+            logging.getLogger(__name__).warning(
+                "skipping recipe %r: stored data no longer matches the current schema",
+                recipe_id,
+            )
+    return recipes

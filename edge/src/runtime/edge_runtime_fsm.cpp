@@ -1,3 +1,9 @@
+/**
+ * @file edge_runtime_fsm.cpp
+ * @brief Implementazione della macchina a stati operativa di EdgeRuntime
+ *     (Nominal/Degraded/EmergencyLockdown) e dell'iniezione guasti.
+ */
+
 #include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/runtime/edge_runtime.hpp>
 

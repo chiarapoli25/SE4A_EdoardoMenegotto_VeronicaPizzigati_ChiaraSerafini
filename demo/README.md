@@ -8,7 +8,7 @@ Esecuzione dalla radice del repository, dopo aver creato l'ambiente Python e
 installato `backend/requirements.txt`:
 
 ```bash
-.venv/bin/python demo/run_end_to_end.py
+.venv/bin/python demo/old_test/run_end_to_end.py
 ```
 
 Il comando configura e compila l'Edge, sceglie una porta libera e verifica:
@@ -25,13 +25,13 @@ Il database, la cache delle assegnazioni, l'outbox e i log sono isolati in una
 directory temporanea. Vengono eliminati dopo un esito positivo. Per conservarli:
 
 ```bash
-.venv/bin/python demo/run_end_to_end.py --keep-artifacts
+.venv/bin/python demo/old_test/run_end_to_end.py --keep-artifacts
 ```
 
 Per riusare un eseguibile Edge già compilato:
 
 ```bash
-.venv/bin/python demo/run_end_to_end.py --skip-build
+.venv/bin/python demo/old_test/run_end_to_end.py --skip-build
 ```
 
 Non è necessaria una procedura manuale di reset: ogni esecuzione usa un nuovo

@@ -24,10 +24,13 @@ from .repository import (
     bootstrap_admin,
     create_session,
     create_user,
+    delete_agronomo_user,
     delete_session,
     get_stored_user,
     is_setup_required,
     list_users,
+    UserDeletionForbidden,
+    UserNotFound,
 )
 from .security import verify_password
 
@@ -137,3 +140,23 @@ def read_users(
 ) -> list[User]:
     """@brief Elenca gli account registrati; riservato agli amministratori."""
     return list_users(connection)
+
+
+@router.delete("/{username}", status_code=204)
+def remove_user(
+    username: str,
+    _: Annotated[User, Depends(require_admin)],
+    connection: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    """@brief Elimina un account agronomo e ne revoca le sessioni.
+
+    @details La rotta e' riservata agli amministratori, ma anche un
+    amministratore autenticato non puo' eliminare account amministratore.
+    """
+    try:
+        delete_agronomo_user(connection, username)
+    except UserNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except UserDeletionForbidden as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return Response(status_code=204)

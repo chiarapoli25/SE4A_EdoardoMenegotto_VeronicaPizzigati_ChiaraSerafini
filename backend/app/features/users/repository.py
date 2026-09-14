@@ -23,6 +23,14 @@ class SetupAlreadyComplete(Exception):
     """
 
 
+class UserNotFound(Exception):
+    """@brief Segnala che l'account richiesto non esiste."""
+
+
+class UserDeletionForbidden(Exception):
+    """@brief Segnala il tentativo di eliminare un account non agronomo."""
+
+
 @dataclass
 class StoredUser:
     """@brief Riga `users` completa, incluso l'hash: non lasciare la feature."""
@@ -34,6 +42,7 @@ class StoredUser:
     created_at: str
 
     def to_public(self) -> User:
+        """@brief Produce la vista pubblica dell'account, priva dell'hash."""
         return User(
             username=self.username,
             display_name=self.display_name,
@@ -43,6 +52,7 @@ class StoredUser:
 
 
 def _stored_user_from_row(row: tuple) -> StoredUser:
+    """@brief Converte una riga SQLite nel modello utente interno."""
     return StoredUser(
         username=row[0],
         display_name=row[1],
@@ -161,6 +171,25 @@ def list_users(connection: sqlite3.Connection) -> list[User]:
         """
     ).fetchall()
     return [_stored_user_from_row(row).to_public() for row in rows]
+
+
+def delete_agronomo_user(connection: sqlite3.Connection, username: str) -> None:
+    """@brief Elimina un account agronomo e tutte le sue sessioni.
+
+    @throws UserNotFound Se l'username non esiste.
+    @throws UserDeletionForbidden Se l'account non ha ruolo agronomo.
+    """
+    stored = get_stored_user(connection, username)
+    if stored is None:
+        raise UserNotFound(f"user {username!r} not found")
+    if stored.role != UserRole.AGRONOMO:
+        raise UserDeletionForbidden("only agronomist accounts can be deleted")
+
+    # Le sessioni referenziano users.username e devono sparire insieme
+    # all'account: un token gia' emesso non deve restare utilizzabile.
+    connection.execute("DELETE FROM sessions WHERE username = ?", (username,))
+    connection.execute("DELETE FROM users WHERE username = ?", (username,))
+    connection.commit()
 
 
 def create_session(

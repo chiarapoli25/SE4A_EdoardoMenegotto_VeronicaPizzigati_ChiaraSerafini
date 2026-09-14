@@ -29,6 +29,7 @@ from ..zones.repository import list_zones
 from .models import ControlStrategySetting, ControlStrategyUpdate
 from .repository import get_all, set_strategy
 
+## @brief Router FastAPI della strategia globale per variabile controllata.
 router = APIRouter(prefix="/control-strategy", tags=["control-strategy"])
 
 ## @brief Reparti produttivi (5 e' la quarantena, mai un bersaglio).
@@ -118,6 +119,7 @@ def read_control_strategy(
     connection: sqlite3.Connection = Depends(get_db),
     _user=Depends(get_current_user),
 ) -> list[ControlStrategySetting]:
+    """@brief Restituisce la strategia globale corrente per ogni variabile."""
     settings = get_all(connection)
     return [
         ControlStrategySetting(variable=variable, selected_strategy=strategy)
@@ -132,6 +134,7 @@ def update_control_strategy(
     connection: sqlite3.Connection = Depends(get_db),
     _user=Depends(require_admin),
 ) -> ControlStrategySetting:
+    """@brief Aggiorna una strategia e la propaga alle coltivazioni attive."""
     set_strategy(connection, variable, update.selected_strategy)
     for zone in _active_production_zones(connection):
         _push_live_strategy_change(

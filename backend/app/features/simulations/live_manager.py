@@ -1,5 +1,7 @@
-"""Motore di riproduzione live dell'intera serra.
+"""@file
+@brief Motore di riproduzione live dell'intera serra.
 
+@details
 Stessa fisica del batch (manager.py, "Simula l'intera serra"): la stessa
 identica chiamata all'Edge, deterministica e priva di qualunque dipendenza
 dal tempo reale. La differenza e' COME viene calcolata: il batch calcola un
@@ -83,7 +85,9 @@ from .models import (
 )
 
 
+## @brief Minuti di conservazione di una riproduzione conclusa.
 EXPIRY_MINUTES = 30
+## @brief Stati che occupano l'unico slot di riproduzione live.
 _ACTIVE_STATUSES = {
     LiveSimulationStatus.COMPUTING,
     LiveSimulationStatus.PLAYING,
@@ -117,16 +121,21 @@ def initial_steps_per_target(targets: list[_Target]) -> int:
 # calcolato, altrimenti la riproduzione (mai la posizione: quella continua
 # a scorrere) resterebbe visivamente ferma sull'ultimo dato disponibile
 # finche' il ricalcolo non finisce.
+## @brief Frazione dell'orizzonte che innesca il raddoppio in background.
 EXTEND_THRESHOLD_FRACTION = 0.5
 
 
 def _now() -> datetime:
+    """@brief Restituisce l'istante UTC corrente con timezone."""
     return datetime.now(timezone.utc)
 
 
 @dataclass
 class _LiveRecord:
+    """@brief Stato interno mutabile di una riproduzione live."""
+
     job_id: str
+    ## @brief Target ordinati che compongono la serra produttiva.
     targets: list[_Target]
     steps_per_target: int
     horizon_seconds: int
@@ -137,10 +146,15 @@ class _LiveRecord:
     # per tutta la vita del run (anche attraverso le estensioni): e' proprio
     # perche' resta lo stesso che un ricalcolo con piu' step riproduce un
     # prefisso identico, vedi il modulo docstring.
+    ## @brief Seed meteo stabile e condiviso da tutti i ricalcoli del run.
     environment_seed: int = field(default_factory=lambda: secrets.randbits(32))
+    ## @brief Segnale cooperativo di annullamento.
     cancel: threading.Event = field(default_factory=threading.Event)
+    ## @brief Processo Edge attualmente in esecuzione.
     process: Any = None
+    ## @brief Stato corrente del calcolo o della riproduzione.
     status: LiveSimulationStatus = LiveSimulationStatus.COMPUTING
+    ## @brief Step completati durante il primo calcolo.
     computing_completed_steps: int = 0
     # Uno per target, stesso ordine di `targets` — None finche' il primo
     # calcolo Edge non e' completato per intero (nessuna riproduzione
@@ -148,31 +162,56 @@ class _LiveRecord:
     # mentalmente, ma non c'e' nulla da rivelare finche' l'ultimo target non
     # ha finito). Rimpiazzato per intero (mai modificato in place) quando
     # un'estensione in background finisce, vedi _extend.
+    ## @brief Serie calcolate, nello stesso ordine dei target.
     computed_steps: list[list[dict[str, Any]]] | None = None
     # True mentre un ricalcolo con orizzonte raddoppiato gira in background
     # (vedi _extend) — evita di sottometterne un secondo prima che il primo
     # sia finito.
+    ## @brief Indica che un raddoppio dell'orizzonte e gia in corso.
     extending: bool = False
+    ## @brief Diagnostica limitata del primo calcolo fallito.
     error: str | None = None
     # Secondi simulati accumulati fino all'ultima pausa/cambio velocita' —
     # cresce senza limite mentre resta in play, mai avvolto su un ciclo (la
     # riproduzione non si ripete piu': l'orizzonte calcolato si estende
     # invece di tornare a zero, vedi il modulo docstring). Vedi
     # _elapsed_seconds.
+    ## @brief Tempo simulato accumulato prima dell'ultimo play o pausa.
     frozen_elapsed_seconds: float = 0.0
+    ## @brief Riferimento monotono dal quale calcolare l'avanzamento corrente.
     resumed_at_monotonic: float | None = None
+    ## @brief Primo istante di passaggio allo stato playing.
     started_playing_at: datetime | None = None
+    ## @brief Istante di errore o annullamento.
     stopped_at: datetime | None = None
+    ## @brief Scadenza del record dopo la conclusione.
     expires_at: datetime | None = None
+    ## @brief Piante virtualmente in quarantena SOLO per questa
+    ## riproduzione, per settore (zone_id -> id pianta) — mai la
+    ## quarantena reale (vedi LiveSimulationQuarantineUpdate). Non
+    ## influenza la serie simulata: nessun parametro fisico dipende dal
+    ## conteggio piante, e' solo cio' che LiveZoneSnapshot espone.
+    simulated_quarantine: dict[str, set[str]] = field(default_factory=dict)
 
 
 class LiveSimulationManager:
+    """@brief Coordina calcolo progressivo e tempo autorevole della riproduzione.
+
+    @details Mantiene al massimo un run live attivo, separato dal worker batch,
+    e raddoppia l'orizzonte calcolato prima che la riproduzione lo raggiunga.
+    """
+
     def __init__(self) -> None:
+        """@brief Inizializza archivio, lock e worker dedicato al live."""
+        ## @brief Protegge record, posizione temporale e transizioni.
         self._lock = threading.Lock()
+        ## @brief Riproduzioni indicizzate tramite identificatore.
         self._records: dict[str, _LiveRecord] = {}
+        ## @brief Worker dedicato a calcolo iniziale ed estensioni.
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="live-simulation")
 
     def _cleanup(self) -> None:
+        """@brief Elimina i record conclusi che hanno superato la scadenza."""
         expired = [
             run_id
             for run_id, record in self._records.items()
@@ -186,6 +225,7 @@ class LiveSimulationManager:
         request: LiveSimulationCreate,
         targets: list[tuple[str, Recipe]],
     ) -> LiveSimulationJob:
+        """@brief Crea una riproduzione per tutti i settori produttivi attivi."""
         if not targets:
             raise SimulationInvalid(
                 "no zone has an assigned recipe: nothing to simulate"
@@ -206,10 +246,12 @@ class LiveSimulationManager:
                 speed_multiplier=request.speed_multiplier,
             )
             self._records[run_id] = record
+            ## @brief Funzione di calcolo eseguita dal pool per il nuovo job.
             self._executor.submit(self._compute, run_id)
             return self._job(record)
 
     def _get_record(self, run_id: str) -> _LiveRecord:
+        """@brief Risolve un record non scaduto oppure segnala che manca."""
         self._cleanup()
         record = self._records.get(run_id)
         if record is None:
@@ -217,9 +259,64 @@ class LiveSimulationManager:
         return record
 
     def get(self, run_id: str) -> LiveSimulationJob:
+        """@brief Restituisce lo stato corrente ed estende l'orizzonte se necessario."""
         with self._lock:
             record = self._get_record(run_id)
             self._maybe_extend(record)
+            return self._job(record)
+
+    def current(self) -> LiveSimulationJob | None:
+        """@brief Restituisce la riproduzione live attualmente attiva, se presente.
+
+        @details Ne esiste al piu'
+        una per costruzione (create_greenhouse rifiuta un secondo run finche'
+        uno e' COMPUTING/PLAYING/PAUSED, vedi _ACTIVE_STATUSES). Usata dal
+        dashboard per riagganciarsi a un run che il client ha perso di vista
+        (reload, nuova scheda) invece di lasciarlo bloccato per sempre —
+        vedi GET /simulations/live/current."""
+        with self._lock:
+            self._cleanup()
+            for record in self._records.values():
+                if record.status in _ACTIVE_STATUSES:
+                    self._maybe_extend(record)
+                    return self._job(record)
+            return None
+
+    def set_simulated_quarantine(
+        self,
+        run_id: str,
+        zone_id: str,
+        plant_id: str,
+        quarantined: bool,
+    ) -> LiveSimulationJob:
+        """@brief Sposta o richiama virtualmente una pianta in quarantena.
+
+        @details Vale solo per questa riproduzione (vedi
+        LiveSimulationQuarantineUpdate) — non tocca mai la quarantena reale
+        e non ricalcola nulla: il conteggio piante non e' un parametro
+        della fisica simulata, quindi la serie del settore resta identica
+        prima e dopo. Idempotente: rimettere in quarantena una pianta gia'
+        presente, o richiamarne una gia' fuori, non e' un errore.
+
+        @throws SimulationMissing Se il run non esiste o e' scaduto.
+        @throws SimulationNotReady Se il run non e' PLAYING/PAUSED (durante
+            il calcolo iniziale non c'e' ancora alcun settore rivelato a
+            cui riferire lo spostamento).
+        @throws SimulationInvalid Se il settore non fa parte di questo run.
+        """
+        with self._lock:
+            record = self._get_record(run_id)
+            if record.status not in _ACTIVE_STATUSES:
+                raise SimulationNotReady("live simulation is not active")
+            if zone_id not in {target.zone_id for target in record.targets}:
+                raise SimulationInvalid(
+                    f"zone {zone_id!r} is not part of this live simulation"
+                )
+            bucket = record.simulated_quarantine.setdefault(zone_id, set())
+            if quarantined:
+                bucket.add(plant_id)
+            else:
+                bucket.discard(plant_id)
             return self._job(record)
 
     def control(
@@ -228,6 +325,7 @@ class LiveSimulationManager:
         action: str,
         speed_multiplier: float | None,
     ) -> LiveSimulationJob:
+        """@brief Applica play, pausa ed eventualmente una nuova velocita."""
         with self._lock:
             record = self._get_record(run_id)
             if record.status is LiveSimulationStatus.COMPUTING:
@@ -252,8 +350,10 @@ class LiveSimulationManager:
             return self._job(record)
 
     def result(self, run_id: str) -> list[SimulationPreview]:
-        """Anteprima per settore, tagliata a quanto e' gia' stato rivelato
-        — stessa forma della SimulationPreview del batch, cosi' il
+        """@brief Restituisce l'anteprima di ogni settore fino allo step rivelato.
+
+        @details Mantiene la
+        stessa forma di SimulationPreview del batch, cosi' il
         dashboard riusa lo stesso codice di disegno del grafico. Cresce ad
         ogni chiamata finche' la riproduzione avanza, e non si azzera mai:
         l'orizzonte calcolato si estende invece di ripartire da capo (vedi
@@ -292,6 +392,7 @@ class LiveSimulationManager:
             return previews
 
     def cancel_or_discard(self, run_id: str) -> None:
+        """@brief Arresta un run attivo oppure elimina un record gia concluso."""
         with self._lock:
             record = self._get_record(run_id)
             if record.status in _ACTIVE_STATUSES:
@@ -351,9 +452,11 @@ class LiveSimulationManager:
         if self._elapsed_seconds(record) < record.horizon_seconds * EXTEND_THRESHOLD_FRACTION:
             return
         record.extending = True
+        ## @brief Funzione eseguita dal pool per estendere l'orizzonte live.
         self._executor.submit(self._extend, record.job_id)
 
     def _zone_snapshots(self, record: _LiveRecord) -> list[LiveZoneSnapshot]:
+        """@brief Costruisce l'ultimo snapshot rivelabile di ogni zona."""
         if record.computed_steps is None:
             return []
         index = self._revealed_step_count(record) - 1
@@ -373,11 +476,15 @@ class LiveSimulationManager:
                     models=step.get("models", {}),
                     active_actuators=_active_actuators(step),
                     timestamp_seconds=float(step.get("start_time_seconds") or 0.0),
+                    quarantined_plant_ids=sorted(
+                        record.simulated_quarantine.get(target.zone_id, ())
+                    ),
                 )
             )
         return snapshots
 
     def _job(self, record: _LiveRecord) -> LiveSimulationJob:
+        """@brief Proietta il record interno nel contratto HTTP osservabile."""
         total_computing_steps = record.steps_per_target * len(record.targets)
         computing_percent = (
             100.0
@@ -403,6 +510,7 @@ class LiveSimulationManager:
         )
 
     def _compute(self, run_id: str) -> None:
+        """@brief Calcola il primo orizzonte e avvia la riproduzione."""
         with self._lock:
             record = self._records.get(run_id)
             if record is None:
@@ -504,4 +612,5 @@ class LiveSimulationManager:
                 record.extending = False
 
 
+## @brief Istanza applicativa condivisa dal router della riproduzione live.
 live_simulation_manager = LiveSimulationManager()

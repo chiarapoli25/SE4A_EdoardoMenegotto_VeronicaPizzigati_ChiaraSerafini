@@ -380,9 +380,13 @@ class RecipeCareProfile(BaseModel):
     target numerici presenti nelle fasi e nei controllori.
     """
 
+    ## @brief Indicazioni testuali sull'esposizione luminosa.
     light: str = Field(min_length=1)
+    ## @brief Indicazioni testuali sulla frequenza di irrigazione.
     watering: str = Field(min_length=1)
+    ## @brief Indicazioni testuali sull'intervallo termico consigliato.
     temperature: str = Field(min_length=1)
+    ## @brief Indicazioni testuali sulla fertilizzazione consigliata.
     fertilization: str = Field(min_length=1)
 
 

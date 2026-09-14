@@ -1,3 +1,9 @@
+/**
+ * @file event_bus.cpp
+ * @brief Implementazione di EventBus e dei suoi logger/inoltratori
+ *     (ConsoleLogger, CsvLogger, BackendClient).
+ */
+
 #include <smarthydro/events/event_bus.hpp>
 
 #include <iomanip>
@@ -10,6 +16,7 @@
 namespace smarthydro {
 namespace {
 
+/** @brief Nome leggibile dello stato operativo, per log e CSV. */
 const char* state_name(OperationalState state) noexcept {
     switch (state) {
         case OperationalState::NOMINAL:
@@ -22,6 +29,7 @@ const char* state_name(OperationalState state) noexcept {
     return "Unknown";
 }
 
+/** @brief Racchiude tra virgolette ed esegue l'escape RFC4180 se necessario. */
 std::string csv_escape(const std::string& value) {
     if (value.find_first_of(",\"\n") == std::string::npos) {
         return value;
@@ -38,6 +46,7 @@ std::string csv_escape(const std::string& value) {
     return escaped;
 }
 
+/** @brief Formatta un valore opzionale in CSV, stringa vuota se assente. */
 std::string optional_number(const std::optional<double>& value) {
     if (!value.has_value()) {
         return {};
@@ -47,6 +56,7 @@ std::string optional_number(const std::optional<double>& value) {
     return output.str();
 }
 
+/** @brief Estrae il timestamp comune a tutte le varianti dell'evento. */
 double event_timestamp(const EdgeDomainEvent& event) {
     return std::visit(
         [](const auto& value) {
@@ -55,6 +65,7 @@ double event_timestamp(const EdgeDomainEvent& event) {
         event);
 }
 
+/** @brief Estrae lo zone_id comune a tutte le varianti dell'evento. */
 const std::string& event_zone(const EdgeDomainEvent& event) {
     return std::visit(
         [](const auto& value) -> const std::string& {
@@ -63,6 +74,7 @@ const std::string& event_zone(const EdgeDomainEvent& event) {
         event);
 }
 
+/** @brief Riepilogo testuale specifico del tipo concreto dell'evento. */
 std::string event_detail(const EdgeDomainEvent& event) {
     return std::visit(
         [](const auto& value) -> std::string {

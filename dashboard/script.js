@@ -1,5 +1,5 @@
 "use strict";
-/**
+/*
  * SmartHydro control room dashboard.
  *
  * Served same-origin by the backend at /dashboard/, so every request below
@@ -54,17 +54,19 @@ const DEFAULT_LIVE_SPEED_MULTIPLIER = 600.0;
 // Preset di velocita' della riproduzione live: secondi simulati che passano
 // per ogni secondo reale. `short` e' l'etichetta compatta del pulsante
 // (pensata per stare in fila accanto al tasto "Tempo reale", vedi
-// renderLiveControlCluster) — il dettaglio in minuti/ore vive solo nel
-// `title` (tooltip), non piu' nell'etichetta stessa: prima "1× · 10 min/s"
-// affiancato agli altri preset era illeggibile in poco spazio. Il primo
-// preset (1×) e' la richiesta originale del tasto play — "un secondo reale
-// sono 10 minuti simulati" — gli altri sono suoi multipli, fino al tetto
-// lato backend (MAX_LIVE_SPEED_MULTIPLIER).
+// renderLiveControlCluster) — esprime direttamente il rapporto minuti/ore
+// simulati per secondo reale, MAI una notazione "×" da sola: "1×" lasciava
+// credere a un rapporto 1:1 col tempo reale (un secondo reale = un secondo
+// simulato), mentre il preset piu' lento e' gia' un'accelerazione di 600
+// volte (un secondo reale = 10 minuti simulati) — da qui la richiesta di
+// cambiare le etichette. Il `title` (tooltip) ripete lo stesso rapporto per
+// esteso. I quattro preset sono multipli dello stesso valore di base, fino
+// al tetto lato backend (MAX_LIVE_SPEED_MULTIPLIER).
 const LIVE_SPEED_PRESETS = [
-  { multiplier: 600, short: "1×", title: "1× — 10 minuti simulati ogni secondo reale" },
-  { multiplier: 3000, short: "5×", title: "5× — 50 minuti simulati ogni secondo reale" },
-  { multiplier: 6000, short: "10×", title: "10× — 100 minuti simulati ogni secondo reale" },
-  { multiplier: 36000, short: "60×", title: "60× — 10 ore simulate ogni secondo reale" },
+  { multiplier: 600, short: "10 min/s", title: "10 minuti simulati ogni secondo reale" },
+  { multiplier: 3000, short: "50 min/s", title: "50 minuti simulati ogni secondo reale" },
+  { multiplier: 6000, short: "100 min/s", title: "100 minuti simulati ogni secondo reale" },
+  { multiplier: 36000, short: "10 h/s", title: "10 ore simulate ogni secondo reale" },
 ];
 
 // Frontend-only rule (not enforced by the backend): "Fai uscire" stays
@@ -105,12 +107,10 @@ const QUARANTINE_VISUAL_TICK_MS = 1000;
 // exists only for the "Simula questa ricetta" chart (drawSimulationChart).
 // L'unità della luce ("mol/m²/giorno", DLI) descrive il TARGET di fase
 // (setpoint/allowed_range — vedi il form ricette), non il dato grezzo dietro
-// sensorField/simKey: quello resta un PPFD istantaneo (µmol/m²s), invariato
-// — solo il Simulatore lo converte in DLI maturato oggi prima di
-// disegnarlo (drawSimulationSeriesChart), proprio per poterlo confrontare
-// col target. Il grafico telemetria live del singolo settore mostra invece
-// ancora il PPFD istantaneo sotto questa stessa etichetta: un'imprecisione
-// nota, non affrontata in questo giro.
+// sensorField/simKey: quello resta un PPFD istantaneo (µmol/m²s). Sia il
+// Simulatore sia il grafico della telemetria live convertono quindi il PPFD
+// in DLI maturato nel giorno simulato prima di disegnarlo, così il confronto
+// con il target usa la stessa grandezza fisica e la stessa unità di misura.
 const VARIABLES = [
   { key: "soil_moisture", label: "Umidità del terriccio", unit: "%", sensorField: "soil_moisture_percent", simKey: "soil_moisture_percent", decimals: 1 },
   { key: "light", label: "Luce (DLI)", unit: "mol/m²/giorno", sensorField: "light_ppfd_umol_m2_s", simKey: "light_ppfd_umol_m2_s", decimals: 1 },
@@ -273,9 +273,13 @@ const CARE_FIELDS = [
   { key: "fertilization", label: "Fertilizzazione" },
 ];
 
+/** @brief Returns safe default actuator limits for a controlled variable.
+ * @param variableKey Stable key from `VARIABLES`.
+ * @return Output-limit object accepted by the recipe API.
+ */
 function defaultOutputLimits(variableKey) {
   if (variableKey === "ph") {
-    return { maximum_water_volume_liters: 1, maximum_pump_duration_seconds: 1800, maximum_dose_per_command_milliliters: 0.5, maximum_daily_dose_milliliters: 5, minimum_seconds_between_doses: 900 };
+    return { maximum_water_volume_liters: 1, maximum_pump_duration_seconds: 1800, maximum_dose_per_command_milliliters: 1, maximum_daily_dose_milliliters: 5, minimum_seconds_between_doses: 900 };
   }
   if (NUTRIENT_VARIABLES.includes(variableKey)) {
     return { maximum_water_volume_liters: 1, maximum_pump_duration_seconds: 1800, maximum_dose_per_command_milliliters: 4, maximum_daily_dose_milliliters: 12, minimum_seconds_between_doses: 3600 };
@@ -292,6 +296,10 @@ const DEFAULT_PHASE_TARGETS = {
   potassium: { setpoint: 200, allowed_range: { minimum: 170, maximum: 230 }, safety_range: { minimum: 50, maximum: 400 }, suggested_phase_dose_milliliters: 35 },
 };
 
+/** @brief Creates a complete editable recipe phase from the default targets.
+ * @param name Human-readable phase name.
+ * @return Independent phase draft suitable for `STATE.recipeForm`.
+ */
 function defaultPhase(name) {
   return {
     name,
@@ -311,7 +319,7 @@ function defaultPhase(name) {
  * department's sequence. RecipePhase.name has no enum on the backend; this
  * is a frontend-only restriction to keep new/edited recipes consistent
  * with the existing catalog's phase vocabulary, so it is enforced only by
- * what the phase-name <select> below offers — no server-side validation
+ * what the phase-name HTML select below offers — no server-side validation
  * was added for it.
  */
 const PHASE_SEQUENCE_BY_DEPARTMENT = {
@@ -321,14 +329,21 @@ const PHASE_SEQUENCE_BY_DEPARTMENT = {
   "4": ["Avvio e attecchimento", "Crescita vegetativa", "Fioritura e allegagione", "Produzione e maturazione"],
 };
 
+/** @brief Returns the canonical phase-name sequence for a production department.
+ * @param departmentNumber Department number as string or number.
+ * @return Ordered phase-name array; department 1 is the defensive fallback.
+ */
 function phaseNameOptionsFor(departmentNumber) {
   return PHASE_SEQUENCE_BY_DEPARTMENT[departmentNumber] || PHASE_SEQUENCE_BY_DEPARTMENT["1"];
 }
 
-/** Re-syncs every phase's name to the new department's sequence, matched
+/** @brief Re-syncs every phase's name to the new department's sequence, matched
  * by position (phase 1 -> that department's phase 1 name, etc.) — keeps
- * the phase-name <select> always showing a valid, real catalog value
- * after the department changes, with no silent/invalid selection. */
+ * the phase-name HTML select always showing a valid, real catalog value
+ * after the department changes, with no silent/invalid selection.
+ * @param draft Mutable recipe draft whose phases must be renamed.
+ * @param departmentNumber Production department selected in the form.
+ */
 function remapPhaseNamesForDepartment(draft, departmentNumber) {
   const names = phaseNameOptionsFor(departmentNumber);
   draft.phases.forEach((phase, i) => {
@@ -417,7 +432,8 @@ const STATE = {
   // questa visita alla pagina Simulatore; non viene azzerato chiudendo il
   // pop-up (stessa eccezione di STATE.simulation), solo lasciando la
   // pagina Simulatore o premendo Reset (vedi
-  // discardActiveLiveSimulationIfAny/resetLiveSimulation).
+  // discardActiveLiveSimulationIfAny/resetLiveSimulation). Reset ferma il
+  // job e svuota i dati: una nuova riproduzione parte solo premendo Play.
   liveSimulation: null,
 
   controlFilters: { dept: "all", species: "all", strategy: "all" },
@@ -439,6 +455,9 @@ const STATE = {
     loading: false,
     error: null,
     form: { username: "", password: "", displayName: "", role: "agronomo" },
+    deleteConfirmUsername: null,
+    deletingUsername: null,
+    deleteError: null,
     // null | { kind: "sending" } | { kind: "success"|"error", message }
     status: null,
   },
@@ -482,6 +501,11 @@ const STATE = {
   alerts: [],
   quarantine: {},
   plantCounts: {}, // zone_id -> live plant count (current_zone_id, not origin)
+  // Ultimo snapshot per settore, usato esclusivamente sulle card Home per
+  // rendere immediatamente visibili pompa e lampada quando sono davvero ON.
+  // Uno snapshot assente non significa OFF: semplicemente non mostriamo
+  // alcun indicatore, evitando di suggerire uno stato non conosciuto.
+  actuatorSnapshots: {},
   homeExtrasLoaded: false,
   homeExtrasLastRun: 0,
 
@@ -581,6 +605,14 @@ const STATE = {
 /* API layer — same-origin, no /api/v1 prefix                         */
 /* ------------------------------------------------------------------ */
 
+/** @brief Executes one authenticated dashboard request against the backend.
+ *
+ * Accepts an HTTP method, a same-origin path without the `/api/v1` prefix and
+ * an options object containing optional query-string `params` and JSON `body`.
+ * Nullish query-string entries are omitted.
+ * @return Parsed JSON response, or `null` for an empty response.
+ * @throws Error Enriched with HTTP `status` when the request fails.
+ */
 async function apiRequest(method, path, { params, body } = {}) {
   let url = path;
   if (params) {
@@ -644,6 +676,10 @@ const API_ERROR_TRANSLATIONS = {
   "the zone has an active cultivation; stop it before deleting the zone":
     "Questo settore ha una coltivazione attiva: fermala prima di poterlo rimuovere.",
 };
+/** @brief Translates known backend diagnostics into user-facing Italian.
+ * @param message Backend error detail.
+ * @return Translation when known, otherwise the original message.
+ */
 function translateApiError(message) {
   if (!message) return message;
   return API_ERROR_TRANSLATIONS[message] || message;
@@ -653,6 +689,10 @@ function translateApiError(message) {
 /* Small utilities                                                    */
 /* ------------------------------------------------------------------ */
 
+/** @brief Escapes a value before interpolation into generated HTML.
+ * @param value Arbitrary value, including nullish values.
+ * @return HTML-safe string.
+ */
 function escapeHtml(value) {
   if (value === null || value === undefined) return "";
   return String(value).replace(/[&<>"']/g, (c) => ({
@@ -661,17 +701,24 @@ function escapeHtml(value) {
 }
 const escapeAttr = escapeHtml;
 
+/** @brief Formats a finite numeric value for the interface.
+ * @param value Candidate numeric value.
+ * @param decimals Optional number of decimal places; defaults to one.
+ * @return Local display string or an em dash for missing values.
+ */
 function fmtNum(value, decimals) {
   if (value === null || value === undefined || !isFinite(value)) return "—";
   return Number(value).toFixed(decimals === undefined ? 1 : decimals);
 }
 
+/** @brief Formats an ISO timestamp as an Italian calendar date. */
 function fmtDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("it-IT");
 }
 
+/** @brief Formats an ISO timestamp as an Italian date and time. */
 function fmtDateTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -864,11 +911,19 @@ function isFocusedInside(id) {
 /* Poll manager: every entry is a named setInterval, replaced (not stacked)
    when re-armed, and cleared when a view/modal is left. */
 const _intervals = {};
+/** @brief Replaces a named interval and invokes its callback immediately.
+ * @param name Stable key stored in `_intervals`.
+ * @param fn Refresh callback.
+ * @param ms Interval in milliseconds.
+ */
 function setPoll(name, fn, ms) {
   clearPoll(name);
   fn();
   _intervals[name] = setInterval(fn, ms);
 }
+/** @brief Stops and forgets a named polling interval.
+ * @param name Stable key stored in `_intervals`.
+ */
 function clearPoll(name) {
   if (_intervals[name]) {
     clearInterval(_intervals[name]);
@@ -1369,6 +1424,7 @@ function renderSectorRowInner(z, { showConnection = true, liveStripZoneId = null
         <span class="pill op-${z.operational_state}">${z.operational_state}</span>
         <span class="tag-phase" data-plant-count="${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
       </div>
+      ${showConnection ? `<div class="sector-actuator-indicators" data-actuator-indicators="${escapeAttr(z.id)}">${renderActuatorIndicators(STATE.actuatorSnapshots[z.id])}</div>` : ""}
       ${liveStripZoneId ? `<div class="sector-live-strip" data-live-strip="${escapeAttr(liveStripZoneId)}"></div>` : ""}
     </div>
   `;
@@ -1414,6 +1470,70 @@ function renderPlantCounts() {
   });
 }
 
+/** @brief Returns the actuators that are physically active in a snapshot.
+ *
+ * Light is commanded as a percentage, whereas the pump exposes a boolean
+ * physical output.
+ * @param snapshot Latest actuator snapshot for one zone, or `null`.
+ * @return Active actuator descriptors suitable for the Home cards.
+ */
+function activeCardActuators(snapshot) {
+  if (!snapshot) return [];
+  return [
+    { key: "lighting", active: Number(snapshot.command?.lighting_percent) > 0, label: "Luce attiva" },
+    { key: "water_pump", active: snapshot.output?.water_pump_on === true, label: "Pompa acqua attiva" },
+  ].filter((actuator) => actuator.active);
+}
+
+/** @brief Builds the inline SVG used by an actuator indicator.
+ * @param key Stable actuator key (`lighting` or `water_pump`).
+ * @return SVG markup with decorative semantics.
+ */
+function actuatorIcon(key) {
+  if (key === "lighting") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M8.6 14.5A6 6 0 1 1 15.4 14.5c-.8.7-1.3 1.6-1.4 2.5h-4c-.1-.9-.6-1.8-1.4-2.5Z"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5c3.3 4 5.5 6.8 5.5 10A5.5 5.5 0 1 1 6.5 13.5c0-3.2 2.2-6 5.5-10Z"/></svg>`;
+}
+
+/** @brief Builds the compact active-actuator indicators for a sector card.
+ *
+ * An inactive actuator is absent rather than shown as a competing grey
+ * control.
+ * @param snapshot Latest actuator snapshot for one zone, or `null`.
+ * @return HTML markup for all active indicators.
+ */
+function renderActuatorIndicators(snapshot) {
+  return activeCardActuators(snapshot).map(({ key, label }) => `
+    <span class="actuator-indicator actuator-indicator-${key}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+      ${actuatorIcon(key)}<span>${key === "lighting" ? "Luce" : "Pompa"}</span>
+    </span>
+  `).join("");
+}
+
+/** @brief Refreshes actuator indicators already mounted on Home sector cards. */
+function renderActuatorIndicatorsOnCards() {
+  document.querySelectorAll("[data-actuator-indicators]").forEach((el) => {
+    el.innerHTML = renderActuatorIndicators(STATE.actuatorSnapshots[el.dataset.actuatorIndicators]);
+  });
+}
+
+/** @brief Loads the latest actuator snapshot independently for every zone.
+ * @param zones Zones whose cards may need a physical-state indicator.
+ * @return Map from zone identifier to snapshot; missing snapshots map to `null`.
+ */
+async function loadActuatorSnapshots(zones) {
+  const snapshots = await Promise.all(zones.map(async (z) => {
+    try {
+      return [z.id, await apiGet(`/zones/${encodeURIComponent(z.id)}/actuators/latest`)];
+    } catch (e) {
+      // 404 is normal for a sector that has not emitted a first snapshot.
+      return [z.id, null];
+    }
+  }));
+  return Object.fromEntries(snapshots);
+}
+
 // Despite the name, also called from the Simulatore page (renderSimulatorView):
 // its own sector tiles show the same live plant count as Home's, via the
 // shared renderSectorRowInner — reusing this single throttled fetch instead
@@ -1431,12 +1551,13 @@ async function maybeFetchHomeExtras() {
   // If the Recipes page already loaded it this session, this is a no-op.
   const needsRecipes = !STATE.recipesLoaded;
   try {
-    const tasks = [loadAlerts(STATE.zones), loadQuarantineStats(), loadPlantCounts(STATE.zones)];
+    const tasks = [loadAlerts(STATE.zones), loadQuarantineStats(), loadPlantCounts(STATE.zones), loadActuatorSnapshots(STATE.zones)];
     if (needsRecipes) tasks.push(apiGet("/recipes"));
-    const [alerts, quarantine, plantCounts, recipes] = await Promise.all(tasks);
+    const [alerts, quarantine, plantCounts, actuatorSnapshots, recipes] = await Promise.all(tasks);
     STATE.alerts = alerts;
     STATE.quarantine = quarantine;
     STATE.plantCounts = plantCounts;
+    STATE.actuatorSnapshots = actuatorSnapshots;
     if (needsRecipes) {
       STATE.recipes = recipes;
       STATE.recipesLoaded = true;
@@ -1448,6 +1569,7 @@ async function maybeFetchHomeExtras() {
   renderAlertsPanel();
   renderQuarantineBox();
   renderPlantCounts();
+  renderActuatorIndicatorsOnCards();
   updateNavAlertsBadge();
   // The department grid's "+ Aggiungi settore" buttons read
   // STATE.recipesLoaded/recipesForDepartment() — if the catalog just
@@ -2095,7 +2217,7 @@ function updateRecipeGridOnly() {
 
 /**
  * Recipe pop-up — read-only, same overlay/close/visual pattern as the zone
- * modal's "Controllo avanzato" (reuses #modal-overlay/#modal-content and the
+ * modal's "Controllo avanzato" (reuses the shared modal overlay and content
  * .zone-header/.zone-close/.advanced-hint-row classes). `returnTo` is the
  * single "where did I come from" marker for this pop-up's Indietro button
  * (see goBack()); defaults to just closing when not given.
@@ -2278,6 +2400,7 @@ function restartSimulationSetup() {
     chartView: sim.chartView || "single",
     chartLayers: sim.chartLayers || {},
     showActuatorStrips: sim.showActuatorStrips,
+    chartViewports: {},
   };
   renderModal();
 }
@@ -2394,9 +2517,8 @@ async function tickSimulationJob() {
 /* ------------------------------------------------------------------ */
 
 /** Oggetto STATE.liveSimulation "vuoto" — usato sia per inizializzarlo la
- * prima volta che si preme play, sia da resetLiveSimulation() per
- * ripartire da capo mantenendo le sole preferenze di visualizzazione del
- * grafico (variabile/vista/layer) da una sessione all'altra. */
+ * prima volta che si preme play, sia da resetLiveSimulation() per tornare
+ * allo stato fermo mantenendo le sole preferenze di visualizzazione. */
 function freshLiveSimulationState(previous) {
   return {
     speedMultiplier: (previous && previous.speedMultiplier) || DEFAULT_LIVE_SPEED_MULTIPLIER,
@@ -2409,7 +2531,45 @@ function freshLiveSimulationState(previous) {
     chartView: (previous && previous.chartView) || "single",
     chartLayers: (previous && previous.chartLayers) || {},
     showActuatorStrips: previous ? previous.showActuatorStrips : true,
+    chartViewports: {},
+    resetting: false,
+    resetRunId: null,
+    // Cache delle piante reali per settore, per il pannello "Piante" del
+    // pop-up live (vedi renderLiveQuarantinePanel): zone_id -> array di
+    // Plant, oppure "loading"/"error". Mai per il batch (isLive-only) e
+    // mai persistita oltre questa run: si azzera come tutto il resto di
+    // STATE.liveSimulation a ogni reset/nuovo avvio.
+    zonePlants: {},
   };
+}
+
+/** Riaggancia STATE.liveSimulation a un run gia' attivo sul server quando
+ * il client non ne sa nulla — reload della pagina, una scheda nuova, un
+ * tab crashato: discardActiveLiveSimulationIfAny libera lo slot solo
+ * quando SI LASCIA la pagina passando da qui (switchView), quindi un
+ * qualunque modo di "arrivarci" senza passare da li' (F5, nuova scheda)
+ * lascia il run del tutto invisibile al client pur restando attivo sul
+ * server per sempre (vedi il commento in cima a questa sezione). Senza
+ * questo, un simile run orfano si manifesta come il 409 "e' gia' in corso
+ * un'altra riproduzione live" su "▶ Tempo reale" — e "⟲ Reset" non puo'
+ * fermarlo perche' STATE.liveSimulation e' null, quindi non conosce
+ * alcun id da cancellare (resetLiveSimulation ritorna subito). Chiamata
+ * entrando nella pagina Simulatore (switchView) solo se non c'e' gia' uno
+ * stato locale: no-op silenzioso se non c'e' alcun run attivo (l'esito
+ * normale nella stragrande maggioranza dei casi). */
+async function reattachLiveSimulationIfAny() {
+  if (STATE.liveSimulation) return;
+  let job;
+  try {
+    job = await apiGet("/simulations/live/current");
+  } catch (err) { return; }
+  if (STATE.liveSimulation || !job) return;
+  const sim = freshLiveSimulationState(null);
+  sim.job = job;
+  sim.speedMultiplier = job.speed_multiplier;
+  STATE.liveSimulation = sim;
+  if (STATE.view === "simulator") { renderLiveZoneStrips(); renderLiveControlCluster(); }
+  pollLiveSimulationJob();
 }
 
 /** Libera lo slot live globale se il run corrente e' ancora attivo
@@ -2422,33 +2582,60 @@ function freshLiveSimulationState(previous) {
 function discardActiveLiveSimulationIfAny() {
   const sim = STATE.liveSimulation;
   clearPoll("live-simulation-job");
-  if (!sim || !sim.job) return;
-  if (["computing", "playing", "paused"].includes(sim.job.status)) {
-    apiDelete(`/simulations/live/${encodeURIComponent(sim.job.id)}`).catch(() => {});
+  if (!sim) return;
+  const runId = (sim.job && sim.job.id) || sim.resetRunId;
+  if (!runId) return;
+  if (sim.resetRunId || ["computing", "playing", "paused"].includes(sim.job && sim.job.status)) {
+    apiDelete(`/simulations/live/${encodeURIComponent(runId)}`).catch(() => {});
   }
 }
 
-/** Tasto "⟲ Reset" del cluster live: abbandona il run corrente (se ne
- * esiste uno, in qualunque stato) e ne avvia immediatamente uno nuovo,
- * stessa velocita' di prima — nessuna schermata di conferma, e' un
- * ambiente di sola anteprima senza dati reali coinvolti. */
+/** Tasto "⟲ Reset" del cluster live: ferma il run corrente e azzera subito
+ * grafici/indicatori/stato locale. Non avvia una nuova riproduzione: dopo
+ * il reset si riparte esclusivamente premendo "▶ Tempo reale". */
 async function resetLiveSimulation() {
-  const sim = STATE.liveSimulation;
+  const previous = STATE.liveSimulation;
   clearPoll("live-simulation-job");
-  if (sim && sim.job) {
-    try {
-      await apiDelete(`/simulations/live/${encodeURIComponent(sim.job.id)}`);
-    } catch (e) { /* best effort — startLiveSimulation ripartira' comunque */ }
+
+  const runId = previous && ((previous.job && previous.job.id) || previous.resetRunId);
+  const cleared = freshLiveSimulationState(previous);
+  cleared.resetting = !!runId;
+  cleared.resetRunId = runId || null;
+  if (STATE.liveSimulation === previous) {
+    STATE.liveSimulation = cleared;
   }
-  if (STATE.liveSimulation === sim) {
-    STATE.liveSimulation = freshLiveSimulationState(sim);
+  // Il feedback visivo e l'azzeramento non aspettano la rete: le strip dei
+  // settori e l'eventuale pop-up perdono subito ogni serie del vecchio run.
+  if (STATE.view === "simulator") {
+    renderLiveZoneStrips();
+    renderLiveControlCluster();
   }
-  startLiveSimulation();
+  if (STATE.modalKind === "live-simulator" || STATE.modalKind === "simulator-quarantine") renderModal();
+  if (!runId) return;
+
+  try {
+    await apiDelete(`/simulations/live/${encodeURIComponent(runId)}`);
+  } catch (err) {
+    // 404 equivale al risultato desiderato: il job non esiste piu'. Per un
+    // vero errore conserviamo l'id e lasciamo disponibile Reset per ritentare.
+    if (err.status !== 404 && STATE.liveSimulation === cleared) {
+      cleared.resetting = false;
+      cleared.error = "Impossibile confermare l'arresto della simulazione. Premi Reset per riprovare.";
+      renderLiveControlCluster();
+      if (STATE.modalKind === "live-simulator" || STATE.modalKind === "simulator-quarantine") renderModal();
+      return;
+    }
+  }
+  if (STATE.liveSimulation === cleared) {
+    cleared.resetting = false;
+    cleared.resetRunId = null;
+    renderLiveControlCluster();
+    if (STATE.modalKind === "live-simulator" || STATE.modalKind === "simulator-quarantine") renderModal();
+  }
 }
 
-/** Avvia una riproduzione live — chiamato sia dal primo click su
- * "▶ Tempo reale" (STATE.liveSimulation ancora null) sia da
- * resetLiveSimulation(). Non e' piu' legato al pop-up (STATE.modalKind):
+/** Avvia una riproduzione live — chiamato dal click su "▶ Tempo reale".
+ * Non e' piu' legato al pop-up (STATE.modalKind):
  * il cluster sul banner della pagina Simulatore lo controlla anche a
  * pop-up chiuso, vedi renderLiveControlCluster. */
 async function startLiveSimulation() {
@@ -2461,7 +2648,13 @@ async function startLiveSimulation() {
   if (STATE.modalKind === "live-simulator") renderModal();
   try {
     const job = await apiPost("/simulations/live", { speed_multiplier: sim.speedMultiplier });
-    if (STATE.liveSimulation !== sim) return; // resetLiveSimulation() lo ha gia' sostituito nel frattempo
+    if (STATE.liveSimulation !== sim) {
+      // Un Reset (o l'uscita dalla pagina) puo' essere avvenuto mentre la
+      // POST era in volo e prima che conoscessimo l'id. Ora che lo abbiamo,
+      // eliminiamo anche questo job invece di lasciarlo attivo sul server.
+      apiDelete(`/simulations/live/${encodeURIComponent(job.id)}`).catch(() => {});
+      return;
+    }
     sim.starting = false;
     sim.job = job;
     sim.result = null;
@@ -2506,7 +2699,13 @@ function selectLiveSpeed(multiplier) {
   sim.speedMultiplier = multiplier;
   const status = sim.job && sim.job.status;
   if (status === "playing" || status === "paused") {
-    controlLiveSimulation(status, multiplier);
+    // Il job riporta lo stato come "playing"/"paused" (LiveSimulationStatus),
+    // ma /control accetta solo l'azione imperativa "play"/"pause"
+    // (LiveSimulationControl.action e' Literal["play", "pause"]): senza
+    // questa traduzione la richiesta tornava 422 e la velocita' non
+    // cambiava mai a riproduzione avviata.
+    const action = status === "playing" ? "play" : "pause";
+    controlLiveSimulation(action, multiplier);
   } else {
     renderLiveControlCluster();
   }
@@ -2550,7 +2749,8 @@ async function tickLiveSimulationJob() {
     // Griglia dei settori e cluster di controllo (play/pausa/velocita'):
     // patch mirati, non un intero re-render — aggiornati anche a pop-up
     // chiuso, finche' si resta sulla pagina Simulatore.
-    if (STATE.view === "simulator") { renderLiveZoneStrips(); renderLiveControlCluster(); }
+    if (STATE.view === "simulator") { renderLiveZoneStrips(); renderLiveControlCluster(); renderSimulatorQuarantineBox(); }
+    if (STATE.modalKind === "simulator-quarantine") renderModalIfSafe();
     if (job.status !== "computing" && STATE.modalKind === "live-simulator") {
       // Il grafico del pop-up (se aperto) cresce insieme alla riproduzione,
       // senza mai azzerarsi (l'orizzonte si estende invece di ripartire,
@@ -2660,13 +2860,6 @@ function renderSimulatorView() {
   document.getElementById("view-simulator").innerHTML = `
     <div class="simulator-intro simulator-intro-prominent">
       <div class="simulator-intro-title">Ambiente di simulazione</div>
-      <div class="simulator-intro-text">
-        Questa griglia rispecchia i settori reali della serra — stessa specie, stessa fase, stesso stato — ma "Simula
-        l'intera serra" avvia un unico scenario batch isolato che copre ogni settore con una ricetta assegnata, tutti
-        sullo stesso arco temporale: <strong>non tocca mai la telemetria, i comandi o le coltivazioni reali</strong>.
-        Cliccando un settore vedi il suo grafico dentro quella simulazione. Ogni risultato è marcato esplicitamente
-        <strong>«Scenario simulato — non operativo»</strong>.
-      </div>
       ${simulable.length > 0 ? `
       <div class="simulator-intro-action">
         <button type="button" class="btn btn-primary" data-action="open-greenhouse-simulator">Simula l'intera serra</button>
@@ -2697,9 +2890,11 @@ function renderLiveControlClusterHtml() {
   const job = sim && sim.job;
   const status = job && job.status;
   const speed = (sim && sim.speedMultiplier) || DEFAULT_LIVE_SPEED_MULTIPLIER;
-  const busy = !!(sim && sim.starting) || status === "computing";
+  const resetPending = !!(sim && sim.resetRunId);
+  const busy = !!(sim && (sim.starting || sim.resetting || resetPending)) || status === "computing";
 
-  const playLabel = status === "computing" ? "Calcolo…"
+  const playLabel = sim && sim.resetting ? "Arresto…"
+    : status === "computing" ? "Calcolo…"
     : status === "playing" ? "⏸ Pausa"
     : status === "paused" ? "▶ Riprendi"
     : "▶ Tempo reale";
@@ -2717,7 +2912,7 @@ function renderLiveControlClusterHtml() {
   return `
     <button type="button" class="btn btn-live-play" data-action="live-toggle-play" ${busy ? "disabled" : ""} title="${escapeAttr(playTitle)}">${playLabel}</button>
     <div class="live-speed-group" role="group" aria-label="Velocità di riproduzione">${speedButtons}</div>
-    ${job ? `<button type="button" class="btn btn-live-reset" data-action="live-reset" title="Ricomincia la riproduzione live da capo">⟲ Reset</button>` : ""}
+    ${job || resetPending ? `<button type="button" class="btn btn-live-reset" data-action="live-reset" ${sim && sim.resetting ? "disabled" : ""} title="Ferma la riproduzione e cancella tutti i dati dai grafici">⟲ Reset</button>` : ""}
     ${job && ["computing", "playing", "paused"].includes(status) ? `
       <button type="button" class="sim-live-badge live-badge-btn" data-action="open-live-simulator" title="Vedi il grafico della riproduzione live">
         <span class="live-dot"></span>LIVE${status === "paused" ? " · in pausa" : ""}
@@ -2761,30 +2956,84 @@ const LIVE_STRIP_ACTUATOR_KEYS = ["water_pump", "lighting"];
 
 function renderLiveStripContent(snapshot) {
   const moisture = snapshot.sensors && snapshot.sensors.soil_moisture_percent;
-  const actuatorDots = LIVE_STRIP_ACTUATOR_KEYS
-    .map((key) => `<span class="live-actuator-dot ${snapshot.active_actuators?.[key] ? "on" : ""}" title="${escapeAttr(SIM_ACTUATOR_LABELS[key] || key)}"></span>`)
+  const actuatorIcons = LIVE_STRIP_ACTUATOR_KEYS
+    .filter((key) => snapshot.active_actuators?.[key])
+    .map((key) => {
+      const label = key === "lighting" ? "Luce attiva" : "Pompa acqua attiva";
+      return `<span class="actuator-indicator actuator-indicator-${key}" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">${actuatorIcon(key)}</span>`;
+    })
     .join("");
   return `
     <span class="live-dot"></span>
     <span class="live-strip-phase" title="${escapeAttr(snapshot.phase_name || "")}">${escapeHtml(snapshot.phase_name || "—")}</span>
     ${isFinite(moisture) ? `<span class="live-strip-value">${fmtNum(moisture, 0)}% umidità</span>` : ""}
-    <span class="live-strip-actuators">${actuatorDots}</span>
+    <span class="live-strip-actuators">${actuatorIcons}</span>
   `;
 }
 
-/** Reparto 5's room in the Simulatore floor plan — never clickable (see
- * the comment above its call site): quarantena has no recipe and nothing
- * to simulate, so it's rendered muted instead of omitted, keeping all 5
- * reparti visible as rooms on both pages. */
+/** Ogni pianta virtualmente in quarantena nella riproduzione live corrente,
+ * su tutti i settori — [{ plantId, zoneId }], appiattendo LiveZoneSnapshot.
+ * quarantined_plant_ids di ciascuna zona (vedi renderLiveQuarantinePanel).
+ * [] se non c'e' alcuna riproduzione live attiva. */
+function liveSimulationQuarantineEntries(sim) {
+  if (!sim || !sim.job) return [];
+  return sim.job.zones.flatMap((z) =>
+    (z.quarantined_plant_ids || []).map((plantId) => ({ plantId, zoneId: z.zone_id }))
+  );
+}
+
+/** Reparto 5's room in the Simulatore floor plan. A tempo di riposo (nessuna
+ * riproduzione live attiva) resta muto come sempre: la quarantena non ha una
+ * ricetta propria, nulla da simulare di suo. MENTRE una riproduzione live e'
+ * attiva pero' diventa la vetrina delle piante che vi sono state spostate
+ * SOLO per quella riproduzione (vedi renderLiveQuarantinePanel/POST
+ * .../quarantine) — stessa forma della card "Quarantena" reale di Serra
+ * (renderDeptCard/renderQuarantineBox), cosi' lo stesso gesto ("apri la
+ * quarantena per vedere chi c'e' dentro") funziona identico in entrambe le
+ * pagine, qui solo scoperto dal Reset invece che da "Fai uscire". */
 function renderSimulatorQuarantineCard() {
   const meta = DEPT_META[5];
+  const sim = STATE.liveSimulation;
+  const hasLiveJob = !!(sim && sim.job && ["computing", "playing", "paused"].includes(sim.job.status));
+  if (!hasLiveJob) {
+    return `
+      <div class="dept-card dept-card-muted" data-dept="5" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+        <div class="dept-card-head"><span class="dept-code">REPARTO 5</span></div>
+        <div class="dept-title">${escapeHtml(DEPT_FALLBACK_NAMES[5])}</div>
+        <div class="simulator-empty" style="margin:auto 0">Zona di quarantena: non coltivabile, quindi non simulabile.</div>
+      </div>
+    `;
+  }
   return `
-    <div class="dept-card dept-card-muted" data-dept="5" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
+    <div class="dept-card" data-dept="5" style="--dept-tint:${meta.tint};--dept-border:${meta.border};--dept-accent:${meta.accent}">
       <div class="dept-card-head"><span class="dept-code">REPARTO 5</span></div>
       <div class="dept-title">${escapeHtml(DEPT_FALLBACK_NAMES[5])}</div>
-      <div class="simulator-empty" style="margin:auto 0">Zona di quarantena: non coltivabile, quindi non simulabile.</div>
+      <div class="sector-list sector-list-top">
+        <div class="sector-row" data-action="open-simulator-quarantine">
+          <div class="sector-row-body">
+            <div class="sector-row-top"><span class="sector-num">SETTORE 1</span></div>
+            <div class="quarantine-box" id="simulator-quarantine-box">${renderSimulatorQuarantineBoxInner(liveSimulationQuarantineEntries(sim))}</div>
+          </div>
+          <span class="sector-row-arrow">→</span>
+        </div>
+      </div>
     </div>
   `;
+}
+
+function renderSimulatorQuarantineBoxInner(entries) {
+  return `<div class="quarantine-row"><span>Piante in quarantena (simulata)</span><b>${entries.length}</b></div>`;
+}
+
+/** Patch mirato del box conteggio — chiamato ad ogni tick di poll live e
+ * dopo ogni spostamento/richiamo, stesso schema di renderLiveZoneStrips: mai
+ * un renderSimulatorView() completo, che girerebbe via ogni tick. No-op se
+ * il box non e' nel DOM (nessuna riproduzione live attiva in questo
+ * momento — tickZones lo ricostruisce comunque entro ZONES_POLL_MS). */
+function renderSimulatorQuarantineBox() {
+  const el = document.getElementById("simulator-quarantine-box");
+  if (!el) return;
+  el.innerHTML = renderSimulatorQuarantineBoxInner(liveSimulationQuarantineEntries(STATE.liveSimulation));
 }
 
 /** One department card for the Simulatore grid — same visual shell as
@@ -2874,6 +3123,7 @@ function openGreenhouseSimulatorModal(preferredZoneId) {
       chartView: "single",
       chartLayers: {},
       showActuatorStrips: true,
+      chartViewports: {},
     };
   } else if (preferredZoneId) {
     STATE.simulation.activeZoneId = preferredZoneId;
@@ -2924,14 +3174,6 @@ function renderSimulatorModal() {
       <button type="button" class="zone-close" data-action="close-modal">✕</button>
     </div>
     <div style="padding:20px 28px 28px">
-      <div class="simulator-intro simulator-intro-compact">
-        <div class="simulator-intro-title">Ambiente di simulazione</div>
-        <div class="simulator-intro-text">
-          Ogni settore produttivo con una ricetta assegnata avanza sullo stesso arco temporale, ciascuno con la propria
-          ricetta — resta comunque un'anteprima batch isolata: <strong>non tocca mai la telemetria, i comandi o le
-          coltivazioni reali</strong>.
-        </div>
-      </div>
       ${body}
     </div>
   `;
@@ -2993,15 +3235,6 @@ function renderLiveSimulatorModal() {
       <button type="button" class="zone-close" data-action="close-modal">✕</button>
     </div>
     <div style="padding:20px 28px 28px">
-      <div class="simulator-intro simulator-intro-compact">
-        <div class="simulator-intro-title">Riproduzione in tempo accelerato</div>
-        <div class="simulator-intro-text">
-          Stessa fisica di "Simula l'intera serra" — un'anteprima batch isolata, <strong>non tocca mai la telemetria, i
-          comandi o le coltivazioni reali</strong> — ma il tempo simulato avanza da solo e non si ferma mai: gira
-          finché resti sulla pagina Simulatore. Play/pausa, velocità e reset sono sul banner della pagina, non qui:
-          chiudi pure questo pop-up, la riproduzione continua lo stesso.
-        </div>
-      </div>
       ${status !== "computing" ? renderLiveStatusLine(sim) : ""}
       ${body}
     </div>
@@ -3140,7 +3373,7 @@ function simBandLegendItem(varMeta) {
  * GET /simulations/{id}/result. For "Simula l'intera serra" (STATE.
  * simulation.greenhouse) that same endpoint returns an ARRAY instead — one
  * preview per zone with an assigned recipe — and sim.activeZoneId (see the
- * zone <select> in renderSimulationResult) picks which one every chart and
+ * zone selector in renderSimulationResult) picks which one every chart and
  * summary below reads from; everything downstream stays written against a
  * single preview object either way. */
 function activeSimulationPreview(sim) {
@@ -3149,7 +3382,7 @@ function activeSimulationPreview(sim) {
   return sim.result.find((p) => p.zone_id === sim.activeZoneId) || sim.result[0] || null;
 }
 
-/** Label for one entry of the "Simula l'intera serra" zone <select> — the
+/** Label for one entry of the "Simula l'intera serra" zone selector — the
  * preview only carries zone_id (see SimulationPreview.zone_id server-side),
  * everything human-readable is resolved locally from STATE.zones, same as
  * the rest of the app (zoneLabel). Falls back to the bare id for a zone
@@ -3177,12 +3410,123 @@ function renderLightDaySelect(sim, result) {
   return `<select id="sim-light-day-select">${options.join("")}</select>`;
 }
 
+/* ------------------------------------------------------------------ */
+/* Quarantena SIMULATA — SOLO riproduzione live, mai il batch: sposta   */
+/* virtualmente alcune piante reali di un settore fuori dalla           */
+/* riproduzione corrente (es. "10 delle 50 piante si sono ammalate,     */
+/* le metto in quarantena") senza mai toccare la quarantena reale ne'   */
+/* la fisica gia' calcolata del settore — il conteggio piante non e' un */
+/* parametro della simulazione, solo cio' che si mostra. Le altre       */
+/* piante del settore continuano regolarmente nella stessa serie        */
+/* simulata (l'unica che esiste per quel settore). Stato per-run, mai   */
+/* persistito: sparisce con Reset o lasciando la pagina, come tutto il  */
+/* resto di STATE.liveSimulation. Vedi POST /simulations/live/{id}/     */
+/* quarantine lato backend.                                             */
+/* ------------------------------------------------------------------ */
+
+/** Carica (una volta sola, poi cache) le piante reali di un settore per
+ * il pannello "Piante" del pop-up live — stesso endpoint di STATE.
+ * modalPlants (GET /plants?zone_id=...), cache separata perche' qui la
+ * chiave e' "quale settore della riproduzione sto guardando", non "quale
+ * zona ho aperto nel pop-up del settore". No-op se gia' in cache/in
+ * caricamento o se sim non e' piu' quello corrente (Reset nel frattempo). */
+async function ensureLiveZonePlantsLoaded(sim, zoneId) {
+  if (sim.zonePlants[zoneId] !== undefined) return;
+  sim.zonePlants[zoneId] = "loading";
+  try {
+    const plants = await apiGet("/plants", { zone_id: zoneId, limit: 1000 });
+    if (STATE.liveSimulation !== sim) return; // reset nel frattempo
+    sim.zonePlants[zoneId] = plants;
+  } catch (err) {
+    if (STATE.liveSimulation !== sim) return;
+    sim.zonePlants[zoneId] = "error";
+  }
+  if (STATE.modalKind === "live-simulator") renderModalIfSafe();
+}
+
+/** Applica lo spostamento (o il richiamo) al server e riflette subito la
+ * risposta in sim.job — stesso schema di controlLiveSimulation: una sola
+ * POST, poi il job che torna indietro e' la nuova verita'. */
+async function setSimulatedPlantQuarantine(sim, zoneId, plantId, quarantined) {
+  if (!sim.job) return;
+  const runId = sim.job.id;
+  try {
+    const job = await apiPost(`/simulations/live/${encodeURIComponent(runId)}/quarantine`, {
+      zone_id: zoneId,
+      plant_id: plantId,
+      quarantined,
+    });
+    if (STATE.liveSimulation !== sim || !sim.job || sim.job.id !== runId) return;
+    sim.job = job;
+    if (STATE.view === "simulator") { renderLiveZoneStrips(); renderSimulatorQuarantineBox(); }
+    if (STATE.modalKind === "live-simulator" || STATE.modalKind === "simulator-quarantine") renderModalIfSafe();
+  } catch (err) { /* transient — il prossimo tick di poll rilegge lo stato reale */ }
+}
+
+/** Pannello "Piante" del pop-up live per il settore attualmente mostrato
+ * (result.zone_id) — elenco reale con un tasto per spostare/richiamare
+ * ciascuna dalla quarantena simulata. Innesca il caricamento (fire-and-
+ * forget: ensureLiveZonePlantsLoaded ridisegna da sola quando arriva) se
+ * non e' ancora in cache. quarantinedIds viene da LiveZoneSnapshot (il
+ * job, autoritativo lato server), zonePlants (l'anagrafica) resta locale. */
+function renderLiveQuarantinePanel(sim, result) {
+  const zoneId = result.zone_id;
+  ensureLiveZonePlantsLoaded(sim, zoneId);
+  const plants = sim.zonePlants[zoneId];
+  const snapshot = sim.job && sim.job.zones.find((z) => z.zone_id === zoneId);
+  const quarantinedIds = new Set((snapshot && snapshot.quarantined_plant_ids) || []);
+
+  let body;
+  if (plants === undefined || plants === "loading") {
+    body = `<div class="empty-note">Caricamento piante…</div>`;
+  } else if (plants === "error") {
+    body = `<div class="empty-note">Impossibile caricare le piante di questo settore.</div>`;
+  } else if (plants.length === 0) {
+    body = `<div class="empty-note">Nessuna pianta registrata in questo settore.</div>`;
+  } else {
+    const activeCount = plants.length - quarantinedIds.size;
+    body = `
+      <div class="hint" style="margin-bottom:8px">
+        ${activeCount}/${plants.length} piante attive nella simulazione
+        ${quarantinedIds.size > 0 ? ` · ${quarantinedIds.size} in quarantena simulata` : ""}
+      </div>
+      <div class="live-quarantine-plant-list">
+        ${plants.map((p) => {
+          const isQuarantined = quarantinedIds.has(p.id);
+          return `
+          <div class="live-quarantine-plant-row ${isQuarantined ? "quarantined" : ""}">
+            <span class="live-quarantine-plant-id">${escapeHtml(p.id)}</span>
+            <button type="button" class="btn live-quarantine-toggle-btn"
+              data-action="live-quarantine-toggle" data-zone-id="${escapeAttr(zoneId)}"
+              data-plant-id="${escapeAttr(p.id)}" data-quarantined="${isQuarantined ? "0" : "1"}">
+              ${isQuarantined ? "↩ Richiama dalla quarantena simulata" : "→ Sposta in quarantena simulata"}
+            </button>
+          </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  return `
+    <div class="zone-section" style="margin-top:16px">
+      <div class="chart-head" style="margin-bottom:8px">
+        <span class="title">Piante</span>
+        <span class="hint">spostamento valido solo per questa riproduzione — non tocca la quarantena reale</span>
+      </div>
+      ${body}
+    </div>`;
+}
+
 function renderSimulationResult(sim) {
   const greenhouse = Array.isArray(sim.result);
   const result = activeSimulationPreview(sim);
   const gridView = sim.chartView === "grid";
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   const selectedStrategy = result.recipe.strategies?.[varMeta.key] || "—";
+  // Pannello "Piante"/quarantena simulata: SOLO la riproduzione live, mai
+  // il batch (vedi il commento sopra renderLiveQuarantinePanel) — sim qui
+  // e' sempre o STATE.simulation o STATE.liveSimulation, mai un oggetto
+  // posticcio, quindi l'identita' basta a distinguerli.
+  const isLive = sim === STATE.liveSimulation;
   return `
     <div class="sim-nonop-banner" style="margin-top:16px">${escapeHtml(result.source_label)}</div>
     ${greenhouse ? `
@@ -3195,6 +3539,7 @@ function renderSimulationResult(sim) {
         <span class="hint">${sim.result.length} settori simulati sullo stesso arco temporale</span>
       </div>
     </div>` : ""}
+    ${isLive ? renderLiveQuarantinePanel(sim, result) : ""}
     <div class="zone-section" style="margin-top:16px">
       <div class="chart-head">
         <span class="title">Andamento simulato</span>
@@ -3226,6 +3571,7 @@ function renderSimulationResult(sim) {
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-chart-layer-toggle" data-layer="average" ${sim.chartLayers?.average === false ? "" : "checked"}> Valore medio</label>
         <label class="sim-chart-toggle"><input type="checkbox" data-action="sim-actuator-strip-toggle" ${sim.showActuatorStrips === false ? "" : "checked"}> Attuatore <span class="legend-line" style="border-color:#8a5cf6"></span> intensità comando (0-100%), corsia propria sul fondo del grafico</label>
       </div>
+      ${gridView ? '<div class="sim-chart-navigation-help">Per esplorare un intervallo nel dettaglio, passa a “Un grafico alla volta”.</div>' : renderSimulationChartNavigation(sim, result, varMeta)}
       ${gridView
         ? `<div class="sim-chart-grid">
             ${VARIABLES.map((v) => `
@@ -3352,6 +3698,171 @@ function fmtDurationHM(totalSeconds) {
   return `${minutes}m`;
 }
 
+/** Intervallo temporale effettivamente disponibile per il grafico scelto.
+ * La luce puo' essere gia' filtrata a un singolo giorno; lo zoom resta
+ * confinato a quel giorno, invece di lasciare un viewport vuoto. */
+function simulationChartSeries(sim, preview, varMeta) {
+  let series = preview.series;
+  if (varMeta.key === "light" && sim.lightDetailDay != null) {
+    const dayStart = sim.lightDetailDay * 86400;
+    const dayEnd = dayStart + 86400;
+    const filtered = series.filter((s) => s.start_seconds >= dayStart && s.start_seconds < dayEnd);
+    if (filtered.length) series = filtered;
+  }
+  return series;
+}
+
+function simulationChartBounds(series) {
+  return {
+    start: series[0]?.start_seconds || 0,
+    end: series[series.length - 1]?.end_seconds || 1,
+  };
+}
+
+function normalizeSimulationViewport(viewport, bounds) {
+  const fullSpan = Math.max(bounds.end - bounds.start, 1);
+  const minimumSpan = Math.min(fullSpan, Math.max(900, fullSpan / 256));
+  let span = Math.max(minimumSpan, Math.min(fullSpan, (viewport?.end || bounds.end) - (viewport?.start || bounds.start)));
+  let start = Number.isFinite(viewport?.start) ? viewport.start : bounds.start;
+  start = Math.max(bounds.start, Math.min(bounds.end - span, start));
+  return { start, end: start + span };
+}
+
+/** Sola lettura — NON scrive mai in sim.chartViewports (a differenza di
+ * prima): quello lo fanno solo le azioni esplicite dell'utente
+ * (zoomSimulationChart, il drag, resetSimulationChartViewport/i tasti
+ * frecce). Finche' non c'e' alcuno zoom/pan esplicito per questa
+ * variabile, la vista e' SEMPRE quella corrente per intero — bounds.end
+ * qui dentro, che nella riproduzione live cresce ad ogni step rivelato.
+ * Scrivere una vista "congelata" gia' al primo render (come faceva
+ * prima) fissava per sempre lo stesso intervallo assoluto: bounds.end
+ * continuava a crescere, ma la vista salvata no, e il grafico live
+ * smetteva di colpo di scorrere non appena disegnato la prima volta. */
+function simulationChartViewport(sim, variable, series) {
+  const bounds = simulationChartBounds(series);
+  if (!sim.chartViewports) sim.chartViewports = {};
+  const stored = sim.chartViewports[variable];
+  if (stored === undefined) return { start: bounds.start, end: bounds.end };
+  return normalizeSimulationViewport(stored, bounds);
+}
+
+function setSimulationChartViewport(sim, variable, series, viewport) {
+  if (!sim.chartViewports) sim.chartViewports = {};
+  sim.chartViewports[variable] = normalizeSimulationViewport(viewport, simulationChartBounds(series));
+}
+
+function resetSimulationChartViewport(sim, variable) {
+  if (sim.chartViewports) delete sim.chartViewports[variable];
+}
+
+function simulationChartViewportLabel(sim, variable, series) {
+  const bounds = simulationChartBounds(series);
+  const viewport = simulationChartViewport(sim, variable, series);
+  const full = Math.max(bounds.end - bounds.start, 1);
+  const visible = viewport.end - viewport.start;
+  const precision = visible < 86400 ? 1 : 0;
+  const visibleDays = visible / 86400;
+  const fullDays = full / 86400;
+  return visible >= full - 1
+    ? `Vista completa · ${fmtNum(fullDays, 0)}g`
+    : `${fmtNum(visibleDays, precision)}g su ${fmtNum(fullDays, 0)}g`;
+}
+
+function renderSimulationChartNavigation(sim, result, varMeta) {
+  const series = simulationChartSeries(sim, result, varMeta);
+  return `
+    <div class="sim-chart-navigation" aria-label="Navigazione temporale del grafico">
+      <span class="hint">Esplora nel tempo</span>
+      <button type="button" class="sim-chart-nav-btn" data-action="sim-chart-zoom" data-factor="0.5" title="Riduci zoom">−</button>
+      <span id="sim-chart-viewport-label" class="sim-chart-viewport-label">${escapeHtml(simulationChartViewportLabel(sim, varMeta.key, series))}</span>
+      <button type="button" class="sim-chart-nav-btn" data-action="sim-chart-zoom" data-factor="2" title="Aumenta zoom">+</button>
+      <button type="button" class="sim-chart-nav-btn sim-chart-nav-reset" data-action="sim-chart-reset">Vista completa</button>
+      <span class="sim-chart-navigation-help">Rotella/pinch: zoom · trascina: scorri · 0: ripristina</span>
+    </div>`;
+}
+
+function updateSimulationChartNavigation(sim, variable, series) {
+  const label = document.getElementById("sim-chart-viewport-label");
+  if (label) label.textContent = simulationChartViewportLabel(sim, variable, series);
+}
+
+function zoomSimulationChart(sim, variable, series, factor, anchorRatio = 0.5) {
+  const bounds = simulationChartBounds(series);
+  const viewport = simulationChartViewport(sim, variable, series);
+  const span = viewport.end - viewport.start;
+  const nextSpan = span / factor;
+  const anchor = viewport.start + Math.max(0, Math.min(1, anchorRatio)) * span;
+  setSimulationChartViewport(sim, variable, series, {
+    start: anchor - Math.max(0, Math.min(1, anchorRatio)) * nextSpan,
+    end: anchor + (1 - Math.max(0, Math.min(1, anchorRatio))) * nextSpan,
+  });
+  drawSimulationChart();
+}
+
+/** Canvas controls resembling a MATLAB scope: wheel/pinch zooms around the
+ * pointer, dragging pans on the time axis, and keyboard commands expose the
+ * same actions without requiring a pointing device. */
+function bindSimulationChartNavigation(canvas, sim, variable, series) {
+  if (canvas.dataset.simNavigationBound === "true") return;
+  canvas.dataset.simNavigationBound = "true";
+  canvas.tabIndex = 0;
+  canvas.setAttribute("aria-label", "Grafico simulato interattivo: rotella per zoom, trascinamento per scorrere nel tempo");
+
+  const pointerRatio = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (event.clientX - rect.left - 46) / Math.max(1, rect.width - 60)));
+  };
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * 0.0025);
+    zoomSimulationChart(sim, variable, series, factor, pointerRatio(event));
+  }, { passive: false });
+
+  let drag = null;
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const viewport = simulationChartViewport(sim, variable, series);
+    drag = { pointerId: event.pointerId, x: event.clientX, viewport };
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const rect = canvas.getBoundingClientRect();
+    const deltaSeconds = (event.clientX - drag.x) / Math.max(1, rect.width - 60) * (drag.viewport.end - drag.viewport.start);
+    setSimulationChartViewport(sim, variable, series, {
+      start: drag.viewport.start - deltaSeconds,
+      end: drag.viewport.end - deltaSeconds,
+    });
+    drawSimulationChart();
+  });
+  const stopDrag = (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    drag = null;
+  };
+  canvas.addEventListener("pointerup", stopDrag);
+  canvas.addEventListener("pointercancel", stopDrag);
+  canvas.addEventListener("keydown", (event) => {
+    if (event.key === "+" || event.key === "=") {
+      event.preventDefault(); zoomSimulationChart(sim, variable, series, 2); return;
+    }
+    if (event.key === "-") {
+      event.preventDefault(); zoomSimulationChart(sim, variable, series, 0.5); return;
+    }
+    if (event.key === "0" || event.key === "Home") {
+      event.preventDefault(); resetSimulationChartViewport(sim, variable); drawSimulationChart(); return;
+    }
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      const viewport = simulationChartViewport(sim, variable, series);
+      const shift = (viewport.end - viewport.start) * (event.key === "ArrowLeft" ? -0.2 : 0.2);
+      setSimulationChartViewport(sim, variable, series, { start: viewport.start + shift, end: viewport.end + shift });
+      drawSimulationChart();
+    }
+  });
+}
+
 /** Draws either the single selected-variable canvas, or (chartView ===
  * "grid", see the "Vedi tutti i grafici" toggle) every one of the 6
  * VARIABLES into its own small canvas at once — same underlying
@@ -3382,22 +3893,12 @@ function drawSimulationChart() {
   const canvas = document.getElementById("simulation-chart");
   const varMeta = VARIABLES_BY_KEY[sim.chartVariable];
   if (canvas) {
-    // "Giorno N" selezionato (solo per la luce, vedi renderLightDaySelect):
-    // filtra i bucket a un solo giorno solare invece di passare l'intero
-    // preview.series — drawSimulationSeriesChart non sa ne' deve sapere
-    // che e' stato zoomato, calcola minT/maxT dal primo/ultimo bucket
-    // ricevuto esattamente come farebbe con l'andamento completo, e
-    // ricostruisce il dente di sega isLight da zero per quel solo giorno.
-    let series = preview.series;
-    if (varMeta.key === "light" && sim.lightDetailDay != null) {
-      const dayStart = sim.lightDetailDay * 86400;
-      const dayEnd = dayStart + 86400;
-      const filtered = preview.series.filter(
-        (s) => s.start_seconds >= dayStart && s.start_seconds < dayEnd);
-      if (filtered.length) series = filtered;
-    }
+    const series = simulationChartSeries(sim, preview, varMeta);
+    const viewport = simulationChartViewport(sim, varMeta.key, series);
     drawSimulationSeriesChart(
-      canvas, series, preview.phases, varMeta, sim.chartLayers, showActuator);
+      canvas, series, preview.phases, varMeta, sim.chartLayers, showActuator, viewport);
+    bindSimulationChartNavigation(canvas, sim, varMeta.key, series);
+    updateSimulationChartNavigation(sim, varMeta.key, series);
   }
   if (varMeta.key === "light") {
     const summaryCanvas = document.getElementById("simulation-light-daily-summary");
@@ -3591,7 +4092,7 @@ function drawLightDailySummary(canvas, series, phases, varMeta) {
  * last phase), so the last phase's band is extended to the end of the
  * simulated span rather than leaving a gap.
  */
-function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers, showActuator) {
+function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers, showActuator, viewport = null) {
   // Quattro livelli disegnabili indipendentemente, ciascuno spentabile da
   // sim.chartLayers (vedi il pannello di spunte "Linee da mostrare" sopra
   // la griglia/il grafico singolo — non "quali variabili mostrare", che
@@ -3667,7 +4168,7 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers, show
   // floor(secondi/86400)) — lightCompletedDayTotal[i] e' quel totale,
   // allineato per indice a points, null finche' nessun giorno e' ancora
   // concluso (durante il primissimo giorno di simulazione).
-  const lightCompletedDayTotal = isLight ? new Array(points.length).fill(null) : null;
+  let lightCompletedDayTotal = isLight ? new Array(points.length).fill(null) : null;
   if (isLight) {
     let dayIndex = null;
     let cumulative = 0;
@@ -3697,12 +4198,21 @@ function drawSimulationSeriesChart(canvas, series, phases, varMeta, layers, show
   // dell'attuatore vive, tra il fondo del grafico principale e le
   // etichette dell'asse tempo — non toglie altezza a queste ultime, ne'
   // costringe a ridisegnarle altrove.
+  const bounds = simulationChartBounds(series);
+  const visibleTime = normalizeSimulationViewport(viewport, bounds);
+  const minT = visibleTime.start;
+  const maxT = visibleTime.end;
+  const keptIndices = [];
+  points.forEach((point, index) => {
+    if (point.t1 > minT && point.t0 < maxT) keptIndices.push(index);
+  });
+  points = keptIndices.map((index) => points[index]);
+  if (isLight) lightCompletedDayTotal = keptIndices.map((index) => lightCompletedDayTotal[index]);
+  if (!points.length) return;
+
   const pad = { l: 46, r: 14, t: 14, b: showActuator ? 34 : 20 };
   const w = width - pad.l - pad.r;
   const h = height - pad.t - pad.b;
-
-  const minT = series[0].start_seconds;
-  const maxT = series[series.length - 1].end_seconds;
   const spanT = Math.max(maxT - minT, 1);
 
   const lightDailyTotalsForScale = isLight
@@ -4020,7 +4530,7 @@ function buildDraftFromRecipe(recipe) {
 
 /**
  * Opens the create/edit form in the shared pop-up overlay. `recipe` is
- * required (and used) only for mode "edit". Reuses #modal-overlay so it
+ * required (and used) only for mode "edit". Reuses the shared modal overlay so it
  * can replace an already-open recipe pop-up's content in place.
  */
 function openRecipeForm(mode, recipe) {
@@ -4439,14 +4949,14 @@ function renderRecipeFormModal() {
 /* ------------------------------------------------------------------ */
 
 /** Whether the one thing worth protecting from a background re-render on
- * Controllo — a filter <select> the admin has open/mid-choosing — currently
+ * Controllo — a filter selector the admin has open/mid-choosing — currently
  * has focus. Deliberately narrower than isFocusedInside("view-control"):
  * that blanket check also matches a just-clicked "Applica a tutto
  * l'impianto" button, which keeps DOM focus after a click in every
  * browser — so using it here would block renderControlIfSafe() from ever
  * showing the per-zone results a click just kicked off, until the admin
  * happened to click/tab somewhere else. A focused button (or a focused
- * global-strategy <select> — its choice already survives a re-render via
+ * global-strategy selector — its choice already survives a re-render via
  * STATE.controlStrategy.drafts, same as the old per-zone code protected
  * strategyDrafts) has nothing left to lose from being rebuilt underneath it.
  * (The "Gestione utenti" create-account fields used to need the same
@@ -4458,7 +4968,7 @@ function isFocusedInControlFilter() {
 }
 
 /** Only re-renders while the Amministratore is actually on Controllo, and
- * never while a filter <select> has focus — see isFocusedInControlFilter(). */
+ * never while a filter selector has focus — see isFocusedInControlFilter(). */
 function renderControlIfSafe() {
   if (STATE.view === "control" && !isFocusedInControlFilter()) renderControl();
 }
@@ -4659,8 +5169,9 @@ function renderGlobalStrategyPanel() {
 /* ------------------------------------------------------------------ */
 /* Pagina "Utenti" (admin-only)                                        */
 /*                                                                       */
-/* Lets an Amministratore create other accounts — admin or agronomo —   */
-/* and see who already has one. The backend independently enforces      */
+/* Lets an Amministratore create other accounts — admin or agronomo —,  */
+/* remove agronomo accounts, and see who already has one. The backend   */
+/* independently enforces                                               */
 /* require_admin on both /users endpoints (see                          */
 /* backend/app/features/users/dependencies.py), so this page being      */
 /* admin-only client-side (gated the same way as Controllo, see         */
@@ -4760,26 +5271,80 @@ async function submitCreateUser() {
   }
 }
 
+function askDeleteUser(username) {
+  const state = STATE.users;
+  state.deleteConfirmUsername = username;
+  state.deleteError = null;
+  renderUsersIfSafe();
+}
+
+function cancelDeleteUser() {
+  STATE.users.deleteConfirmUsername = null;
+  STATE.users.deleteError = null;
+  renderUsersIfSafe();
+}
+
+/** Deletes one agronomist account. The backend repeats both authorization
+ * checks independently: caller must be admin and target must be agronomo. */
+async function confirmDeleteUser(username) {
+  const state = STATE.users;
+  if (state.deletingUsername) return;
+  state.deletingUsername = username;
+  state.deleteError = null;
+  renderUsersIfSafe();
+  try {
+    await apiDelete(`/users/${encodeURIComponent(username)}`);
+    state.deleteConfirmUsername = null;
+    state.deletingUsername = null;
+    state.status = { kind: "success", message: `Account "${username}" eliminato.` };
+    state.loaded = false;
+    await ensureUsersLoaded();
+  } catch (err) {
+    state.deletingUsername = null;
+    state.deleteError = err.status === 404
+      ? "L'account non esiste più. Aggiorna l'elenco e riprova."
+      : err.status === 409
+        ? "È possibile eliminare solamente gli account agronomo."
+        : err.message;
+    renderUsersIfSafe();
+  }
+}
+
 function renderUserManagementPanel() {
   const state = STATE.users;
   if (!state.loaded && !state.loading) ensureUsersLoaded();
 
-  const rowsHtml = state.list.map((u) => `
-    <div class="data-table-row cols-users">
-      <div>${escapeHtml(u.display_name)}</div>
-      <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(u.username)}</div>
-      <div><span class="pill role-${u.role}">${roleLabel(u.role)}</span></div>
-      <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${fmtDateTime(u.created_at)}</div>
-    </div>
-  `).join("");
+  const rowsHtml = state.list.map((u) => {
+    const confirming = state.deleteConfirmUsername === u.username;
+    const deleting = state.deletingUsername === u.username;
+    const action = u.role !== "agronomo"
+      ? '<span class="user-protected-label">Protetto</span>'
+      : confirming
+        ? `<div class="user-delete-confirm">
+            <span>Confermi?</span>
+            <button type="button" class="user-action-btn" data-action="cancel-delete-user" ${deleting ? "disabled" : ""}>Annulla</button>
+            <button type="button" class="user-action-btn danger" data-action="confirm-delete-user" data-username="${escapeAttr(u.username)}" ${deleting ? "disabled" : ""}>${deleting ? "Eliminazione…" : "Elimina"}</button>
+          </div>`
+        : `<button type="button" class="user-action-btn danger" data-action="ask-delete-user" data-username="${escapeAttr(u.username)}">Elimina</button>`;
+    return `
+      <div class="data-table-row cols-users">
+        <div>${escapeHtml(u.display_name)}</div>
+        <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(u.username)}</div>
+        <div><span class="pill role-${u.role}">${roleLabel(u.role)}</span></div>
+        <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${fmtDateTime(u.created_at)}</div>
+        <div class="user-row-action">${action}</div>
+      </div>
+    `;
+  }).join("");
 
   const listHtml = state.error
     ? `<div class="empty-note">Impossibile caricare gli account: ${escapeHtml(state.error)}</div>`
     : `
       <div class="data-table" style="margin-bottom:18px">
-        <div class="data-table-head cols-users"><span>NOME</span><span>UTENTE</span><span>RUOLO</span><span>CREATO IL</span></div>
+        <div class="data-table-head cols-users"><span>NOME</span><span>UTENTE</span><span>RUOLO</span><span>CREATO IL</span><span>AZIONI</span></div>
         ${rowsHtml || '<div class="empty-note">Caricamento…</div>'}
       </div>
+      ${state.deleteError ? `<div class="login-error" style="margin-bottom:18px">${escapeHtml(state.deleteError)}</div>` : ""}
     `;
 
   const form = state.form;
@@ -4794,7 +5359,7 @@ function renderUserManagementPanel() {
     <div class="zone-section">
       <div class="zone-section-title">Gestione utenti</div>
       <div class="empty-note" style="margin-bottom:16px">
-        Crea nuovi account amministratore o agronomo. Un amministratore può creare anche altri amministratori, oltre ad agronomi.
+        Crea nuovi account amministratore o agronomo ed elimina gli account agronomo non più necessari. Gli account amministratore sono protetti.
       </div>
       ${listHtml}
       <div class="user-create-form">
@@ -4850,7 +5415,7 @@ function renderUsersView() {
     document.getElementById("view-users").innerHTML = '<div class="empty-note">Sezione riservata agli amministratori.</div>';
     return;
   }
-  setPageTitle("Utenti", "Crea e consulta gli account che possono accedere alla dashboard · solo Amministratore");
+  setPageTitle("Utenti", "Crea, consulta ed elimina gli account agronomo · solo Amministratore");
   document.getElementById("view-users").innerHTML = renderUserManagementPanel();
 }
 
@@ -5145,21 +5710,40 @@ async function tickQuarantineModal() {
 }
 
 function renderModalIfSafe() {
-  // Avoid yanking focus away from an open <select> — or, since the plant
-  // quarantine reason field lives here too, a text <input> — mid-interaction.
+  // Avoid yanking focus away mid-interaction from a text <input> — the
+  // plant quarantine reason field lives here, and blowing it away on every
+  // poll tick would revert whatever the user is mid-typing (STATE only
+  // gets the new value on blur/submit).
   const active = document.activeElement;
-  if (active && (active.tagName === "SELECT" || active.tagName === "INPUT") && isFocusedInside("modal-content")) return;
+  if (active && active.tagName === "INPUT" && isFocusedInside("modal-content")) return;
+  // A focused <select> (e.g. "Andamento simulato" variable picker in the
+  // single-chart live-simulation view) is different: its value is already
+  // applied to STATE the moment it changes, so skipping the render isn't
+  // protecting anything — it was only blocking every later poll tick from
+  // ever refreshing the modal (chart included) once the select kept focus.
+  // Re-render and just restore focus to the rebuilt element afterwards.
+  const focusedSelectId = active && active.tagName === "SELECT" && isFocusedInside("modal-content") ? active.id : null;
   renderModal();
+  if (focusedSelectId) {
+    const el = document.getElementById(focusedSelectId);
+    if (el) el.focus();
+  }
 }
 
 function renderModal() {
+  const modalContent = document.getElementById("modal-content");
+  modalContent.classList.toggle(
+    "simulation-modal-content",
+    STATE.modalKind === "simulator" || STATE.modalKind === "live-simulator",
+  );
   if (STATE.modalKind === "recipe") { renderRecipeModal(); return; }
   if (STATE.modalKind === "recipe-form") { renderRecipeFormModal(); return; }
   if (STATE.modalKind === "quarantine") { renderQuarantineModal(); return; }
   if (STATE.modalKind === "simulator") { renderSimulatorModal(); return; }
   if (STATE.modalKind === "live-simulator") { renderLiveSimulatorModal(); return; }
+  if (STATE.modalKind === "simulator-quarantine") { renderSimulatorQuarantineModal(); return; }
   const zone = STATE.modalZone;
-  const wrap = document.getElementById("modal-content");
+  const wrap = modalContent;
   if (!zone) {
     wrap.innerHTML = '<div class="empty-note">Caricamento…</div>';
     return;
@@ -5553,7 +6137,7 @@ async function releasePlantFromQuarantine(plantId) {
  * "Rimuovi definitivamente" is now reachable from three places — the zone
  * detail pop-up, the quarantine detail pop-up, and (for a quarantined
  * plant whose origin sector is gone) the Allarmi page's orphan cards. The
- * first two live inside #modal-content, the third doesn't open any modal
+ * first two live inside the shared modal content, the third doesn't open any modal
  * at all, so a single renderModal() call isn't enough to always repaint
  * wherever the plant is actually shown — this refreshes every host that
  * might currently have it on screen.
@@ -5635,6 +6219,97 @@ function renderQuarantineModal() {
       <section class="zone-section span2">
         ${body}
       </section>
+    </div>
+  `;
+}
+
+/** Apre il "Reparto 5" della quarantena SIMULATA — omologo di
+ * openQuarantineModal, ma legge da STATE.liveSimulation (nessuna chiamata
+ * di rete propria: il job e' gia' tenuto fresco dal poll della
+ * riproduzione live, vedi tickLiveSimulationJob) invece che da /plants.
+ * Raggiungibile solo dal Reparto 5 del Simulatore mentre una riproduzione
+ * live e' attiva (renderSimulatorQuarantineCard). */
+function openSimulatorQuarantineModal() {
+  if (!STATE.liveSimulation || !STATE.liveSimulation.job) return;
+  STATE.modalKind = "simulator-quarantine";
+  STATE.modalZoneId = null;
+  STATE.modalZone = null;
+  document.getElementById("modal-overlay").classList.remove("hidden");
+  renderModal();
+}
+
+/** Stessa forma di renderQuarantineModal (header "REPARTO 5" + griglia di
+ * tile), ma per le piante virtualmente spostate nella riproduzione live
+ * corrente: nessun countdown di rilascio (non ha senso in una riproduzione
+ * che puo' finire in qualunque momento) — solo "↩ Richiama dalla
+ * quarantena simulata" per settore di origine, lo stesso pulsante gia'
+ * usato dal pannello "Piante" del pop-up live (data-action=
+ * "live-quarantine-toggle", vedi renderLiveQuarantinePanel). L'anagrafica
+ * (specie) arriva dalla stessa cache per-settore di quel pannello
+ * (sim.zonePlants), caricata al volo per ogni settore con piante qui
+ * dentro se non gia' in cache — ensureLiveZonePlantsLoaded ridisegna da
+ * sola quando arriva. */
+function renderSimulatorQuarantineModal() {
+  const wrap = document.getElementById("modal-content");
+  const sim = STATE.liveSimulation;
+  const meta = DEPT_META[5];
+  const entries = liveSimulationQuarantineEntries(sim);
+
+  let body;
+  if (entries.length === 0) {
+    body = '<div class="empty-note">Nessuna pianta al momento in quarantena simulata.</div>';
+  } else {
+    const tiles = entries.map(({ plantId, zoneId }) => {
+      ensureLiveZonePlantsLoaded(sim, zoneId);
+      const plants = sim.zonePlants[zoneId];
+      const plant = Array.isArray(plants) ? plants.find((p) => p.id === plantId) : null;
+      return renderSimulatorQuarantineTile(plantId, zoneId, plant);
+    }).join("");
+    body = `<div class="quarantine-grid">${tiles}</div>`;
+  }
+
+  wrap.innerHTML = `
+    <div class="zone-header" style="--zone-tint:${meta.tint}">
+      <div style="min-width:0">
+        <div class="zone-header-code">
+          <span class="code">REPARTO 5</span>
+          <span class="sim-live-badge"><span class="live-dot"></span>LIVE</span>
+        </div>
+        <h2>Quarantena simulata</h2>
+        <div class="zone-header-meta">
+          <span>${entries.length} piant${entries.length === 1 ? "a" : "e"} spostate solo per questa riproduzione — non tocca la quarantena reale</span>
+        </div>
+      </div>
+      <button type="button" class="zone-close" data-action="close-modal">✕</button>
+    </div>
+    <div class="zone-body">
+      <section class="zone-section span2">
+        ${body}
+      </section>
+    </div>
+  `;
+}
+
+/** Una tile per pianta in quarantena simulata — specie e id se
+ * l'anagrafica del settore e' gia' in cache (altrimenti "…", finche'
+ * ensureLiveZonePlantsLoaded non la porta e ridisegna), settore di
+ * provenienza (zoneCodeFromId, sempre disponibile da zoneId) e un solo
+ * tasto: richiamarla, riusando l'azione gia' cablata dal pannello
+ * "Piante" del pop-up live. */
+function renderSimulatorQuarantineTile(plantId, zoneId, plant) {
+  return `
+    <div class="quarantine-tile">
+      <div class="quarantine-tile-head">
+        <span class="plant-row-species">${plant ? escapeHtml(plant.species) : "…"}</span>
+        <span class="plant-row-id mono">${escapeHtml(plantId)}</span>
+      </div>
+      <div class="quarantine-tile-row"><span class="k">Settore di provenienza</span><span class="v mono">${escapeHtml(zoneCodeFromId(zoneId))}</span></div>
+      <div class="quarantine-tile-actions">
+        <button type="button" class="btn btn-primary" data-action="live-quarantine-toggle"
+          data-zone-id="${escapeAttr(zoneId)}" data-plant-id="${escapeAttr(plantId)}" data-quarantined="0">
+          ↩ Richiama dalla quarantena simulata
+        </button>
+      </div>
     </div>
   `;
 }
@@ -5735,7 +6410,7 @@ function renderZoneAdvanced(zone) {
             <select id="chart-variable-select">
               ${VARIABLES.map((v) => `<option value="${v.key}" ${STATE.modalChartVariable === v.key ? "selected" : ""}>${v.label}</option>`).join("")}
             </select>
-            <span class="hint">misura vs setpoint</span>
+            <span id="telemetry-chart-hint" class="hint">${STATE.modalChartVariable === "light" ? "DLI cumulativo vs obiettivo giornaliero" : "misura vs setpoint"}</span>
           </div>
           <div class="chart-canvas-wrap"><canvas id="telemetry-chart" style="width:100%;height:100%;display:block"></canvas></div>
         </div>
@@ -5928,6 +6603,17 @@ function pollForCultivationStopped(zoneId) {
  * the diagnostic finding that nothing in the UI could start one before
  * this. Same async confirm-from-Edge poll pattern as stop/advance
  * (ActivateCultivation is applied by the Edge Controller, not instantly).
+ *
+ * Il campo "Numero di piante" e' una richiesta esplicita: prima la
+ * coltivazione partiva sempre per un settore a 0 piante (l'anagrafica
+ * piante e il ciclo colturale erano due azioni scollegate, mai un
+ * vivaio vero parte "vuoto"), quindi ora si puo' dichiarare qui quante
+ * registrarne INSIEME all'avvio, invece di aggiungerle una alla volta
+ * dopo con "+ Aggiungi pianta" (sezione "Piante di questo settore" —
+ * resta comunque disponibile per correggere il numero in seguito). Letto
+ * dal DOM al click (getElementById, stesso schema del form di login),
+ * non serve tenerlo in STATE: 0/vuoto resta una scelta legittima e
+ * esplicita, non piu' un default silenzioso.
  */
 function renderStartCultivationBlock() {
   const sending = STATE.startCultivationStatus === "sending" || STATE.startCultivationStatus === "waiting";
@@ -5936,21 +6622,91 @@ function renderStartCultivationBlock() {
     : "Avvia coltivazione";
   return `
     <div style="margin-top:12px">
+      <label class="field-label" style="display:block;margin-bottom:6px">
+        Numero di piante da registrare insieme all'avvio
+        <input type="number" id="start-cultivation-plant-count" class="form-num" min="0" max="500" step="1" placeholder="0" ${sending ? "disabled" : ""} style="margin-top:4px">
+      </label>
       <button type="button" class="btn btn-primary" data-action="start-cultivation" ${sending ? "disabled" : ""}>${label}</button>
       ${STATE.startCultivationError ? `<div class="zone-danger-error" style="margin-top:10px">${escapeHtml(STATE.startCultivationError)}</div>` : ""}
     </div>
   `;
 }
 
+/** Registra `count` piante nel settore in sequenza, stessa generazione id di
+ * addPlantToZone (prefisso "{zone_id}-p", primo numero libero secondo
+ * l'anagrafica completa — mai un contatore locale, vedi il commento su
+ * addPlantToZone per il perche') — solo ripetuta N volte invece di una,
+ * per il campo "Numero di piante" di renderStartCultivationBlock. Ritorna
+ * le piante create; lancia se una risulta irrecuperabile dopo
+ * MAX_ATTEMPTS_PER_PLANT tentativi consecutivi (id conteso da una corsa
+ * concorrente). */
+async function registerPlantsInZone(zone, count) {
+  const prefix = `${zone.id}-p`;
+  const allPlants = await apiGet("/plants", { limit: 1000 });
+  const usedNumbers = allPlants
+    .filter((p) => p.home_zone_id === zone.id)
+    .map((p) => p.id)
+    .filter((id) => id.startsWith(prefix))
+    .map((id) => Number(id.slice(prefix.length)))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  let n = usedNumbers.length ? Math.max(...usedNumbers) + 1 : 1;
+  const MAX_ATTEMPTS_PER_PLANT = 20;
+  const created = [];
+  for (let i = 0; i < count; i++) {
+    let plant = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_PLANT; attempt++) {
+      const candidate = await apiPost("/plants", {
+        id: `${prefix}${n}`,
+        species: zone.plant_species,
+        home_zone_id: zone.id,
+      });
+      n += 1;
+      if (candidate.current_zone_id === zone.id) { plant = candidate; break; }
+    }
+    if (!plant) {
+      throw new Error(`impossibile generare un id pianta libero per la pianta ${i + 1}/${count}`);
+    }
+    created.push(plant);
+  }
+  return created;
+}
+
 async function startCultivation() {
   const zone = STATE.modalZone;
   if (!zone || zone.active_cultivation_id || !zone.active_recipe_id) return;
   if (STATE.startCultivationStatus === "sending" || STATE.startCultivationStatus === "waiting") return;
+
+  // Letto dal DOM al click, non tenuto in STATE — vedi il commento su
+  // renderStartCultivationBlock. Vuoto == 0: una scelta esplicita valida
+  // (un settore puo' ancora legittimamente partire senza piante), non
+  // piu' un default silenzioso come prima di questo campo.
+  const countInput = document.getElementById("start-cultivation-plant-count");
+  const rawCount = countInput ? countInput.value.trim() : "";
+  const plantCount = rawCount === "" ? 0 : Number(rawCount);
+  if (!Number.isInteger(plantCount) || plantCount < 0 || plantCount > 500) {
+    STATE.startCultivationError = "Numero di piante non valido (0-500).";
+    renderModal();
+    return;
+  }
+
   STATE.startCultivationStatus = "sending";
   STATE.startCultivationError = null;
   renderModal();
   try {
     await apiPost("/cultivations", { zone_id: zone.id, recipe_id: zone.active_recipe_id });
+    if (plantCount > 0) {
+      try {
+        const created = await registerPlantsInZone(zone, plantCount);
+        if (STATE.modalZoneId === zone.id) {
+          STATE.modalPlants = [...(STATE.modalPlants || []), ...created];
+        }
+      } catch (plantErr) {
+        // La coltivazione e' comunque partita (nessun rollback): un
+        // errore qui si limita a segnalarlo, le piante mancanti si
+        // completano a mano da "+ Aggiungi pianta".
+        showToast(`Coltivazione avviata, ma non tutte le piante sono state registrate: ${plantErr.message}.`, "warn");
+      }
+    }
     STATE.startCultivationStatus = "waiting";
     renderModal();
     showToast("Comando di avvio inviato: in attesa che l'Edge Controller lo applichi.");
@@ -5997,6 +6753,73 @@ function pollForCultivationStarted(zoneId) {
 
 /* ---- telemetry chart (hand-rolled canvas, no external deps) ----------- */
 
+/**
+ * Converte i campioni PPFD dell'Edge nel DLI cumulativo del giorno simulato.
+ *
+ * Ogni campione descrive lo stato alla fine dell'intervallo appena elaborato
+ * dall'Edge; per questo l'integrazione usa il PPFD del campione corrente e la
+ * differenza fra i timestamp simulati. Il cumulato riparte da zero quando
+ * cambia il giorno simulato o quando inizia un nuovo flusso Edge/coltivazione.
+ */
+function telemetryLightDliPoints(samples) {
+  const secondsPerDay = 24 * 3600;
+  let previous = null;
+  let accumulatedDay = null;
+  let accumulatedDli = 0;
+
+  return samples.map((sample, index) => {
+    const timestamp = Number(sample.timestamp_seconds);
+    const ppfd = Number(sample.light_ppfd_umol_m2_s);
+    const point = { t: new Date(sample.recorded_at), v: null };
+    if (!Number.isFinite(timestamp) || !Number.isFinite(ppfd) || ppfd < 0) {
+      previous = null;
+      return point;
+    }
+
+    const sameStream = previous &&
+      previous.bootId === (sample.boot_id || null) &&
+      previous.cultivationId === (sample.cultivation_id || null) &&
+      timestamp > previous.timestamp;
+
+    let intervalStart = timestamp;
+    if (sameStream) {
+      intervalStart = previous.timestamp;
+    } else {
+      // Se lo storico comincia con il primo campione di un intervallo, usa
+      // il passo immediatamente successivo soltanto quando porta davvero
+      // all'inizio del giorno. Evita di inventare ore di luce se la risposta
+      // API fosse troncata a metà giornata.
+      const next = samples[index + 1];
+      const nextTimestamp = next ? Number(next.timestamp_seconds) : NaN;
+      const nextIsSameStream = next &&
+        (next.boot_id || null) === (sample.boot_id || null) &&
+        (next.cultivation_id || null) === (sample.cultivation_id || null) &&
+        Number.isFinite(nextTimestamp) && nextTimestamp > timestamp;
+      if (nextIsSameStream) {
+        const inferredStart = timestamp - (nextTimestamp - timestamp);
+        const dayStart = Math.floor(Math.max(timestamp - Number.EPSILON, 0) / secondsPerDay) * secondsPerDay;
+        if (Math.abs(inferredStart - dayStart) < 1e-6) intervalStart = inferredStart;
+      }
+    }
+
+    const intervalDay = Math.floor(Math.max(intervalStart, 0) / secondsPerDay);
+    if (!sameStream || intervalDay !== accumulatedDay) {
+      accumulatedDay = intervalDay;
+      accumulatedDli = 0;
+    }
+    const deltaSeconds = timestamp - intervalStart;
+    if (deltaSeconds > 0) accumulatedDli += ppfd * deltaSeconds / 1e6;
+    point.v = accumulatedDli;
+
+    previous = {
+      timestamp,
+      bootId: sample.boot_id || null,
+      cultivationId: sample.cultivation_id || null,
+    };
+    return point;
+  });
+}
+
 async function refreshChartData() {
   if (!STATE.modalZoneId) return;
   const zoneId = STATE.modalZoneId;
@@ -6006,7 +6829,9 @@ async function refreshChartData() {
     const from = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const samples = await apiGet(`/zones/${encodeURIComponent(zoneId)}/telemetry`, { from, limit: 500 });
     if (STATE.modalZoneId !== zoneId) return;
-    STATE.modalChartData = samples.map((s) => ({ t: new Date(s.recorded_at), v: s[varMeta.sensorField] }));
+    STATE.modalChartData = key === "light"
+      ? telemetryLightDliPoints(samples)
+      : samples.map((s) => ({ t: new Date(s.recorded_at), v: s[varMeta.sensorField] }));
   } catch (e) {
     STATE.modalChartData = [];
   }
@@ -6015,6 +6840,8 @@ async function refreshChartData() {
 
 function onChartVariableChange(key) {
   STATE.modalChartVariable = key;
+  const hint = document.getElementById("telemetry-chart-hint");
+  if (hint) hint.textContent = key === "light" ? "DLI cumulativo vs obiettivo giornaliero" : "misura vs setpoint";
   refreshChartData();
 }
 
@@ -6145,6 +6972,9 @@ function paintViewImmediately(view) {
   }
 }
 
+/** @brief Applies role gates, polling lifecycle and rendering for a view change.
+ * @param view Destination view identifier from the sidebar navigation.
+ */
 function switchView(view) {
   // Controllo e Utenti sono Amministratore-only. Questo e' l'unico punto di
   // passaggio per ogni cambio di vista (il click sulla nav, e qualunque
@@ -6181,7 +7011,7 @@ function switchView(view) {
     // non solo finche' viene calcolata (vedi discardActiveLiveSimulationIfAny).
     discardActiveLiveSimulationIfAny();
     STATE.liveSimulation = null;
-    if (STATE.modalKind === "live-simulator") STATE.modalKind = null;
+    if (STATE.modalKind === "live-simulator" || STATE.modalKind === "simulator-quarantine") STATE.modalKind = null;
   }
   STATE.view = view;
   document.querySelectorAll("#main-nav .nav-item").forEach((btn) => {
@@ -6218,6 +7048,11 @@ function switchView(view) {
     // sector's pop-up is open.
     setPoll("zones", tickZones, ZONES_POLL_MS);
     setPoll("recipes-poll", tickRecipes, RECIPES_POLL_MS);
+    // Riaggancio a un run live gia' attivo che questa scheda non conosce
+    // ancora (reload, prima visita di questa scheda) — vedi
+    // reattachLiveSimulationIfAny. Fire-and-forget: no-op se STATE.
+    // liveSimulation e' gia' popolato o se non c'e' alcun run attivo.
+    reattachLiveSimulationIfAny();
   } else if (view === "alerts") {
     setPoll("alerts-view", tickAlertsView, ALERTS_POLL_MS);
   }
@@ -6407,6 +7242,9 @@ function initEventDelegation() {
     const openQuarantine = e.target.closest('[data-action="open-quarantine"]');
     if (openQuarantine) { openQuarantineModal(); return; }
 
+    const openSimulatorQuarantine = e.target.closest('[data-action="open-simulator-quarantine"]');
+    if (openSimulatorQuarantine) { openSimulatorQuarantineModal(); return; }
+
     const addPlantBtn = e.target.closest('[data-action="add-plant"]');
     if (addPlantBtn && !addPlantBtn.disabled) { addPlantToZone(addPlantBtn.dataset.zoneId); return; }
 
@@ -6471,6 +7309,17 @@ function initEventDelegation() {
     const liveResetBtn = e.target.closest('[data-action="live-reset"]');
     if (liveResetBtn) { resetLiveSimulation(); return; }
 
+    const liveQuarantineToggleBtn = e.target.closest('[data-action="live-quarantine-toggle"]');
+    if (liveQuarantineToggleBtn && STATE.liveSimulation) {
+      setSimulatedPlantQuarantine(
+        STATE.liveSimulation,
+        liveQuarantineToggleBtn.dataset.zoneId,
+        liveQuarantineToggleBtn.dataset.plantId,
+        liveQuarantineToggleBtn.dataset.quarantined === "1",
+      );
+      return;
+    }
+
     const simChartViewToggle = e.target.closest('[data-action="sim-chart-view-toggle"]');
     if (simChartViewToggle && currentSim()) {
       // Swaps the DOM (single canvas <-> one per VARIABLES entry), so this
@@ -6481,8 +7330,41 @@ function initEventDelegation() {
       return;
     }
 
+    const simChartZoom = e.target.closest('[data-action="sim-chart-zoom"]');
+    if (simChartZoom && currentSim()) {
+      const sim = currentSim();
+      const preview = activeSimulationPreview(sim);
+      const variable = VARIABLES_BY_KEY[sim.chartVariable];
+      if (preview && variable) {
+        zoomSimulationChart(
+          sim,
+          variable.key,
+          simulationChartSeries(sim, preview, variable),
+          Number(simChartZoom.dataset.factor),
+        );
+      }
+      return;
+    }
+
+    const simChartReset = e.target.closest('[data-action="sim-chart-reset"]');
+    if (simChartReset && currentSim()) {
+      const sim = currentSim();
+      resetSimulationChartViewport(sim, sim.chartVariable);
+      drawSimulationChart();
+      return;
+    }
+
     const submitCreateUserBtn = e.target.closest('[data-action="submit-create-user"]');
     if (submitCreateUserBtn && !submitCreateUserBtn.disabled) { submitCreateUser(); return; }
+
+    const askDeleteUserBtn = e.target.closest('[data-action="ask-delete-user"]');
+    if (askDeleteUserBtn && !askDeleteUserBtn.disabled) { askDeleteUser(askDeleteUserBtn.dataset.username); return; }
+
+    const cancelDeleteUserBtn = e.target.closest('[data-action="cancel-delete-user"]');
+    if (cancelDeleteUserBtn && !cancelDeleteUserBtn.disabled) { cancelDeleteUser(); return; }
+
+    const confirmDeleteUserBtn = e.target.closest('[data-action="confirm-delete-user"]');
+    if (confirmDeleteUserBtn && !confirmDeleteUserBtn.disabled) { confirmDeleteUser(confirmDeleteUserBtn.dataset.username); return; }
   });
 
   document.addEventListener("change", (e) => {
@@ -6624,16 +7506,21 @@ function initEventDelegation() {
 
 const SESSION_TOKEN_KEY = "smarthydro_session_token";
 
+/** @brief Reads the opaque dashboard session token from local storage.
+ * @return Stored token or `null` when absent or inaccessible.
+ */
 function loadSessionToken() {
   try {
     return localStorage.getItem(SESSION_TOKEN_KEY) || null;
   } catch (e) { /* storage unavailable — treat as logged out */ return null; }
 }
 
+/** @brief Persists the opaque dashboard session token when storage is available. */
 function saveSessionToken(token) {
   try { localStorage.setItem(SESSION_TOKEN_KEY, token); } catch (e) { /* session-only */ }
 }
 
+/** @brief Removes the locally persisted session token. */
 function clearSessionToken() {
   try { localStorage.removeItem(SESSION_TOKEN_KEY); } catch (e) {}
 }
@@ -6701,6 +7588,7 @@ function enterApp(user) {
   switchView("home");
 }
 
+/** @brief Validates the login form and opens a backend session. */
 async function submitLogin() {
   const usernameInput = document.getElementById("login-username");
   const passwordInput = document.getElementById("login-password");
@@ -6762,6 +7650,7 @@ async function logout() {
   showLoginScreen(null);
 }
 
+/** @brief Registers the login form keyboard and submit handlers. */
 function initLoginScreen() {
   document.getElementById("login-submit").addEventListener("click", submitLogin);
   ["login-username", "login-password"].forEach((id) => {
@@ -6861,6 +7750,7 @@ async function submitBootstrapAdmin() {
   }
 }
 
+/** @brief Registers the first-administrator bootstrap form handlers. */
 function initBootstrapScreen() {
   document.getElementById("bootstrap-submit").addEventListener("click", submitBootstrapAdmin);
   ["bootstrap-username", "bootstrap-password"].forEach((id) => {
@@ -6874,6 +7764,11 @@ function initBootstrapScreen() {
 /* Boot                                                                */
 /* ------------------------------------------------------------------ */
 
+/** @brief Initializes authentication state and reveals the appropriate shell.
+ *
+ * @details Bootstrap status is checked before any stored token so a database
+ * reset cannot leave the user trapped behind credentials that no longer exist.
+ */
 async function init() {
   initLoginScreen();
   initBootstrapScreen();
