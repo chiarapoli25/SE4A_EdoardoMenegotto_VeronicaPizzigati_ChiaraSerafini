@@ -27,6 +27,7 @@ from .repository import (
 
 ## @brief Router delle zone fisiche della serra.
 router = APIRouter(prefix="/zones", tags=["zones"])
+## @brief Router del manifesto di assegnazione delle zone a ciascun Edge.
 edge_router = APIRouter(prefix="/edges", tags=["edges"])
 
 

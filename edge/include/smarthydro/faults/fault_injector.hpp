@@ -21,15 +21,20 @@ namespace smarthydro {
  */
 class FaultInjector {
 public:
+    /** @brief Registra o sostituisce un guasto a partire dall'istante dato. */
     void inject(
         FaultSpecification specification,
         double timestamp_seconds);
+    /** @brief Rimuove un guasto tramite identificatore. */
     bool reset(const std::string& fault_id) noexcept;
+    /** @brief Verifica se un guasto e ancora registrato. */
     bool contains(const std::string& fault_id) const noexcept;
 
+    /** @brief Applica ai sensori i guasti attivi senza notificare la FSM. */
     void alter_readings(
         SensorReadings& readings,
         double timestamp_seconds);
+    /** @brief Applica all'uscita fisica i guasti attivi sugli attuatori. */
     ActuatorOutput alter_output(
         const ActuatorCommand& command,
         const ActuatorOutput& raw_output,

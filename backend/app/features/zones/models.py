@@ -26,33 +26,34 @@ class ZoneStatus(str, Enum):
 
 
 class ZoneLifecycleState(str, Enum):
-    """Stato applicativo corrente pubblicato dall'Edge."""
+    """@brief Stato applicativo corrente pubblicato dall'Edge."""
 
-    IDLE = "Idle"
-    RUNNING = "Running"
-    PAUSED = "Paused"
-    ERROR = "Error"
+    IDLE = "Idle"  ##< Zona configurata ma senza controllo attivo.
+    RUNNING = "Running"  ##< Ciclo di controllo in esecuzione.
+    PAUSED = "Paused"  ##< Ciclo temporaneamente sospeso.
+    ERROR = "Error"  ##< Runtime non in grado di continuare normalmente.
 
 
 class OperationalState(str, Enum):
-    """Stato corrente della FSM di sicurezza dell'Edge."""
+    """@brief Stato corrente della FSM di sicurezza dell'Edge."""
 
-    NOMINAL = "Nominal"
-    DEGRADED = "Degraded"
-    EMERGENCY_LOCKDOWN = "EmergencyLockdown"
+    NOMINAL = "Nominal"  ##< Tutti i controlli possono operare.
+    DEGRADED = "Degraded"  ##< Controlli dipendenti dal guasto isolati.
+    EMERGENCY_LOCKDOWN = "EmergencyLockdown"  ##< Tutte le uscite in stato sicuro.
 
 
 class StrategyName(str, Enum):
-    """Nomi stabili delle Strategy disponibili sull'Edge."""
+    """@brief Nomi stabili delle Strategy disponibili sull'Edge."""
 
-    THRESHOLD = "Threshold"
-    PID = "PID"
-    PREDICTIVE = "Predictive"
+    THRESHOLD = "Threshold"  ##< Controllo a soglia con isteresi.
+    PID = "PID"  ##< Controllo proporzionale, integrale e derivativo.
+    PREDICTIVE = "Predictive"  ##< Controllo anticipativo basato sul modello.
 
 
 class ControlStrategies(BaseModel):
-    """Strategia selezionata per ognuna delle sei variabili controllate."""
+    """@brief Strategy selezionata per ognuna delle sei variabili controllate."""
 
+    ## @brief Rifiuta variabili di controllo non previste dal contratto Edge.
     model_config = ConfigDict(extra="forbid")
 
     soil_moisture: StrategyName
@@ -76,15 +77,22 @@ class ControlStrategies(BaseModel):
 
 
 class ControlSetpoints(BaseModel):
-    """Setpoint correnti della fase, indicizzati per variabile."""
+    """@brief Setpoint correnti della fase, indicizzati per variabile."""
 
+    ## @brief Rifiuta variabili non previste dal contratto Edge.
     model_config = ConfigDict(extra="forbid")
 
+    ## @brief Umidita target del terriccio in percentuale.
     soil_moisture: float = Field(allow_inf_nan=False)
+    ## @brief Luce target secondo il contratto della ricetta.
     light: float = Field(allow_inf_nan=False)
+    ## @brief pH target dell'acqua interstiziale.
     ph: float = Field(allow_inf_nan=False)
+    ## @brief Concentrazione target di azoto.
     nitrogen: float = Field(allow_inf_nan=False)
+    ## @brief Concentrazione target di fosforo.
     phosphorus: float = Field(allow_inf_nan=False)
+    ## @brief Concentrazione target di potassio.
     potassium: float = Field(allow_inf_nan=False)
 
     @classmethod
@@ -213,17 +221,23 @@ class ZoneUpdate(BaseModel):
     `model_fields_set`.
     """
 
+    ## @brief Rifiuta campi non modificabili o sconosciuti.
     model_config = ConfigDict(extra="forbid")
 
+    ## @brief Nuovo nome leggibile, se specificato.
     name: str | None = Field(default=None, min_length=1, max_length=100)
+    ## @brief Nuova specie del settore produttivo, se specificata.
     plant_species: str | None = Field(default=None, min_length=1, max_length=100)
+    ## @brief Nuovo Edge assegnato; `null` rimuove l'assegnazione.
     assigned_edge_id: str | None = Field(
         default=None,
         min_length=1,
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
     )
+    ## @brief Nuova ricetta assegnata; `null` rimuove l'assegnazione.
     active_recipe_id: str | None = Field(default=None, max_length=64)
+    ## @brief Nuova disponibilita amministrativa del settore.
     administrative_status: ZoneAdministrativeStatus | None = None
 
     @model_validator(mode="after")

@@ -4,7 +4,8 @@
  * SmartHydro e composto da:
  *
  * - @subpage edge_controller_cpp - simulazione e controllo locale in C++17;
- * - @subpage backend_python - API HTTP realizzate con FastAPI.
+ * - @subpage backend_python - API HTTP realizzate con FastAPI;
+ * - @subpage dashboard_web - interfaccia operativa web in JavaScript.
  *
  * Per compilazione, test ed esecuzione consultare la @ref md__r_e_a_d_m_e.
  *
@@ -13,7 +14,8 @@
  * | Componente | Responsabilita | Stato |
  * | ---------- | -------------- | ----- |
  * | Edge | Sensori, ricette, controllo, attuatori e sicurezza | Operativo in simulazione |
- * | Backend | API per dashboard e integrazione futura | Endpoint base disponibili |
+ * | Backend | Persistenza, autenticazione, API e coordinamento | API operative e versionate |
+ * | Dashboard | Supervisione, configurazione e simulazione | Servita dal backend su `/dashboard/` |
  *
  * Il controllo rimane nell'Edge anche quando il backend non e disponibile.
  * SmartHydro conserva il proprio nome, ma il dominio implementato e una
@@ -130,8 +132,10 @@
  * @section edge_recipes Ricette e Strategy
  *
  * Una @ref smarthydro::Recipe contiene versione, substrato, fasi, target e
- * configurazioni dei controllori. Modificare Strategy o ricetta invalida le
- * conferme precedenti; il controllo riparte solo dopo una nuova conferma.
+ * configurazioni dei controllori. L'adozione di una ricetta valida conferma
+ * automaticamente tutte le Strategy che essa contiene. Un override manuale
+ * tramite `select_strategy()`, invece, invalida le conferme e richiede una
+ * nuova @ref smarthydro::ConfirmConfigurationCommand per la variabile.
  *
  * Le Strategy disponibili sono:
  *
@@ -181,6 +185,80 @@
  */
 
 /**
+ * @page dashboard_web Dashboard web
+ *
+ * La dashboard e una single-page application senza framework, servita dallo
+ * stesso processo FastAPI all'indirizzo `/dashboard/`. HTML e CSS definiscono
+ * struttura e presentazione; `dashboard/script.js` contiene stato applicativo,
+ * rendering, chiamate HTTP e gestione delle interazioni.
+ *
+ * @tableofcontents
+ *
+ * @section dashboard_responsibilities Responsabilita
+ *
+ * La dashboard e un client di supervisione: visualizza lo stato persistito dal
+ * backend e invia richieste o comandi, ma non controlla direttamente sensori e
+ * attuatori. Il controllo fisico e le decisioni di sicurezza rimangono
+ * nell'Edge. Una risposta visuale positiva non sostituisce quindi l'esito del
+ * comando restituito dall'Edge.
+ *
+ * @section dashboard_auth Autenticazione e autorizzazione
+ *
+ * All'avvio `init()` interroga `/auth/setup-required`. Se non esistono utenti,
+ * mostra la creazione atomica del primo amministratore; altrimenti verifica il
+ * token salvato tramite `/auth/me` oppure presenta il login. Nel browser viene
+ * conservato soltanto il token opaco (`SESSION_TOKEN_KEY`), mentre identita e
+ * ruolo vengono riletti dal backend a ogni caricamento.
+ *
+ * Le viste Controllo e Utenti sono nascoste agli agronomi per chiarezza, ma la
+ * sicurezza non dipende dalla UI: gli endpoint sensibili applicano nuovamente
+ * i vincoli di ruolo nel backend.
+ *
+ * @section dashboard_state Stato e rendering
+ *
+ * L'oggetto globale `STATE` e la sorgente unica dello stato client. Contiene
+ * vista corrente, zone, ricette, alert, coltivazioni, utenti, simulazioni e
+ * handle dei timer. Le funzioni `render*()` producono il markup della vista;
+ * gli aggiornamenti frequenti usano patch DOM mirate quando un rendering
+ * completo potrebbe interrompere focus, selezioni o interazioni in corso.
+ *
+ * @section dashboard_polling Aggiornamento dei dati
+ *
+ * Il backend non espone WebSocket: la dashboard usa polling con frequenze
+ * distinte per zone, modali, eventi, grafici, comandi e simulazioni. Ogni timer
+ * deve essere registrato in `_intervals` o negli array dedicati e rimosso al
+ * cambio vista, alla chiusura del modale o al logout. Le richieste passano da
+ * `apiRequest()`, che allega il token di sessione e normalizza gli errori HTTP.
+ *
+ * @section dashboard_views Viste operative
+ *
+ * | Vista | Scopo |
+ * | ----- | ----- |
+ * | Home | Stato dei reparti, settori, coltivazioni, attuatori e anomalie |
+ * | Ricette | Catalogo, dettaglio, creazione, modifica e anteprima |
+ * | Controllo | Strategy globali e risultati per settore; solo amministratori |
+ * | Utenti | Gestione degli account; solo amministratori |
+ * | Allarmi | Eventi anomali e piante di quarantena senza settore di origine |
+ * | Simulatore | Anteprima batch e riproduzione live non operativa |
+ *
+ * @section dashboard_simulation Simulazione
+ *
+ * Le simulazioni non modificano lo stato operativo. La modalita batch produce
+ * un risultato completo e ridotto per i grafici; la modalita live rivela nel
+ * tempo gli stessi dati fisici e puo essere messa in pausa o accelerata. Quando
+ * l'utente lascia la vista, la dashboard libera per quanto possibile lo slot
+ * globale occupato dal job.
+ *
+ * @section dashboard_comments Convenzioni dei commenti
+ *
+ * Le funzioni JavaScript pubblicate da Doxygen usano blocchi `/** ... */` con
+ * una prima frase sintetica. Aggiungere `@param`, `@return` e `@throws` quando
+ * il contratto non e evidente dal tipo o dal nome. I commenti CSS e HTML
+ * descrivono scelte locali; questa pagina raccoglie invece l'architettura e i
+ * vincoli trasversali della UI.
+ */
+
+/**
  * @page backend_python Backend Python
  *
  * Il backend FastAPI espone i servizi destinati alla dashboard. Il controllo
@@ -194,9 +272,20 @@
  * | ------ | -------- | -------- | ----------- |
  * | GET | `/` | backend.app.features.system.routes.read_root() | Nome e versione del servizio |
  * | GET | `/health` | backend.app.features.system.routes.read_health() | Disponibilita del processo |
+ * | GET | `/auth/setup-required` | backend.app.features.users.routes.read_setup_required() | Necessita di creare il primo amministratore |
+ * | POST | `/auth/bootstrap-admin` | backend.app.features.users.routes.create_bootstrap_admin() | Creazione atomica del primo amministratore |
+ * | POST | `/auth/login` | backend.app.features.users.routes.login() | Verifica credenziali e apertura sessione |
+ * | POST | `/auth/logout` | backend.app.features.users.routes.logout() | Revoca della sessione corrente |
+ * | GET | `/auth/me` | backend.app.features.users.routes.read_current_user() | Identita associata al token di sessione |
+ * | POST | `/users` | backend.app.features.users.routes.register_user() | Creazione di un account; solo amministratori |
+ * | GET | `/users` | backend.app.features.users.routes.read_users() | Elenco degli account; solo amministratori |
+ * | DELETE | `/users/{username}` | backend.app.features.users.routes.remove_user() | Eliminazione di un account agronomo |
  * | POST | `/zones` | backend.app.features.zones.routes.register_zone() | Registrazione di un settore della serra |
  * | GET | `/zones` | backend.app.features.zones.routes.read_zones() | Elenco dei settori ordinati per reparto |
+ * | GET | `/edges/{edge_id}/zones` | backend.app.features.zones.routes.read_edge_zones() | Manifesto autorevole delle zone assegnate all'Edge |
  * | GET | `/zones/{zone_id}` | backend.app.features.zones.routes.read_zone() | Lettura di un settore tramite identificativo |
+ * | PATCH | `/zones/{zone_id}` | backend.app.features.zones.routes.modify_zone() | Modifica di nome, Edge o ricetta assegnata |
+ * | DELETE | `/zones/{zone_id}` | backend.app.features.zones.routes.remove_zone() | Rimozione di un settore inattivo |
  * | POST | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.create_telemetry() | Acquisizione dello snapshot completo dall'Edge |
  * | GET | `/zones/{zone_id}/telemetry/latest` | backend.app.features.telemetry.routes.read_latest_telemetry() | Ultimo snapshot completo disponibile |
  * | GET | `/zones/{zone_id}/telemetry` | backend.app.features.telemetry.routes.read_telemetry_history() | Storico filtrato della telemetria |
@@ -206,6 +295,8 @@
  * | POST | `/recipes` | backend.app.features.recipes.routes.create_recipe() | Validazione e persistenza integrale SQLite di una ricetta |
  * | GET | `/recipes/{recipe_id}` | backend.app.features.recipes.routes.read_recipe() | Lettura di una ricetta salvata |
  * | GET | `/recipes` | backend.app.features.recipes.routes.read_recipes() | Catalogo e ricette salvate, filtrabili per reparto |
+ * | GET | `/control-strategy` | backend.app.features.control_strategy.routes.read_control_strategy() | Strategy globale corrente per ogni variabile |
+ * | PUT | `/control-strategy/{variable}` | backend.app.features.control_strategy.routes.update_control_strategy() | Aggiornamento globale e fan-out alle zone attive |
  * | POST | `/zones/{zone_id}/events` | backend.app.features.events.routes.create_event() | Acquisizione idempotente di un evento Edge |
  * | GET | `/zones/{zone_id}/events` | backend.app.features.events.routes.read_events() | Storico degli eventi Edge |
  * | POST | `/zones/{zone_id}/commands` | backend.app.features.commands.routes.enqueue_command() | Accodamento di un comando runtime |
@@ -213,12 +304,33 @@
  * | POST | `/zones/{zone_id}/commands/{command_id}/result` | backend.app.features.commands.routes.report_command_result() | Esito idempotente del comando |
  * | POST | `/plants` | backend.app.features.plants.routes.register_plant() | Registrazione di una singola pianta nel settore di origine |
  * | GET | `/plants` | backend.app.features.plants.routes.read_plants() | Elenco filtrabile per posizione e flag di quarantena |
+ * | GET | `/plants/{plant_id}` | backend.app.features.plants.routes.read_plant() | Lettura di una singola pianta |
  * | PATCH | `/plants/{plant_id}/quarantine` | backend.app.features.plants.routes.update_plant_quarantine() | Attivazione o rimozione del flag di quarantena e spostamento della pianta |
  * | GET | `/plants/{plant_id}/movements` | backend.app.features.plants.routes.read_plant_movements() | Storico degli spostamenti della pianta |
+ * | DELETE | `/plants/{plant_id}` | backend.app.features.plants.routes.remove_plant() | Rimozione definitiva di una pianta |
+ * | POST | `/cultivations` | backend.app.features.cultivations.routes.start_cultivation() | Creazione e attivazione di un ciclo colturale |
+ * | GET | `/cultivations` | backend.app.features.cultivations.routes.read_cultivations() | Elenco filtrabile dei cicli colturali |
+ * | GET | `/cultivations/{cultivation_id}` | backend.app.features.cultivations.routes.read_cultivation() | Dettaglio di un ciclo colturale |
+ * | POST | `/cultivations/{cultivation_id}/pause` | backend.app.features.cultivations.routes.pause() | Richiesta asincrona di pausa |
+ * | POST | `/cultivations/{cultivation_id}/resume` | backend.app.features.cultivations.routes.resume() | Richiesta asincrona di ripresa |
+ * | POST | `/cultivations/{cultivation_id}/terminate` | backend.app.features.cultivations.routes.terminate() | Arresto e archiviazione del ciclo |
+ * | POST | `/simulations` | backend.app.features.simulations.routes.create_simulation() | Avvio di un'anteprima batch |
+ * | GET | `/simulations/{run_id}` | backend.app.features.simulations.routes.read_simulation() | Stato del job batch |
+ * | GET | `/simulations/{run_id}/result` | backend.app.features.simulations.routes.read_simulation_result() | Risultato del job batch |
+ * | DELETE | `/simulations/{run_id}` | backend.app.features.simulations.routes.delete_simulation() | Annullamento o eliminazione del job batch |
+ * | POST | `/simulations/live` | backend.app.features.simulations.routes.create_live_simulation() | Avvio della riproduzione live dell'intera serra |
+ * | GET | `/simulations/live/current` | backend.app.features.simulations.routes.read_current_live_simulation() | Riproduzione live attiva, se presente |
+ * | GET | `/simulations/live/{run_id}` | backend.app.features.simulations.routes.read_live_simulation() | Stato e snapshot correnti della riproduzione |
+ * | GET | `/simulations/live/{run_id}/result` | backend.app.features.simulations.routes.read_live_simulation_result() | Serie calcolate della riproduzione |
+ * | POST | `/simulations/live/{run_id}/control` | backend.app.features.simulations.routes.control_live_simulation() | Play, pausa e cambio velocita |
+ * | DELETE | `/simulations/live/{run_id}` | backend.app.features.simulations.routes.delete_live_simulation() | Arresto o eliminazione della riproduzione |
  *
- * Gli endpoint applicativi sono esposti anche sotto `/api/v1`, contratto usato
- * dall'Edge. Se `SMARTHYDRO_API_TOKEN` e configurata, questa superficie richiede
- * un Bearer token; gli endpoint storici restano compatibili.
+ * I router operativi usati dall'Edge sono esposti anche sotto `/api/v1`. Se
+ * `SMARTHYDRO_API_TOKEN` e configurata, questa superficie richiede il Bearer
+ * token tecnico dell'Edge. Autenticazione utenti, gestione account e Strategy
+ * globale restano endpoint non versionati della dashboard e applicano le
+ * sessioni utente e i ruoli. Gli endpoint operativi non prefissati restano
+ * disponibili per dashboard e compatibilita.
  *
  * L'endpoint `/health` e attualmente statico: non verifica sensori, database o
  * collegamento con l'Edge. La specifica OpenAPI interattiva e disponibile in
@@ -258,6 +370,11 @@
  *         +-- events/
  *         +-- commands/
  *         +-- recipes/
+ *         +-- plants/
+ *         +-- cultivations/
+ *         +-- simulations/
+ *         +-- control_strategy/
+ *         +-- users/
  *         +-- system/
  * @endcode
  *
@@ -355,5 +472,9 @@
  * - backend/app/features/events/: eventi idempotenti prodotti dall'Edge;
  * - backend/app/features/commands/: coda ed esiti dei comandi runtime;
  * - backend/app/features/recipes/: bootstrap, ricette e persistenza SQLite;
+ * - backend/app/features/cultivations/: lifecycle dei cicli e comandi Edge;
+ * - backend/app/features/simulations/: anteprime batch e riproduzione live;
+ * - backend/app/features/control_strategy/: Strategy globali e fan-out;
+ * - backend/app/features/users/: account, ruoli e sessioni dashboard;
  * - backend/app/models/, database.py, db.py e recipe_export.py: compatibilita.
  */

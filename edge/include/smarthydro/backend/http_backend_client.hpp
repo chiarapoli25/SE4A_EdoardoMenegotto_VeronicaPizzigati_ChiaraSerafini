@@ -19,9 +19,12 @@ namespace smarthydro {
 
 /** Risposta minima indipendente dalla libreria HTTP concreta. */
 struct HttpResponse {
+    /** @brief Codice di stato HTTP, oppure zero in assenza di risposta. */
     int status_code = 0;
+    /** @brief Corpo della risposta senza interpretazione del formato. */
     std::string body;
 
+    /** @brief Verifica se il codice appartiene alla famiglia HTTP 2xx. */
     bool successful() const noexcept {
         return status_code >= 200 && status_code < 300;
     }
@@ -31,7 +34,9 @@ struct HttpResponse {
 class IHttpTransport {
 public:
     virtual ~IHttpTransport() = default;
+    /** @brief Esegue una richiesta GET relativa alla base URL configurata. */
     virtual HttpResponse get(const std::string& path) = 0;
+    /** @brief Esegue una richiesta POST JSON relativa alla base URL configurata. */
     virtual HttpResponse post(
         const std::string& path,
         const std::string& json_body) = 0;
@@ -40,13 +45,16 @@ public:
 /** Trasporto HTTP/HTTPS basato su libcurl. */
 class CurlHttpTransport final : public IHttpTransport {
 public:
+    /** @brief Configura URL, timeout e Bearer token del trasporto libcurl. */
     CurlHttpTransport(
         std::string base_url,
         std::chrono::milliseconds connect_timeout,
         std::chrono::milliseconds request_timeout,
         std::string bearer_token = {});
 
+    /** @copydoc IHttpTransport::get() */
     HttpResponse get(const std::string& path) override;
+    /** @copydoc IHttpTransport::post() */
     HttpResponse post(
         const std::string& path,
         const std::string& json_body) override;
@@ -65,21 +73,33 @@ private:
 
 /** Configurazione operativa del client backend. */
 struct HttpBackendConfig {
+    /** @brief Base URL del backend senza slash finale. */
     std::string base_url = "http://127.0.0.1:8000";
+    /** @brief Identificatore stabile dell'Edge presso il backend. */
     std::string edge_id = "smarthydro-edge";
+    /** @brief Identificatore del singolo avvio del processo. */
     std::string boot_id;
+    /** @brief Token tecnico allegato alle richieste `/api/v1`. */
     std::string bearer_token;
+    /** @brief Directory dell'outbox persistente e del manifesto zone. */
     std::filesystem::path outbox_directory = "edge-data/outbox";
+    /** @brief Timeout di apertura della connessione. */
     std::chrono::milliseconds connect_timeout{1000};
+    /** @brief Timeout complessivo di una richiesta. */
     std::chrono::milliseconds request_timeout{2000};
+    /** @brief Intervallo di polling della coda comandi. */
     std::chrono::milliseconds command_poll_interval{1000};
+    /** @brief Ritardo iniziale del backoff esponenziale. */
     std::chrono::milliseconds retry_base_delay{1000};
+    /** @brief Tetto del backoff esponenziale. */
     std::chrono::milliseconds retry_max_delay{30000};
 };
 
 /** Comando ricevuto dalla rete e ancora da eseguire nel thread del runtime. */
 struct RemoteRuntimeCommand {
+    /** @brief Zona alla quale indirizzare il comando. */
     std::string zone_id;
+    /** @brief Envelope idempotente deserializzato dal backend. */
     RuntimeCommandEnvelope envelope;
 };
 
@@ -91,6 +111,7 @@ struct RemoteRuntimeCommand {
  */
 class HttpBackendClient final : public IEventObserver {
 public:
+    /** @brief Crea il worker HTTP e lo collega all'EventBus condiviso. */
     HttpBackendClient(
         EventBus& event_bus,
         std::vector<std::string> zone_ids,
@@ -101,7 +122,9 @@ public:
     HttpBackendClient(const HttpBackendClient&) = delete;
     HttpBackendClient& operator=(const HttpBackendClient&) = delete;
 
+    /** @brief Avvia il worker asincrono; idempotente. */
     void start();
+    /** @brief Arresta e ricongiunge il worker; idempotente. */
     void stop() noexcept;
     void on_event(const EdgeDomainEvent& event) override;
 
@@ -130,7 +153,9 @@ public:
 
     /** Attende al massimo timeout che tutti gli upload vengano confermati. */
     bool flush(std::chrono::milliseconds timeout);
+    /** @brief Restituisce il numero di elementi ancora presenti nell'outbox. */
     std::size_t pending_upload_count() const;
+    /** @brief Restituisce l'identificatore dell'avvio corrente. */
     const std::string& boot_id() const noexcept;
 
 private:

@@ -12,6 +12,7 @@ import secrets
 
 ## @brief Iterazioni PBKDF2: costo ragionevole per un progetto didattico.
 _PBKDF2_ITERATIONS = 200_000
+## @brief Etichetta dell'algoritmo salvata insieme all'hash della password.
 _ALGORITHM = "pbkdf2_sha256"
 
 

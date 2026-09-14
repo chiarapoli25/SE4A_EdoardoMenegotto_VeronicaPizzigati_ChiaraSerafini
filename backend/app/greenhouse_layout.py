@@ -3,6 +3,7 @@
 from types import MappingProxyType
 
 
+## @brief Nomi canonici e immutabili dei quattro reparti produttivi.
 PRODUCTION_DEPARTMENT_NAMES = MappingProxyType(
     {
         1: "Piante Tropicali e da Fogliame",
@@ -12,9 +13,12 @@ PRODUCTION_DEPARTMENT_NAMES = MappingProxyType(
     }
 )
 
+## @brief Numero riservato al reparto di quarantena.
 QUARANTINE_DEPARTMENT_NUMBER = 5
+## @brief Nome canonico del reparto di quarantena.
 QUARANTINE_DEPARTMENT_NAME = "Quarantena"
 
+## @brief Mappa completa dei reparti produttivi e di quarantena.
 DEPARTMENT_NAMES = MappingProxyType(
     {
         **PRODUCTION_DEPARTMENT_NAMES,

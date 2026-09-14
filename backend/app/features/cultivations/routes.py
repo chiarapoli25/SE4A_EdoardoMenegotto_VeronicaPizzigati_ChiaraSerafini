@@ -1,4 +1,6 @@
-"""Endpoint agronomici per creare, controllare e archiviare coltivazioni."""
+"""@file
+@brief Endpoint agronomici per creare, controllare e archiviare coltivazioni.
+"""
 
 import sqlite3
 
@@ -18,10 +20,12 @@ from .repository import (
 )
 
 
+## @brief Router HTTP dei cicli colturali.
 router = APIRouter(prefix="/cultivations", tags=["cultivations"])
 
 
 def _translate(operation):
+    """@brief Traduce le eccezioni di dominio in risposte HTTP coerenti."""
     try:
         return operation()
     except CultivationInvalid as error:
@@ -36,6 +40,7 @@ def start_cultivation(
     request: CultivationCreate,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> CultivationAction:
+    """@brief Crea un ciclo e accoda il comando di attivazione all'Edge."""
     return _translate(lambda: create_and_activate(connection, request))
 
 
@@ -45,6 +50,7 @@ def read_cultivations(
     include_archived: bool = Query(default=True),
     connection: sqlite3.Connection = Depends(get_db),
 ) -> list[Cultivation]:
+    """@brief Elenca i cicli, filtrabili per zona e stato di archiviazione."""
     return list_cultivations(
         connection,
         zone_id=zone_id,
@@ -57,6 +63,10 @@ def read_cultivation(
     cultivation_id: str,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> Cultivation:
+    """@brief Restituisce un ciclo tramite identificatore.
+
+    @throws HTTPException Se il ciclo non esiste.
+    """
     cultivation = get_cultivation(connection, cultivation_id)
     if cultivation is None:
         raise HTTPException(status_code=404, detail="cultivation not found")
@@ -68,6 +78,7 @@ def pause(
     cultivation_id: str,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> CultivationAction:
+    """@brief Accoda la sospensione di un ciclo attivo."""
     return _translate(lambda: pause_cultivation(connection, cultivation_id))
 
 
@@ -76,6 +87,7 @@ def resume(
     cultivation_id: str,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> CultivationAction:
+    """@brief Accoda la ripresa di un ciclo sospeso."""
     return _translate(lambda: resume_cultivation(connection, cultivation_id))
 
 
@@ -84,4 +96,5 @@ def terminate(
     cultivation_id: str,
     connection: sqlite3.Connection = Depends(get_db),
 ) -> CultivationAction:
+    """@brief Accoda l'arresto e la successiva archiviazione del ciclo."""
     return _translate(lambda: terminate_cultivation(connection, cultivation_id))

@@ -22,13 +22,16 @@ class UserRole(str, Enum):
 class UserCreate(BaseModel):
     """@brief Dati necessari per creare un nuovo account."""
 
+    ## @brief Nome univoco usato durante l'accesso.
     username: str = Field(
         min_length=3,
         max_length=64,
         pattern=_USERNAME_PATTERN,
     )
+    ## @brief Password in chiaro accettata soltanto in ingresso.
     password: str = Field(min_length=4, max_length=200)
     role: UserRole
+    ## @brief Nome leggibile mostrato nella dashboard.
     display_name: str | None = Field(default=None, min_length=1, max_length=100)
 
 
@@ -44,7 +47,9 @@ class User(BaseModel):
 class LoginRequest(BaseModel):
     """@brief Credenziali inviate dalla schermata di accesso."""
 
+    ## @brief Username dell'account.
     username: str = Field(min_length=1, max_length=64)
+    ## @brief Password in chiaro da verificare.
     password: str = Field(min_length=1, max_length=200)
 
 
@@ -68,9 +73,11 @@ class BootstrapAdminRequest(BaseModel):
     sempre amministratore, non e' una scelta della persona che lo crea.
     """
 
+    ## @brief Username del primo amministratore.
     username: str = Field(
         min_length=3,
         max_length=64,
         pattern=_USERNAME_PATTERN,
     )
+    ## @brief Password iniziale del primo amministratore.
     password: str = Field(min_length=4, max_length=200)

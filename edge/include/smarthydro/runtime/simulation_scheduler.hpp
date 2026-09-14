@@ -41,7 +41,9 @@ using ScheduledStepResults =
  */
 class SimulationScheduler {
 public:
+    /** @brief Orologio monotono usato per pianificare i cicli. */
     using Clock = std::chrono::steady_clock;
+    /** @brief Istante espresso nell'orologio monotono dello scheduler. */
     using TimePoint = Clock::time_point;
 
     /**

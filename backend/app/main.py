@@ -76,10 +76,13 @@ app = FastAPI(title="SmartHydro Backend", version="0.1.0", lifespan=lifespan)
 # same-origin e non dipendono da questa eccezione di sviluppo.
 app.add_middleware(
     CORSMiddleware,
+    ## @brief Origine speciale usata quando la dashboard e' aperta da file locale.
     allow_origins=["null"],
+    ## @brief Metodi HTTP ammessi dalle richieste cross-origin di sviluppo.
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     # Content-Type per i body JSON, Authorization per il token di sessione
     # che apiRequest() allega dopo il login (vedi features/users).
+    ## @brief Header JSON e Bearer session consentiti dalla policy CORS.
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -114,7 +117,9 @@ for versioned_router in (
 ):
     app.include_router(
         versioned_router,
+        ## @brief Prefisso stabile del contratto autenticato usato dagli Edge.
         prefix="/api/v1",
+        ## @brief Verifica centralizzata del token API per i router Edge.
         dependencies=[Depends(require_api_token)],
     )
 
@@ -138,6 +143,7 @@ class _RevalidatingStaticFiles(StaticFiles):
     supporta già nativamente (risponde 304 quando l'ETag combacia)."""
 
     def file_response(self, *args, **kwargs):
+        """@brief Impone la rivalidazione HTTP a ogni risposta statica."""
         response = super().file_response(*args, **kwargs)
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -146,10 +152,12 @@ class _RevalidatingStaticFiles(StaticFiles):
 # La control room usa intenzionalmente gli endpoint senza prefisso, mantenuti
 # per i client browser same-origin. Il mount resta dopo i router API, cosi la
 # directory statica non puo intercettare i relativi path.
+## @brief Directory del frontend statico servito dalla stessa applicazione.
 DASHBOARD_DIRECTORY = Path(__file__).resolve().parents[2] / "dashboard"
 app.mount(
     "/dashboard",
     _RevalidatingStaticFiles(directory=DASHBOARD_DIRECTORY, html=True),
+    ## @brief Nome ASGI del mount statico, usabile dal reverse routing.
     name="dashboard",
 )
 
