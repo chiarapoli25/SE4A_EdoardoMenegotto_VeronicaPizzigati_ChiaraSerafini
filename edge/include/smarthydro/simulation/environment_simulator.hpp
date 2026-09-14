@@ -188,8 +188,10 @@ struct EnvironmentConfig {
         {FertilizerType::NITROGEN, 50.0, 0.0, 0.0, -0.001},
         {FertilizerType::PHOSPHORUS, 0.0, 20.0, 0.0, -0.002},
         {FertilizerType::POTASSIUM, 0.0, 0.0, 50.0, 0.0},
-        {FertilizerType::PH_UP, 0.0, 0.0, 0.0, 0.020},
-        {FertilizerType::PH_DOWN, 0.0, 0.0, 0.0, -0.020},
+        // Correttori tarati a ±0.035 pH/mL: una dose pH resta sempre
+        // veicolata dall'irrigazione e il limite per comando e' 1 mL.
+        {FertilizerType::PH_UP, 0.0, 0.0, 0.0, 0.035},
+        {FertilizerType::PH_DOWN, 0.0, 0.0, 0.0, -0.035},
     }};
 };
 

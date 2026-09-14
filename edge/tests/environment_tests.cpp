@@ -331,6 +331,8 @@ TEST(EnvironmentSimulatorTest, PhCorrectorsChangePhWithoutAddingNutrients) {
 
     EXPECT_GT(ph_up.state().ph, baseline.state().ph);
     EXPECT_LT(ph_down.state().ph, baseline.state().ph);
+    EXPECT_NEAR(ph_up.state().ph - baseline.state().ph, 0.035, 1e-12);
+    EXPECT_NEAR(ph_down.state().ph - baseline.state().ph, -0.035, 1e-12);
     EXPECT_DOUBLE_EQ(ph_up.state().nitrogen_mg_per_liter,
                      baseline.state().nitrogen_mg_per_liter);
     EXPECT_DOUBLE_EQ(ph_up.state().phosphorus_mg_per_liter,
