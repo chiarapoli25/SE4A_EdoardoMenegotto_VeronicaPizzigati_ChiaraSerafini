@@ -1,3 +1,8 @@
+/**
+ * @file dli_accumulator.cpp
+ * @brief Implementazione dell'accumulatore di DLI (Daily Light Integral).
+ */
+
 #include <smarthydro/control/dli_accumulator.hpp>
 
 #include <cmath>
@@ -7,8 +12,10 @@
 namespace smarthydro {
 namespace {
 
+/** @brief Fattore di conversione da mol/m^2 (DLI) a umol/m^2 (PPFD integrato). */
 constexpr double kMicromolesPerMole = 1.0e6;
 
+/** @brief Rifiuta un valore non finito (NaN/inf). */
 void require_finite(double value, const char* name) {
     if (!std::isfinite(value)) {
         throw std::invalid_argument(std::string(name) + " must be finite");

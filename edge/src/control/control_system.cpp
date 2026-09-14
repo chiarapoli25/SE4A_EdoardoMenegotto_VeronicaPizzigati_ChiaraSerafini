@@ -1,3 +1,9 @@
+/**
+ * @file control_system.cpp
+ * @brief Implementazione di RecipeControlSystem: validazione ricetta,
+ *     macchina di conferma e orchestrazione dei controllori per fase.
+ */
+
 #include <smarthydro/control/control_system.hpp>
 
 #include <algorithm>
@@ -9,12 +15,14 @@
 namespace smarthydro {
 namespace {
 
+/** @brief Rifiuta un valore non finito (NaN/inf) coi campi di ricetta. */
 void require_finite(double value, const char* name) {
     if (!std::isfinite(value)) {
         throw std::invalid_argument(std::string(name) + " must be finite");
     }
 }
 
+/** @brief Verifica che i parametri tipizzati corrispondano alla Strategy scelta. */
 bool parameter_type_matches(
     StrategyType strategy,
     const ControllerParameters& parameters) {
@@ -29,22 +37,26 @@ bool parameter_type_matches(
     return false;
 }
 
+/** @brief True se la sorgente e una stima di modello, non un sensore diretto. */
 bool is_model_source(ControlInputSource input_source) noexcept {
     return input_source == ControlInputSource::NITROGEN_MODEL ||
            input_source == ControlInputSource::PHOSPHORUS_MODEL ||
            input_source == ControlInputSource::POTASSIUM_MODEL;
 }
 
+/** @brief True per N/P/K, le tre variabili dosate via valvole di concentrato. */
 bool is_nutrient(ControlledVariable variable) noexcept {
     return variable == ControlledVariable::NITROGEN ||
            variable == ControlledVariable::PHOSPHORUS ||
            variable == ControlledVariable::POTASSIUM;
 }
 
+/** @brief True per le variabili soggette ai limiti di dose (pH e nutrienti). */
 bool is_dose_variable(ControlledVariable variable) noexcept {
     return variable == ControlledVariable::PH || is_nutrient(variable);
 }
 
+/** @brief Strategy imposta dal dominio per una variabile, indipendente dalla ricetta. */
 StrategyType required_default_strategy(ControlledVariable variable) {
     // N/P/K leggono da una stima di modello (is_model_source), non da un
     // sensore diretto: Predictive resta il default perche' e' l'unica delle
@@ -63,6 +75,7 @@ StrategyType required_default_strategy(ControlledVariable variable) {
     return StrategyType::THRESHOLD;
 }
 
+/** @brief Sorgente obbligatoria per variabile: fissata dal dominio, non configurabile. */
 ControlInputSource required_input_source(ControlledVariable variable) {
     switch (variable) {
         case ControlledVariable::SOIL_MOISTURE:
@@ -83,6 +96,7 @@ ControlInputSource required_input_source(ControlledVariable variable) {
     throw std::invalid_argument("unknown controlled variable");
 }
 
+/** @brief Attuatore obbligatorio per variabile: fissato dal dominio, non configurabile. */
 ActuatorType required_actuator(ControlledVariable variable) {
     switch (variable) {
         case ControlledVariable::SOIL_MOISTURE:
@@ -103,6 +117,7 @@ ActuatorType required_actuator(ControlledVariable variable) {
     throw std::invalid_argument("unknown controlled variable");
 }
 
+/** @brief Fattore moltiplicativo di correzione dose per tipo di substrato. */
 double substrate_factor(SoilType soil) {
     switch (soil) {
         case SoilType::AERATED_UNIVERSAL:
@@ -115,6 +130,7 @@ double substrate_factor(SoilType soil) {
     throw std::invalid_argument("unknown substrate");
 }
 
+/** @brief Applica setpoint/range della fase corrente ai parametri della Strategy scelta. */
 ControllerParameters parameters_for_phase(
     const ControllerConfiguration& configuration,
     const PhaseVariableTarget& target) {
@@ -143,6 +159,7 @@ ControllerParameters parameters_for_phase(
     throw std::invalid_argument("unknown strategy");
 }
 
+/** @brief Legge il valore corrente dalla sorgente giusta (sensore o modello). */
 std::optional<double> source_value(
     ControlInputSource input_source,
     const ControllerInput& input) {

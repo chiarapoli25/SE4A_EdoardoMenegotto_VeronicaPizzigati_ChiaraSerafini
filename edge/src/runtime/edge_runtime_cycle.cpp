@@ -1,3 +1,9 @@
+/**
+ * @file edge_runtime_cycle.cpp
+ * @brief Implementazione del ciclo di controllo periodico di EdgeRuntime
+ *     (lettura sensori simulati, esecuzione Strategy, applicazione comandi).
+ */
+
 #include <smarthydro/events/event_bus.hpp>
 #include <smarthydro/runtime/edge_runtime.hpp>
 

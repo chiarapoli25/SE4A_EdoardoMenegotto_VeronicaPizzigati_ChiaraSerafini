@@ -1,3 +1,8 @@
+/**
+ * @file controllers.cpp
+ * @brief Implementazione delle Strategy Threshold/PID/Predictive (IController).
+ */
+
 #include <smarthydro/control/controllers.hpp>
 
 #include <algorithm>
@@ -8,6 +13,7 @@
 namespace smarthydro {
 namespace {
 
+/** @brief Rifiuta un valore non finito (NaN/inf) nei parametri di configurazione. */
 void require_finite(double value, const char* field_name) {
     if (!std::isfinite(value)) {
         throw std::invalid_argument(std::string(field_name) + " must be finite");

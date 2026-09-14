@@ -1,3 +1,9 @@
+/**
+ * @file recipe_json.cpp
+ * @brief Implementazione di (de)serializzazione JSON per Recipe, il
+ *     contratto condiviso col backend (vedi recipes/export.py).
+ */
+
 #include <smarthydro/recipes/recipe_json.hpp>
 
 #include <nlohmann/json.hpp>
