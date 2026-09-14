@@ -34,3 +34,5 @@ claude/
 # Outbox persistente creato a runtime dall'Edge C++ reale quando lanciato
 # dalla working directory del repository (vedi demo/seed_dev_data.py).
 edge-data/
+
+.claude/
