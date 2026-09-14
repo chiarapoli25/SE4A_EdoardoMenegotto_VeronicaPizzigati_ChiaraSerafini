@@ -156,6 +156,31 @@ def test_predictive_nutrient_uses_progressive_persistent_doses(
     assert parameters["integral_gain"] == 0.0
 
 
+def test_ph_pid_uses_one_milliliter_authority_within_water_cycles(
+    client: TestClient,
+) -> None:
+    token = _login(client, "admin")
+    recipe = client.get(
+        "/recipes/recipe-calathea", headers=_auth_headers(token)
+    ).json()
+    controller = next(c for c in recipe["controllers"] if c["variable"] == "ph")
+    target = next(
+        t for t in recipe["phases"][0]["targets"] if t["variable"] == "ph"
+    )
+    parameters = controller["parameters"]
+    half_band = max(
+        target["allowed_range"]["maximum"] - target["setpoint"],
+        target["setpoint"] - target["allowed_range"]["minimum"],
+    )
+
+    assert parameters["command_minimum"] == -1.0
+    assert parameters["command_maximum"] == 1.0
+    assert parameters["proportional_gain"] * half_band == pytest.approx(1.0)
+    assert parameters["integral_gain"] == pytest.approx(
+        parameters["proportional_gain"] / (4.0 * 3600.0)
+    )
+
+
 def test_admin_change_pushes_a_live_command_to_active_zones_only(
     client: TestClient,
 ) -> None:

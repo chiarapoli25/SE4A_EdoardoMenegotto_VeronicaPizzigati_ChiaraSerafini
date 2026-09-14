@@ -1,4 +1,6 @@
-"""Caricamento e inizializzazione SQLite del catalogo ricette esterno."""
+"""@file
+@brief Caricamento, validazione e inizializzazione SQLite del catalogo ricette.
+"""
 
 import os
 import sqlite3
@@ -15,6 +17,7 @@ from pydantic import (
 from .models import Recipe, RecipeCareProfile, SoilType
 
 
+## @brief Directory del catalogo, sovrascrivibile tramite variabile d'ambiente.
 DEFAULT_CATALOG_PATH = Path(
     os.environ.get(
         "SMARTHYDRO_RECIPE_CATALOG_PATH",
@@ -24,102 +27,169 @@ DEFAULT_CATALOG_PATH = Path(
 
 
 class _CatalogModel(BaseModel):
+    """@brief Base rigorosa dei modelli interni letti dai JSON del catalogo."""
+
+    ## @brief Rifiuta chiavi sconosciute per intercettare errori nei dati sorgente.
     model_config = ConfigDict(extra="forbid")
 
 
 class _PhaseProfile(_CatalogModel):
+    """@brief Profilo riutilizzabile di una fase colturale."""
+
+    ## @brief Chiave stabile usata da sequenze e override.
     key: str = Field(
         min_length=1,
         max_length=32,
         pattern=r"^[a-z][a-z0-9_]*$",
     )
+    ## @brief Nome leggibile della fase.
     name: str = Field(min_length=1)
+    ## @brief Durata base della fase in ore.
     duration_hours: float = Field(gt=0.0)
+    ## @brief Ora locale di inizio del fotoperiodo.
     start_hour: float = Field(ge=0.0, lt=24.0)
+    ## @brief Correzione della durata luminosa rispetto al profilo base.
     photoperiod_offset_hours: float = Field(ge=-12.0, le=12.0)
+    ## @brief Moltiplicatore del fabbisogno luminoso.
     light_factor: float = Field(gt=0.0, le=2.0)
+    ## @brief Correzione del setpoint di umidita del terriccio.
     water_offset_percent: float = Field(ge=-30.0, le=30.0)
+    ## @brief Moltiplicatore del target di azoto.
     nitrogen_factor: float = Field(ge=0.0, le=2.0)
+    ## @brief Moltiplicatore del target di fosforo.
     phosphorus_factor: float = Field(ge=0.0, le=2.0)
+    ## @brief Moltiplicatore del target di potassio.
     potassium_factor: float = Field(ge=0.0, le=2.0)
+    ## @brief Moltiplicatore della dose suggerita per fase.
     dose_factor: float = Field(ge=0.0, le=2.0)
+    ## @brief Scostamento del target pH.
     ph_offset: float = Field(ge=-1.0, le=1.0)
 
 
 class _PhaseOverride(_CatalogModel):
+    """@brief Sovrascritture opzionali applicate a una fase di una ricetta."""
+
+    ## @brief Durata alternativa della fase.
     duration_hours: float | None = Field(default=None, gt=0.0)
+    ## @brief Ora alternativa di inizio del fotoperiodo.
     start_hour: float | None = Field(default=None, ge=0.0, lt=24.0)
+    ## @brief Correzione alternativa della durata luminosa.
     photoperiod_offset_hours: float | None = Field(
         default=None, ge=-12.0, le=12.0
     )
+    ## @brief Moltiplicatore luminoso alternativo.
     light_factor: float | None = Field(default=None, gt=0.0, le=2.0)
+    ## @brief Correzione alternativa dell'umidita del terriccio.
     water_offset_percent: float | None = Field(
         default=None, ge=-30.0, le=30.0
     )
+    ## @brief Moltiplicatore alternativo del target di azoto.
     nitrogen_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    ## @brief Moltiplicatore alternativo del target di fosforo.
     phosphorus_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    ## @brief Moltiplicatore alternativo del target di potassio.
     potassium_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    ## @brief Moltiplicatore alternativo della dose suggerita.
     dose_factor: float | None = Field(default=None, ge=0.0, le=2.0)
+    ## @brief Scostamento alternativo del target pH.
     ph_offset: float | None = Field(default=None, ge=-1.0, le=1.0)
+    ## @brief Profilo luminoso alternativo per questa fase.
     light_profile: str | None = Field(default=None, min_length=1)
+    ## @brief Profilo idrico alternativo per questa fase.
     water_profile: str | None = Field(default=None, min_length=1)
+    ## @brief Profilo nutrizionale alternativo per questa fase.
     feed_profile: str | None = Field(default=None, min_length=1)
 
 
 class _LightProfile(_CatalogModel):
+    """@brief Profilo di luce giornaliera e fotoperiodo."""
+
+    ## @brief DLI giornaliero desiderato.
     setpoint: float = Field(ge=0.0)
+    ## @brief DLI minimo ammesso.
     minimum: float = Field(ge=0.0)
+    ## @brief DLI massimo descrittivo del profilo.
     maximum: float = Field(gt=0.0)
+    ## @brief Durata base della finestra luminosa.
     photoperiod_hours: float = Field(gt=0.0, le=24.0)
 
     @model_validator(mode="after")
     def _check_range(self) -> "_LightProfile":
+        """@brief Verifica che il setpoint appartenga all'intervallo ammesso."""
         if not self.minimum <= self.setpoint <= self.maximum:
             raise ValueError("light setpoint must be within its range")
         return self
 
 
 class _WaterProfile(_CatalogModel):
+    """@brief Profilo di umidita del terriccio e limite di irrigazione."""
+
+    ## @brief Umidita desiderata in percentuale.
     setpoint: float = Field(ge=0.0, le=100.0)
+    ## @brief Umidita minima ammessa.
     minimum: float = Field(ge=0.0, le=100.0)
+    ## @brief Umidita massima ammessa.
     maximum: float = Field(ge=0.0, le=100.0)
+    ## @brief Volume massimo erogabile da un singolo comando.
     maximum_water_liters: float = Field(gt=0.0)
 
     @model_validator(mode="after")
     def _check_range(self) -> "_WaterProfile":
+        """@brief Verifica che il setpoint appartenga all'intervallo ammesso."""
         if not self.minimum <= self.setpoint <= self.maximum:
             raise ValueError("water setpoint must be within its range")
         return self
 
 
 class _FeedProfile(_CatalogModel):
+    """@brief Target N/P/K e limiti comuni di dosaggio."""
+
+    ## @brief Target base di azoto.
     nitrogen: float = Field(ge=0.0)
+    ## @brief Target base di fosforo.
     phosphorus: float = Field(ge=0.0)
+    ## @brief Target base di potassio.
     potassium: float = Field(ge=0.0)
+    ## @brief Dose informativa prevista per una fase.
     phase_dose_milliliters: float = Field(ge=0.0)
+    ## @brief Massima dose di un singolo comando.
     maximum_command_milliliters: float = Field(ge=0.0)
+    ## @brief Massima dose cumulativa giornaliera.
     maximum_daily_milliliters: float = Field(ge=0.0)
 
 
 class _RecipeSeed(_CatalogModel):
+    """@brief Specifica compatta di una ricetta prima dell'espansione dei profili."""
+
+    ## @brief Identificatore stabile della ricetta.
     id: str = Field(
         min_length=1,
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
     )
+    ## @brief Specie vegetale destinataria.
     plant_type: str = Field(min_length=1)
+    ## @brief Reparto produttivo compatibile.
     department_number: int = Field(ge=1, le=4)
     substrate: SoilType
     care_profile: RecipeCareProfile
+    ## @brief Nome del profilo luminoso base.
     light_profile: str = Field(min_length=1)
+    ## @brief Nome del profilo idrico base.
     water_profile: str = Field(min_length=1)
+    ## @brief Nome del profilo nutrizionale base.
     feed_profile: str = Field(min_length=1)
+    ## @brief Target pH base della ricetta.
     ph_setpoint: float = Field(gt=4.8, lt=7.7)
+    ## @brief Sequenza di fase esplicita; assente usa quella del reparto.
     phase_sequence: str | None = Field(default=None, min_length=1)
+    ## @brief Override indicizzati tramite chiave della fase.
     phase_overrides: dict[str, _PhaseOverride] = Field(default_factory=dict)
 
 
 class _CatalogProfiles(_CatalogModel):
+    """@brief Documento dei profili condivisi e della relativa versione schema."""
+
     # v2 e' il vecchio catalogo multifase; v3 aveva provato Threshold come
     # default N/P/K al posto di Predictive (poi tornato indietro); v4 aveva
     # ricalcolato response_gain dalla banda della ricetta ma senza azzerare
@@ -143,14 +213,23 @@ class _CatalogProfiles(_CatalogModel):
     # superiore va spostato a ogni nuovo bump: e' quello che fa scattare
     # seed_recipe_catalog() a rimigrare le ricette gia' importate a una
     # versione precedente (vedi la colonna
-    # recipe_catalog_imports.catalog_version).
-    schema_version: int = Field(ge=2, le=8)
+    # recipe_catalog_imports.catalog_version). v9 riallinea le ricette gia'
+    # seminate al correttore pH da 1 mL: il valore precedente di 0.5 mL
+    # rendeva in pratica irraggiungibile il setpoint, pur con irrigazioni
+    # disponibili a veicolare il prodotto.
+    ## @brief Versione che governa la migrazione del catalogo nel database.
+    schema_version: int = Field(ge=2, le=9)
+    ## @brief Sequenze ordinate di fasi riutilizzabili.
     phase_sequences: dict[str, list[_PhaseProfile]] = Field(min_length=1)
+    ## @brief Profili luminosi indicizzati per nome.
     light_profiles: dict[str, _LightProfile] = Field(min_length=1)
+    ## @brief Profili idrici indicizzati per nome.
     water_profiles: dict[str, _WaterProfile] = Field(min_length=1)
+    ## @brief Profili nutrizionali indicizzati per nome.
     feed_profiles: dict[str, _FeedProfile] = Field(min_length=1)
 
 
+## @brief Sequenza di fase predefinita per ciascun reparto produttivo.
 _DEPARTMENT_PHASE_SEQUENCE = {
     1: "foliage",
     2: "flowering",
@@ -160,6 +239,7 @@ _DEPARTMENT_PHASE_SEQUENCE = {
 
 
 def _phase_sequence_name(recipe: _RecipeSeed) -> str:
+    """@brief Risolve la sequenza esplicita o quella predefinita del reparto."""
     return recipe.phase_sequence or _DEPARTMENT_PHASE_SEQUENCE[
         recipe.department_number
     ]
@@ -169,6 +249,7 @@ def _validate_recipe_seeds(
     profiles: _CatalogProfiles,
     recipes: list[_RecipeSeed],
 ) -> None:
+    """@brief Verifica unicita e riferimenti incrociati dei file di catalogo."""
     recipe_ids = [recipe.id for recipe in recipes]
     if len(recipe_ids) != len(set(recipe_ids)):
         raise ValueError("recipe ids in catalog must be unique")
@@ -229,6 +310,7 @@ def _target(
     safety_maximum: float,
     dose: float = 0.0,
 ) -> dict:
+    """@brief Costruisce il contratto numerico di un target di fase."""
     return {
         "variable": variable,
         "setpoint": setpoint,
@@ -242,6 +324,7 @@ def _target(
 
 
 def _nutrient_target(variable: str, setpoint: float, dose: float) -> dict:
+    """@brief Costruisce target e bande di sicurezza per una variabile N/P/K."""
     margin = max(5.0, round(setpoint * 0.15, 1))
     safety_maximum = 500.0 if variable == "potassium" else 350.0
     return _target(
@@ -261,6 +344,7 @@ def _safety_limits(
     maximum_daily_milliliters: float = 20.0,
     minimum_seconds_between_doses: float = 900.0,
 ) -> dict:
+    """@brief Costruisce i limiti comuni di acqua, dosaggio e luce artificiale."""
     return {
         "maximum_water_volume_liters": maximum_water_liters,
         "maximum_pump_duration_seconds": max(
@@ -299,6 +383,7 @@ def _controller(
     unit: str,
     output_limits: dict,
 ) -> dict:
+    """@brief Costruisce la configurazione Edge completa di un controllore."""
     associations = {
         "soil_moisture": ("soil_moisture_sensor", "water_pump", "Threshold"),
         "light": ("light_sensor", "lighting", "Threshold"),
@@ -400,15 +485,18 @@ def _phase_value(
     override: _PhaseOverride | None,
     field_name: str,
 ) -> float:
+    """@brief Risolve un parametro di fase applicando l'eventuale override."""
     override_value = None if override is None else getattr(override, field_name)
     return getattr(phase, field_name) if override_value is None else override_value
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
+    """@brief Limita un valore all'intervallo chiuso indicato."""
     return max(minimum, min(maximum, value))
 
 
 def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
+    """@brief Espande seed e profili condivisi in una ricetta Edge completa."""
     sequence = catalog.phase_sequences[_phase_sequence_name(spec)]
     phases: list[dict] = []
     resolved: list[dict] = []
@@ -580,16 +668,18 @@ def _build_recipe(spec: _RecipeSeed, catalog: _CatalogProfiles) -> Recipe:
             "ph",
             {
                 "setpoint": first_targets["ph"]["setpoint"],
-                "proportional_gain": 1.0,
-                "integral_gain": 0.00001,
+                # Stessa scala di default_parameters_for(): al bordo della
+                # banda pH (±0.3 nel catalogo) il PID puo' richiedere 1 mL.
+                "proportional_gain": 1.0 / 0.3,
+                "integral_gain": (1.0 / 0.3) / (4.0 * 3600.0),
                 "derivative_gain": 0.0,
-                "command_minimum": -0.5,
-                "command_maximum": 0.5,
+                "command_minimum": -1.0,
+                "command_maximum": 1.0,
                 "direction": "increases",
             },
             "pH",
             _safety_limits(
-                maximum_dose_milliliters=0.5,
+                maximum_dose_milliliters=1.0,
                 maximum_daily_milliliters=5.0,
             ),
         ),

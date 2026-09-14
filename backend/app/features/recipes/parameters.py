@@ -31,6 +31,7 @@ from .models import (
     _NUTRIENT_VARIABLES,
 )
 
+## @brief Alias della direzione usata dai controllori che aumentano il processo.
 _INCREASES = ControlDirection.INCREASES_PROCESS_VALUE
 
 ## @brief Limiti di comando (PID e Predictive) per le tre variabili non
@@ -44,8 +45,9 @@ _INCREASES = ControlDirection.INCREASES_PROCESS_VALUE
 ##    salire: l'unica delle tre con un attuatore davvero bidirezionale sopra
 ##    lo zero.
 ##  - ph: mL di correttore, pH+ se il comando e' positivo, pH- se negativo
-##    (apply_decisions) — bidirezionale anch'essa, ma su una scala di dose
-##    minuscola rispetto a litri/percento.
+##    (apply_decisions) — bidirezionale anch'essa. Il limite di 1 mL lascia
+##    al PID autorita' sufficiente contro il tampone del substrato; la valvola
+##    resta comunque vincolata a un'irrigazione gia' in corso.
 ## Usare 1.0 per tutte e tre, come prima di questo fix, ignorava che
 ## "1 unita' di errore" significa cose radicalmente diverse (un punto
 ## percentuale di umidita' contro un grado di potenza luminosa contro un
@@ -55,7 +57,7 @@ _INCREASES = ControlDirection.INCREASES_PROCESS_VALUE
 _NON_DOSE_COMMAND_LIMITS: dict[ControlledVariable, tuple[float, float]] = {
     ControlledVariable.SOIL_MOISTURE: (0.0, 0.5),
     ControlledVariable.LIGHT: (0.0, 100.0),
-    ControlledVariable.PH: (-0.5, 0.5),
+    ControlledVariable.PH: (-1.0, 1.0),
 }
 
 ## @brief Guadagni Predictive specifici di ciascun nutriente (water_dilution_gain,
@@ -80,6 +82,7 @@ _NUTRIENT_PREDICTIVE_GAINS: dict[ControlledVariable, tuple[float, float]] = {
 ## che si ripetono tipicamente piu' volte al giorno.
 _PID_INTEGRAL_TIME_SECONDS = 4.0 * 3600.0
 
+## @brief Riduzione della risposta PID dell'umidita' per evitare sovraelongazioni.
 # La pompa applica il comando come volume discreto di una singola
 # irrigazione. Usare l'intero command_max gia' al bordo della banda faceva
 # superare il setpoint ad ogni correzione; il PID finiva cosi' in un ciclo
@@ -92,6 +95,7 @@ _SOIL_MOISTURE_PID_RESPONSE_FACTOR = 0.25
 ## il dosaggio e' gia' un'integrazione fisica di massa persistente.
 _PREDICTIVE_INTEGRAL_TIME_SECONDS = 3.0 * 24.0 * 3600.0
 
+## @brief Fattore di gradualita' delle dosi persistenti di nutrienti N/P/K.
 # Il comando N/P/K e' una dose di concentrato, non un livello continuo di
 # attuatore: anche dopo che la valvola si chiude, la massa erogata resta nel
 # substrato. Una dose pari al massimo gia' per un errore grande quanto la

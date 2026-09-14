@@ -183,11 +183,17 @@ def test_catalog_uses_category_specific_phase_sequences(
 
     # Relativa alla versione di catalogo corrente (non un numero fisso), che
     # cambia a ogni bump — vedi _CatalogProfiles.schema_version.
-    assert recipe["version"] == 8
+    assert recipe["version"] == 9
     assert len(recipe["phases"]) == 4
     assert recipe["phases"][0]["name"] == "Avvio e attecchimento"
     assert recipe["phases"][1]["name"] == "Crescita vegetativa"
     assert expected_phase in {phase["name"] for phase in recipe["phases"]}
+    ph_controller = next(
+        controller for controller in recipe["controllers"]
+        if controller["variable"] == "ph"
+    )
+    assert ph_controller["output_limits"]["maximum_dose_per_command_milliliters"] == 1.0
+    assert ph_controller["output_limits"]["ph_settling_time_seconds"] == 1800.0
 
 
 def test_catalog_phases_change_duration_photoperiod_and_setpoints(
