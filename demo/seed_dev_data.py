@@ -342,6 +342,8 @@ import copy
 import json
 import os
 import time
+import math
+import random
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -372,16 +374,14 @@ ADMIN_PASSWORD = "pass123"
 
 # Oltre all'admin, quattro account agronomo "umani" nominati, utili per
 # provare la dashboard con più account invece del solo admin/pass123.
-# Stesse credenziali già usate in demo/seed_test_scenario.py
-# (NAMED_AGRONOMO_ACCOUNTS), cosi' i due script restano coerenti. Creati
-# (o aggiornati se già esistenti) con lo stesso identico meccanismo
+# Creati (o aggiornati se già esistenti) con lo stesso identico meccanismo
 # dell'admin (_upsert_user, scrittura diretta nel database), non via HTTP.
 SEED_ACCOUNTS = (
     (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
-    ("mario", "1234frutta", UserRole.AGRONOMO, "Mario"),
-    ("elena", "1234verdura", UserRole.AGRONOMO, "Elena"),
-    ("antonio", "piantagrassa2", UserRole.AGRONOMO, "Antonio"),
-    ("alice", "curatrice10", UserRole.AGRONOMO, "Alice"),
+    ("mario", "Mario123!", UserRole.AGRONOMO, "Mario"),
+    ("elena", "Elena123!", UserRole.AGRONOMO, "Elena"),
+    ("matteo", "Matteo123!", UserRole.AGRONOMO, "Matteo"),
+    ("irene", "Irene123!", UserRole.AGRONOMO, "Irene"),
 )
 # Configurabile via variabile d'ambiente cosi' lo STESSO script, senza
 # modifiche, funziona sia contro un backend locale (default) sia contro
@@ -685,7 +685,7 @@ def ensure_safety_lockdown_recipe() -> str:
     recipe.pop("department_name", None)  # computed field, non accettato in POST
     recipe["id"] = LOCKDOWN_SAFETY_DEMO_RECIPE_ID
     recipe["version"] = 1
-    plant_type = f"{template['plant_type']} (demo lockdown sicurezza)"
+    plant_type = "Fragola"
     recipe["plant_type"] = plant_type
 
     # Target soil_moisture volutamente stretto: safety_range e' solo 2 punti
@@ -738,7 +738,7 @@ def ensure_safety_lockdown_zone(plant_type: str) -> None:
     LOCKDOWN_SAFETY_DEMO_ZONE_ID."""
     ensure_zone(
         LOCKDOWN_SAFETY_DEMO_ZONE_ID,
-        "Reparto 4 - Settore 2",
+        "Fragola",
         LOCKDOWN_SAFETY_DEMO_DEPARTMENT,
         LOCKDOWN_SAFETY_DEMO_SECTOR,
         {
@@ -843,6 +843,34 @@ def ensure_cultivation(zone_id: str, recipe_id: str) -> None:
     if status in (201, 409):
         return
     print(f"[seed] avviso: coltivazione non creata su {zone_id} (status {status}) {body}")
+
+
+def push_historical_telemetry(zone_id: str) -> None:
+    """Genera 24 ore di telemetria coerente e la invia al backend tramite HTTP."""
+    print(f"[seed] Iniezione telemetria storica simulata per {zone_id}...")
+    now = datetime.now(timezone.utc)
+    ore_passate = 24
+    campioni_ora = 4
+    minuti_step = 60 // campioni_ora
+    
+    for i in range(ore_passate * campioni_ora):
+        ts = now - timedelta(hours=ore_passate) + timedelta(minutes=minuti_step * i)
+        ora_del_giorno = ts.hour + (ts.minute / 60.0)
+        
+        # Matematica del comportamento termodinamico e idrico
+        temp = round(22.0 + 6.0 * math.sin(math.pi * (ora_del_giorno - 8) / 12) + random.gauss(0, 0.3), 2)
+        hum = round(max(0, min(100, 75.0 - (temp - 20) * 3.0 + random.gauss(0, 1.5))), 2)
+        ciclo_svuotamento = (ora_del_giorno % 8) / 8.0 
+        water = round(100.0 - (ciclo_svuotamento * 30) + random.gauss(0, 0.5), 2)
+        
+        payload = {
+            "timestamp": ts.isoformat(),
+            "temperature": temp,
+            "humidity": hum,
+            "water_level": water
+        }
+        
+        request("POST", f"/zones/{zone_id}/telemetry", payload)
 
 
 def enqueue_command(zone_id: str, command_id: str, command_type: str, payload: dict) -> bool:
@@ -1665,32 +1693,10 @@ def main() -> None:
     ensure_resident_plants(zone_species, edge_zone_ids)
     ensure_instant_quarantine_plants(zone_species)
 
-    print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) ---")
+    print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) e Telemetria Storica ---")
     for zone_id in edge_zone_ids:
         ensure_cultivation(zone_id, zone_recipe[zone_id])
-    # SetSimulationSpeed (Passo 2bis) NON viene più accodato qui: vedi il
-    # Passo 4bis più sotto, dopo la conferma lifecycle_state=Running.
-    # Motivo (verificato leggendo il codice, non assunto): accodarlo subito
-    # dopo POST /cultivations, PRIMA che l'Edge reale sia anche solo avviato
-    # (wait_for_edge_start() arriva più avanti in questo script), rendeva
-    # l'esecuzione dipendente da come l'Edge processa in un colpo solo, al
-    # primo poll, sia la scoperta della zona sia i comandi già in coda
-    # (edge/src/backend/http_backend_client.cpp poll_zone_assignments() +
-    # poll_commands() nello stesso tick, edge/src/main.cpp la stessa
-    # iterazione del loop principale) — E soprattutto usava un command_id
-    # fisso (senza suffisso di run): su un rerun dello script, la POST con
-    # lo stesso command_id+payload non crea un nuovo comando ma restituisce
-    # SEMPRE la riga già esistente in DB, qualunque sia il suo status
-    # (backend/app/features/commands/repository.py create_command) — e
-    # enqueue_command() stampa "accodato" guardando solo lo status HTTP
-    # (201, identico sia per un comando nuovo sia per la rilettura di uno
-    # vecchio), MAI il campo status del comando restituito. Risultato: se
-    # anche una sola volta, in passato, quel comando fosse stato rifiutato
-    # (es. perché la zona non aveva ancora raggiunto Running quando fu
-    # processato), ogni rerun successivo dello script continuerebbe a
-    # rileggere silenziosamente quello stesso rifiuto per sempre, mostrando
-    # comunque "accodato" — esattamente il sintomo osservato (log
-    # "accodato" per ogni zona, ma time_scale rimasto a 1 su tutte).
+        push_historical_telemetry(zone_id)
 
     print(
         "\n[seed] --- Passo 8: piante e quarantena "
