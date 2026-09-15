@@ -11,7 +11,7 @@ __pycache__/
 .pytest_cache/
 
 # Database SQLite del backend
-backend/database/
+backend/data/
 
 # Editors
 .idea/
