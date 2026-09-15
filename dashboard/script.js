@@ -163,9 +163,9 @@ const GLOBAL_STRATEGY_VARIABLES = [
 const VALID_ROLES = ["agronomo", "admin"];
 
 const OP_META = {
-  Regolare: { color: "#1f7a51" },
-  Anomalia : { color: "#fdb50c" },
-  Emergenza : { color: "#c15a4a" },
+  Nominal: { color: "#1f7a51", label: "Regolare" },
+  Degraded: { color: "#fdb50c", label: "Anomalia" },
+  EmergencyLockdown: { color: "#c15a4a", label: "Blocco di Emergenza" },
 };
 
 const DEPT_META = {
@@ -1284,8 +1284,8 @@ function renderHome() {
         <div class="side-card">
           <div class="side-card-title">Stato impianto</div>
           <div class="status-line"><span class="swatch" style="background:var(--nominal)"></span><span class="label">Settori online</span><b>${online}/${total}</b></div>
-          <div class="status-line"><span class="swatch" style="background:var(--warn)"></span><span class="label">Settori Degraded</span><b>${degraded}</b></div>
-          <div class="status-line"><span class="swatch" style="background:var(--danger)"></span><span class="label">EmergencyLockdown</span><b>${emergency}</b></div>
+          <div class="status-line"><span class="swatch" style="background:var(--warn)"></span><span class="label">Settori in Anomalia</span><b>${degraded}</b></div>
+          <div class="status-line"><span class="swatch" style="background:var(--danger)"></span><span class="label">Blocco di Emergenza</span><b>${emergency}</b></div>
           <div class="status-sep"></div>
           <div class="status-hint">Ogni settore controlla 6 variabili con strategia Threshold, PID o Predictive. Setpoint e bande arrivano dalla fase attiva della ricetta assegnata.</div>
         </div>
@@ -1497,7 +1497,7 @@ function renderSectorRowInner(z, { showConnection = true, liveStripZoneId = null
       <div class="sector-row-species">${escapeHtml(species)}</div>
       <div class="sector-row-tags">
         <span class="tag-phase">${escapeHtml(z.current_phase || "nessuna fase attiva")}</span>
-        <span class="pill op-${z.operational_state}">${z.operational_state}</span>
+        <span class="pill op-${z.operational_state}">${OP_META[z.operational_state] ? OP_META[z.operational_state].label : z.operational_state}</span>
         <span class="tag-phase" data-plant-count="${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
       </div>
       ${showConnection ? `<div class="sector-actuator-indicators" data-actuator-indicators="${escapeAttr(z.id)}">${renderActuatorIndicators(STATE.actuatorSnapshots[z.id])}</div>` : ""}
@@ -1736,13 +1736,13 @@ function renderAlertsPanel() {
   const orphanPlants = computeOrphanQuarantinePlants();
 
   if (!alerts.length && !orphanPlants.length) {
-    el.innerHTML = '<div class="empty-note">Nessun allarme attivo: tutti i settori registrati sono Nominal.</div>';
+    el.innerHTML = '<div class="empty-note">Nessun allarme attivo: tutti i settori registrati sono in stato Regolare.</div>';
     return;
   }
 
   const zoneAlertsHtml = alerts.map((a) => {
     const op = OP_META[a.zone.operational_state] || OP_META.Nominal;
-    const title = `${zoneLabel(a.zone)} in ${a.zone.operational_state}`;
+    const title = `${zoneLabel(a.zone)} in ${op.label || a.zone.operational_state}`;
     const detail = a.event
       ? `${fmtDateTime(a.event.recorded_at)} · ${escapeHtml(a.event.event_type)}`
       : "nessun evento registrato per questo settore";
@@ -1754,10 +1754,6 @@ function renderAlertsPanel() {
     `;
   }).join("");
 
-  // Third, client-computed category: plants stuck in quarantine because
-  // their origin sector no longer exists. Distinct title from the zone
-  // alerts above but the same visual shape, so it reads as one more entry
-  // in the same list rather than a separate widget.
   const orphanHtml = orphanPlants.map((p) => {
     return `
       <div class="alert-item">
@@ -1883,9 +1879,9 @@ function eventBadgeMeta(ev) {
     return { badge: "COMANDO KO", color: "#a58a5e", bg: "rgba(201,128,63,.08)" };
   }
   if (ev.payload && ev.payload.current_state === "EmergencyLockdown") {
-    return { badge: "EMERGENCYLOCKDOWN", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)" };
+    return { badge: "BLOCCO DI EMERGENZA", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)" };
   }
-  return { badge: "DEGRADED", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
+  return { badge: "ANOMALIA", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
 }
 
 /** Title/detail text built entirely from the event's own real payload
@@ -1910,8 +1906,9 @@ function eventTitleDetail(ev) {
     };
   }
   const cur = p.current_state || "?";
+  const curLabel = OP_META[cur] ? OP_META[cur].label : cur;
   return {
-    title: `Settore passato in ${cur}`,
+    title: `Settore passato in ${curLabel}`,
     detail: p.reason || "Nessun motivo registrato per questa transizione.",
   };
 }
@@ -1936,10 +1933,10 @@ function computeEventLogEntries(limitTotal) {
 function activeZoneCardMeta(zone) {
   if (zone.operational_state === "EmergencyLockdown") {
     return {
-      badge: "EMERGENCYLOCKDOWN", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)",
+      badge: "BLOCCO DI EMERGENZA", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)",
       tone: "danger",
       title: "Settore bloccato in emergenza",
-      staticDetail: "Il ciclo di controllo è sospeso: nessun comando viene applicato finché lo stato non torna Nominal.",
+      staticDetail: "Il ciclo di controllo è sospeso: nessun comando viene applicato finché lo stato non torna Regolare.",
     };
   }
   if (zone.status !== "online") {
@@ -1951,10 +1948,10 @@ function activeZoneCardMeta(zone) {
     };
   }
   return {
-    badge: "DEGRADED", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)",
+    badge: "ANOMALIA", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)",
     tone: "warn",
-    title: "Settore in stato Degraded",
-    staticDetail: "Funzionamento ridotto: se la condizione persiste per più cicli di controllo scatta l'escalation a EmergencyLockdown.",
+    title: "Settore in stato di Anomalia",
+    staticDetail: "Funzionamento ridotto: se la condizione persiste per più cicli di controllo scatta l'escalation a Blocco di Emergenza.",
   };
 }
 
@@ -2052,7 +2049,7 @@ function renderActiveSituationsSection() {
   const orphanGroups = computeOrphanQuarantineGroups();
   const total = zoneAlerts.length + orphanGroups.length;
   const body = total === 0
-    ? '<div class="empty-note">Nessuna situazione attiva: tutti i settori registrati sono Nominal e nessuna pianta in quarantena ha perso il proprio settore di origine.</div>'
+    ? '<div class="empty-note">Nessuna situazione attiva: tutti i settori registrati sono in stato Regolare e nessuna pianta in quarantena ha perso il proprio settore di origine.</div>'
     : `<div class="alerts-grid">${zoneAlerts.map(renderActiveZoneCard).join("")}${orphanGroups.map(renderOrphanGroupCard).join("")}</div>`;
   return `
     <section class="alerts-section">
@@ -5503,17 +5500,10 @@ function renderUsersView() {
 
 function renderControl() {
   if (!isAdmin()) {
-    // Defensive only — switchView() is the real gate and never leaves
-    // STATE.view as "control" for a non-Amministratore, so this path
-    // shouldn't be reachable in practice.
     document.getElementById("view-control").innerHTML = '<div class="empty-note">Sezione riservata agli amministratori.</div>';
     return;
   }
   const zones = STATE.zones;
-  // Department order everywhere is DEPT_ORDER (plain numeric, 1-5) — not
-  // alphabetical by name (which uniqueSorted would give). Only departments
-  // that actually have a registered zone show up in the filter, same as
-  // before, just in the fixed order.
   const deptRank = Object.fromEntries(DEPT_ORDER.map((n, i) => [n, i]));
   const deptNumbersPresent = DEPT_ORDER.filter((n) => zones.some((z) => z.department_number === n));
   const deptOptions = deptNumbersPresent.map((n) => {
@@ -5540,7 +5530,7 @@ function renderControl() {
         <div>${escapeHtml(z.department_name)}</div>
         <div style="color:var(--ink-soft)">${escapeHtml(z.plant_species || "—")}</div>
         <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(z.current_phase || "—")}</div>
-        <div><span class="pill op-${z.operational_state}">${z.operational_state}</span></div>
+        <div><span class="pill op-${z.operational_state}">${OP_META[z.operational_state]?.label || z.operational_state}</span></div>
         <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${strategies.join(" · ")}</div>
         <div class="link-arrow">→</div>
       </div>
@@ -6115,7 +6105,7 @@ function renderModal() {
       <div style="min-width:0">
         <div class="zone-header-code">
           <span class="code">${zoneLabel(zone)}</span>
-          <span class="pill op-${zone.operational_state}"><span class="pill-dot"></span>${zone.operational_state}</span>
+          <span class="pill op-${zone.operational_state}"><span class="pill-dot"></span>${OP_META[zone.operational_state]?.label || zone.operational_state}</span>
         </div>
         <h2>Reparto ${zone.department_number} — Settore ${zone.sector_number}</h2>
         <div class="zone-header-meta">
@@ -6151,14 +6141,6 @@ function renderZoneSummary(zone) {
 
   const recipe = STATE.modalRecipe;
   const tiles = VARIABLES.map((v) => {
-    // "light" è un caso a parte: il target di ricetta è un DLI giornaliero
-    // (mol/m²/giorno) mentre v.sensorField/STATE.modalTelemetry porta solo
-    // il PPFD istantaneo del sensore — grandezze fisiche diverse, non
-    // direttamente confrontabili (vedi il commento su VARIABLES più sopra).
-    // STATE.modalLightDli (refreshModalLightDli()) converte lo storico di
-    // PPFD nello stesso DLI maturato oggi che il target si aspetta, cosi'
-    // la tile mostra e valuta la banda nell'unità giusta invece di
-    // confrontare un PPFD grezzo con una soglia in mol/m²/giorno.
     const reading = v.key === "light"
       ? STATE.modalLightDli
       : (STATE.modalTelemetry ? STATE.modalTelemetry[v.sensorField] : null);
@@ -6189,7 +6171,7 @@ function renderZoneSummary(zone) {
       </section>
       <section class="zone-section" style="background:#fbfdfc">
         <div class="live-head"><span class="live-badge">LIVE</span><span class="title">Stato riportato dal sistema</span><span class="ro">sola lettura</span></div>
-        <div class="status-tile"><span class="status-tile-icon" style="background:${op.color}"></span><div><div class="label">Stato di sicurezza</div><div class="value mono" style="color:${op.color}">${zone.operational_state}</div></div></div>
+        <div class="status-tile"><span class="status-tile-icon" style="background:${op.color}"></span><div><div class="label">Stato di sicurezza</div><div class="value mono" style="color:${op.color}">${op.label || zone.operational_state}</div></div></div>
         <div class="status-tile"><span class="status-tile-icon round" style="background:${online ? "#2f9e6b" : "#c15a4a"}"></span><div><div class="label">Connessione</div><div class="value">${online ? "Online" : "Offline"}</div></div></div>
         <div class="status-tile"><span class="status-tile-icon round" style="border:2px solid ${online ? "#2f9e6b" : "#9aada4"}"></span><div><div class="label">Attività corrente</div><div class="value">${escapeHtml(lifecycleLabel)}</div><div class="sub">ultimo contatto Edge · ${escapeHtml(contactLabel)}</div></div></div>
         ${zone.operational_state === "EmergencyLockdown"
