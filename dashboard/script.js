@@ -163,9 +163,9 @@ const GLOBAL_STRATEGY_VARIABLES = [
 const VALID_ROLES = ["agronomo", "admin"];
 
 const OP_META = {
-  Nominal: { color: "#1f7a51" },
-  Degraded: { color: "#c9803f" },
-  EmergencyLockdown: { color: "#c15a4a" },
+  Regolare: { color: "#1f7a51" },
+  Anomalia : { color: "#fdb50c" },
+  Emergenza : { color: "#c15a4a" },
 };
 
 const DEPT_META = {
