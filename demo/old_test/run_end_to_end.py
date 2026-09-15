@@ -432,10 +432,6 @@ def run(args: argparse.Namespace) -> None:
             },
         )
         wait_for(
-            "FaultDetected event",
-            lambda: event_exists(base_url, fault["zone_id"], "FaultDetected"),
-        )
-        wait_for(
             "Degraded transition",
             lambda: event_exists(
                 base_url, fault["zone_id"], "StateChanged", "Degraded"
@@ -517,7 +513,7 @@ def run(args: argparse.Namespace) -> None:
             "recipes": {zone["id"]: zone["recipe_id"] for zone in zones},
             "strategy_changed": f"{strategy['variable']} -> {strategy['strategy']}",
             "phase_changed": f"{previous_phase} -> {current_phase}",
-            "fault": "FaultDetected, Degraded, automatic Nominal recovery",
+            "fault": "Degraded transition, automatic Nominal recovery",
             "removed_zone": removal["zone_id"],
             "remaining_zone_last_sequence": sequence_after,
         }

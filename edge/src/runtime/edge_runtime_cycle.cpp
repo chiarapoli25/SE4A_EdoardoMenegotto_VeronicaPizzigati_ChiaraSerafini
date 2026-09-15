@@ -311,11 +311,6 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             detected_faults.push_back(fault);
         }
     }
-    if (!detected_faults.empty()) {
-        publish_detected_faults(
-            detected_faults, result.start_time_seconds);
-    }
-
     if (operational_state_ == OperationalState::EMERGENCY_LOCKDOWN) {
         if (manual_reset_requested_) {
             apply_safe_fallback(delta_time_seconds, result, false);
@@ -329,8 +324,6 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
                 detected_faults.end(),
                 actuator_faults.begin(),
                 actuator_faults.end());
-            publish_detected_faults(
-                detected_faults, result.start_time_seconds);
             update_operational_state(result, detected_faults);
             result.actuator_command = actuators_->command();
             result.actuator_output = effective_actuator_output_;
@@ -349,8 +342,6 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
             publish_telemetry(result);
             return result;
         }
-        publish_detected_faults(
-            detected_faults, result.start_time_seconds);
         apply_safe_fallback(delta_time_seconds, result, true);
         result.actuator_command = actuators_->command();
         result.actuator_output = actuators_->output();
@@ -510,10 +501,6 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
                 detected_faults.end(),
                 actuator_faults.begin(),
                 actuator_faults.end());
-            if (!actuator_faults.empty()) {
-                publish_detected_faults(
-                    detected_faults, result.start_time_seconds);
-            }
             if (state_evaluated_before_actuation) {
                 bool has_critical_actuator_fault = false;
                 for (const auto& fault : actuator_faults) {
@@ -547,8 +534,6 @@ EdgeStepResult EdgeRuntime::step(double delta_time_seconds) {
     if (command_executed) {
         update_dose_histories(delta_time_seconds, result);
     }
-    publish_detected_faults(
-        detected_faults, result.start_time_seconds);
     result.actuator_command = actuators_->command();
     result.actuator_output = effective_actuator_output_;
     result.environment_state = environment_->state();

@@ -120,8 +120,11 @@
  * @ref smarthydro::FaultDetector osserva letture, comandi e uscite e applica
  * soglie configurabili per assenza, range fisico, velocita, congelamento,
  * risposta assente o insufficiente, uscita senza comando e validita N/P/K.
- * Ogni evidenza pubblicata come @ref smarthydro::FaultDetected contiene
- * componente, regola, severita e diagnostica.
+ * Ogni evidenza rilevata non genera un evento dedicato: guida direttamente
+ * la @ref smarthydro::StateChanged risultante, il cui campo `reason` riporta
+ * per intero componente, regola e diagnostica della violazione (un evento
+ * separato risulterebbe ridondante, vedi il commento su
+ * smarthydro::EdgeDomainEvent in event_bus.hpp).
  *
  * Un fault recuperabile porta a `Degraded`; se persiste puo causare
  * `EmergencyLockdown`. Un fault critico provoca il blocco immediato.

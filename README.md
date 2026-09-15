@@ -252,15 +252,20 @@ registrare localmente due zone inattive:
 dipendente da console, file o rete. Il runtime pubblica automaticamente:
 
 - `TelemetrySample`;
-- `StateChanged` e `EmergencyTriggered`;
+- `StateChanged`;
 - `RecipePhaseChanged`;
 - `RecipeCompleted`;
 - `SimulationSpeedChanged`, `SimulationDurationChanged`,
   `SimulationDurationCompleted` e `SchedulerLagStateChanged`;
 - `CommandExecuted` e `CommandFailed`.
 
-Il contratto include anche `FaultDetected`, `StrategyChanged` e
-`BackendUnavailable`. `ConsoleLogger` stampa gli eventi e `CsvLogger` li salva
+Non esistono eventi dedicati per "guasto rilevato" o "ingresso in
+EmergencyLockdown": risulterebbero ridondanti rispetto a `StateChanged`, che
+riporta gia' per intero (nel campo `reason`) componente, regola e diagnostica
+della violazione, oltre allo stato risultante — un consumer che vuole sapere
+"cosa e' successo e perche'" legge `StateChanged`. Il contratto include anche
+`StrategyChanged` e `BackendUnavailable`. `ConsoleLogger` stampa gli eventi e
+`CsvLogger` li salva
 in un CSV uniforme. `HttpBackendClient` serializza telemetria, attuatori ed
 eventi in JSON e li invia in un worker dedicato: `EventBus::publish()` non
 esegue richieste di rete. Prima dell'invio ogni messaggio viene salvato
@@ -568,9 +573,12 @@ immediato. Dopo un fault temporaneo la zona recupera automaticamente da
 reset manuale non viene accettato se il detector continua a osservare un'uscita
 fisica guasta.
 
-Ogni nuova violazione pubblica `FaultDetected` con `component`, `rule`,
-`severity` e `diagnostic`. Nel payload HTTP resta anche `fault_type`, come alias
-compatibile di `rule` per i consumer precedenti.
+Ogni nuova violazione non pubblica un evento dedicato: guida direttamente la
+`StateChanged` risultante (verso `Degraded` o `EmergencyLockdown`), il cui
+campo `reason` riporta per intero componente, regola e diagnostica nel formato
+`"<component> violated <rule>: <diagnostic>"` (con il prefisso
+`"recoverable fault persisted: "` quando lo stesso guasto ha gia' fatto
+scalare da `Degraded` a `EmergencyLockdown`).
 
 Una nuova ricetta deve avere versione maggiore e lo stesso substrato fisico
 della zona; il suo caricamento ferma gli attuatori, riavvia la timeline dalla

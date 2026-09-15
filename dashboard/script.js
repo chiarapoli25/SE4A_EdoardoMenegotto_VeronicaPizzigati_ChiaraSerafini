@@ -1790,7 +1790,7 @@ function renderQuarantineBox() {
 /*    above, just not capped to a top-6 preview.                      */
 /*  - Registro eventi: real EdgeEvent rows (GET /zones/{id}/events)   */
 /*    across every zone, filtered to the types that actually signal a */
-/*    problem (FaultDetected, CommandFailed, StateChanged into        */
+/*    problem (CommandFailed, StateChanged into                       */
 /*    Degraded/EmergencyLockdown) — recoveries back to Nominal and    */
 /*    routine bookkeeping events (recipe/strategy/simulation changes) */
 /*    are deliberately left out.                                      */
@@ -1861,9 +1861,13 @@ function computeActiveZoneAlerts() {
  * edge/src/backend/http_backend_client.cpp (uploads_from_event) for the
  * full event_type catalogue. StateChanged is only alarm-worthy when it
  * lands on a bad state: a transition back to Nominal is a recovery, not a
- * situation to report here. */
+ * situation to report here. Nessun FaultDetected/EmergencyTriggered qui:
+ * rimossi lato Edge perché ridondanti con StateChanged, che riporta già
+ * per intero componente/regola/diagnostica nel proprio reason (vedi il
+ * commento su EdgeDomainEvent in edge/include/smarthydro/events/
+ * event_bus.hpp). */
 function isAlarmEvent(ev) {
-  if (ev.event_type === "FaultDetected" || ev.event_type === "CommandFailed") return true;
+  if (ev.event_type === "CommandFailed") return true;
   if (ev.event_type === "StateChanged") {
     const cur = ev.payload && ev.payload.current_state;
     return cur === "Degraded" || cur === "EmergencyLockdown";
@@ -1872,9 +1876,6 @@ function isAlarmEvent(ev) {
 }
 
 function eventBadgeMeta(ev) {
-  if (ev.event_type === "FaultDetected") {
-    return { badge: "GUASTO", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
-  }
   if (ev.event_type === "CommandFailed") {
     return { badge: "COMANDO KO", color: "#a58a5e", bg: "rgba(201,128,63,.08)" };
   }
@@ -1885,19 +1886,15 @@ function eventBadgeMeta(ev) {
 }
 
 /** Title/detail text built entirely from the event's own real payload
- * fields (component/rule/diagnostic for faults, actuator/diagnostic for
- * failed commands, previous_state/current_state/reason for state
- * transitions) — nothing here is invented per event, only the wording
- * around the real values is fixed. */
+ * fields (actuator/diagnostic for failed commands, previous_state/
+ * current_state/reason for state transitions) — nothing here is invented
+ * per event, only the wording around the real values is fixed. Un
+ * guasto rilevato dal FaultDetector non ha più un evento dedicato: il suo
+ * component/rule/diagnostic arriva già per intero nel reason dello
+ * StateChanged verso Degraded/EmergencyLockdown, mostrato dal ramo
+ * generico sotto. */
 function eventTitleDetail(ev) {
   const p = ev.payload || {};
-  if (ev.event_type === "FaultDetected") {
-    const comp = p.component ? String(p.component).replace(/_/g, " ") : "componente sconosciuto";
-    return {
-      title: `Guasto rilevato: ${comp}`,
-      detail: p.diagnostic || "Nessun dettaglio disponibile per questo guasto.",
-    };
-  }
   if (ev.event_type === "CommandFailed") {
     const act = p.actuator ? String(p.actuator).replace(/_/g, " ") : "attuatore sconosciuto";
     return {
@@ -5699,6 +5696,26 @@ function goBack() {
 /* distinzione hardware/safety_range.                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Estrae component/diagnostic dal reason di uno StateChanged verso uno
+ * stato non-Nominal. Non c'è più un evento FaultDetected dedicato (rimosso
+ * lato Edge perché ridondante — vedi edge/include/smarthydro/events/
+ * event_bus.hpp): edge_runtime_fsm.cpp compone sempre il reason come
+ * "<component> violated <rule>: <diagnostic>", con un prefisso
+ * "recoverable fault persisted: " quando lo stesso guasto ha già escalato
+ * da Degraded a EmergencyLockdown — entrambe le forme sono riconosciute
+ * qui. Un reason che non segue questo schema (es. "manual reset
+ * accepted…", "<variabile> control interlock: …") restituisce solo il
+ * diagnostic grezzo, senza un nome di componente: la UI chiamante ha già
+ * un fallback per questo caso (vedi componentLabel in renderEmergencyModal).
+ */
+function parseFaultReason(reason) {
+  if (!reason) return { component: null, diagnostic: null };
+  const match = /^(?:recoverable fault persisted: )?([\w.-]+) violated [\w.-]+: (.*)$/.exec(reason);
+  if (!match) return { component: null, diagnostic: reason };
+  return { component: match[1], diagnostic: match[2] };
+}
+
 async function openEmergencyModal(zoneId) {
   STATE.emergencyModal = {
     zoneId,
@@ -5721,9 +5738,15 @@ async function openEmergencyModal(zoneId) {
     if (!STATE.emergencyModal || STATE.emergencyModal.zoneId !== zoneId) return; // chiuso nel frattempo
     updateZoneInState(zone);
     // Più recente prima (vedi backend/app/features/events/repository.py
-    // list_events, ORDER BY ... DESC): il primo FaultDetected della lista
-    // è quindi già il più recente, nessun ordinamento da rifare qui.
-    const lastFault = events.find((e) => e.event_type === "FaultDetected");
+    // list_events, ORDER BY ... DESC): il primo StateChanged verso uno
+    // stato non-Nominal della lista è quindi già il più recente, nessun
+    // ordinamento da rifare qui. Vedi parseFaultReason() sopra per il
+    // perché si legge da qui e non da un FaultDetected dedicato.
+    const lastStateChange = events.find(
+      (e) => e.event_type === "StateChanged"
+        && e.payload && e.payload.current_state
+        && e.payload.current_state !== "Nominal"
+    );
     const em = STATE.emergencyModal;
     em.zoneLabel = zoneLabel(zone);
     // Vedi il commento su Zone.active_fault_id: SOLO un InjectFault
@@ -5739,9 +5762,10 @@ async function openEmergencyModal(zoneId) {
     } else {
       em.cause = "unknown"; // non (più) in EmergencyLockdown: vedi renderEmergencyModal
     }
-    if (lastFault) {
-      em.component = lastFault.payload && lastFault.payload.component || null;
-      em.diagnostic = lastFault.payload && lastFault.payload.diagnostic || null;
+    if (lastStateChange) {
+      const parsed = parseFaultReason(lastStateChange.payload.reason);
+      em.component = parsed.component;
+      em.diagnostic = parsed.diagnostic;
     }
     em.phase = "ask";
     renderEmergencyModal();

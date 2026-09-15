@@ -111,18 +111,6 @@ Json actuator_output_json(const ActuatorOutput& output) {
     };
 }
 
-const char* severity_name(ControlFaultSeverity severity) noexcept {
-    switch (severity) {
-        case ControlFaultSeverity::NONE:
-            return "None";
-        case ControlFaultSeverity::RECOVERABLE:
-            return "Recoverable";
-        case ControlFaultSeverity::CRITICAL:
-            return "Critical";
-    }
-    return "Unknown";
-}
-
 struct PendingUpload {
     std::string message_id;
     std::string path;
@@ -292,14 +280,6 @@ std::vector<PendingUpload> uploads_from_event(
                         {"current_state", to_string(value.current_state)},
                         {"reason", value.reason},
                     };
-                } else if constexpr (std::is_same_v<Event, FaultDetected>) {
-                    payload = {
-                        {"component", value.component},
-                        {"rule", value.rule},
-                        {"fault_type", value.rule},
-                        {"severity", severity_name(value.severity)},
-                        {"diagnostic", value.diagnostic},
-                    };
                 } else if constexpr (std::is_same_v<Event, StrategyChanged>) {
                     payload = {
                         {"variable", to_string(value.variable)},
@@ -322,9 +302,6 @@ std::vector<PendingUpload> uploads_from_event(
                         {"total_duration_hours",
                          value.total_duration_hours},
                     };
-                } else if constexpr (
-                    std::is_same_v<Event, EmergencyTriggered>) {
-                    payload = {{"reason", value.reason}};
                 } else if constexpr (
                     std::is_same_v<Event, CommandExecuted>) {
                     payload = {

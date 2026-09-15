@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <utility>
 
 namespace smarthydro {
@@ -29,36 +28,6 @@ bool EdgeRuntime::reset_injected_fault(
 bool EdgeRuntime::has_injected_fault(
     const std::string& fault_id) const noexcept {
     return fault_injector_.contains(fault_id);
-}
-
-void EdgeRuntime::publish_detected_faults(
-    const std::vector<DetectedFault>& faults,
-    double timestamp_seconds) {
-    std::unordered_set<std::string> active_keys;
-    for (const auto& fault : faults) {
-        active_keys.insert(fault.key());
-        if (!reported_runtime_faults_.insert(fault.key()).second ||
-            !event_bus_) {
-            continue;
-        }
-        event_bus_->publish(
-            FaultDetected{
-                zone_id_,
-                timestamp_seconds,
-                fault.component,
-                fault.rule,
-                fault.severity,
-                fault.diagnostic,
-            });
-    }
-    for (auto iterator = reported_runtime_faults_.begin();
-         iterator != reported_runtime_faults_.end();) {
-        if (active_keys.find(*iterator) == active_keys.end()) {
-            iterator = reported_runtime_faults_.erase(iterator);
-        } else {
-            ++iterator;
-        }
-    }
 }
 
 void EdgeRuntime::apply_degraded_isolation(
@@ -311,10 +280,10 @@ void EdgeRuntime::transition_operational_state(
             previous_state,
             next_state,
         });
-        if (event_bus_) {
-            event_bus_->publish(EmergencyTriggered{
-                zone_id_, result.start_time_seconds, reason});
-        }
+        // Niente EmergencyTriggered dedicato: era ridondante con lo
+        // StateChanged appena pubblicato sopra, che riporta gia' lo stesso
+        // reason e la transizione verso EmergencyLockdown (vedi il commento
+        // su EdgeDomainEvent in event_bus.hpp).
     }
 }
 

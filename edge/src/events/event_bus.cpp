@@ -120,9 +120,6 @@ std::string event_detail(const EdgeDomainEvent& event) {
                 return std::string(state_name(value.previous_state)) +
                        " -> " + state_name(value.current_state) +
                        ": " + value.reason;
-            } else if constexpr (std::is_same_v<Event, FaultDetected>) {
-                return value.component + " / " + value.rule + ": " +
-                       value.diagnostic;
             } else if constexpr (std::is_same_v<Event, StrategyChanged>) {
                 return std::string(to_string(value.variable)) +
                        " strategy changed";
@@ -134,9 +131,6 @@ std::string event_detail(const EdgeDomainEvent& event) {
                 std::is_same_v<Event, RecipeCompleted>) {
                 return value.recipe_id + " completed in " +
                        value.final_phase;
-            } else if constexpr (
-                std::is_same_v<Event, EmergencyTriggered>) {
-                return value.reason;
             } else if constexpr (
                 std::is_same_v<Event, BackendUnavailable>) {
                 return value.endpoint + ": " + value.diagnostic;
@@ -177,8 +171,6 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
                 return "SchedulerLagStateChanged";
             } else if constexpr (std::is_same_v<Event, StateChanged>) {
                 return "StateChanged";
-            } else if constexpr (std::is_same_v<Event, FaultDetected>) {
-                return "FaultDetected";
             } else if constexpr (std::is_same_v<Event, StrategyChanged>) {
                 return "StrategyChanged";
             } else if constexpr (
@@ -187,9 +179,6 @@ const char* event_type_name(const EdgeDomainEvent& event) noexcept {
             } else if constexpr (
                 std::is_same_v<Event, RecipeCompleted>) {
                 return "RecipeCompleted";
-            } else if constexpr (
-                std::is_same_v<Event, EmergencyTriggered>) {
-                return "EmergencyTriggered";
             } else if constexpr (
                 std::is_same_v<Event, BackendUnavailable>) {
                 return "BackendUnavailable";

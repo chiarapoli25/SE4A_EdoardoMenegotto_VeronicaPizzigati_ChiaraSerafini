@@ -238,7 +238,7 @@ TEST(RuntimeCommandProcessorTest, AdvancesRecipePhaseUntilLastPhase) {
     EXPECT_EQ(phase_changed_events, 3U);
 }
 
-TEST(RuntimeCommandProcessorTest, InjectsDetectsResetsAndPublishesTypedFault) {
+TEST(RuntimeCommandProcessorTest, InjectsDetectsAndResetsFault) {
     smarthydro::EdgeRuntime runtime(
         load_demo_recipe(), {}, {}, deterministic_sensors());
     runtime.confirm_all_configurations();
@@ -280,20 +280,28 @@ TEST(RuntimeCommandProcessorTest, InjectsDetectsResetsAndPublishesTypedFault) {
     EXPECT_EQ(
         escalated_step.operational_state,
         smarthydro::OperationalState::EMERGENCY_LOCKDOWN);
-    const smarthydro::FaultDetected* detected_fault = nullptr;
+    // Nessun FaultDetected dedicato (rimosso perche' ridondante — vedi il
+    // commento su EdgeDomainEvent in event_bus.hpp): component/rule del
+    // guasto rilevato si leggono dal reason dello StateChanged che porta a
+    // Degraded, che li riporta per intero.
+    const smarthydro::StateChanged* degraded_transition = nullptr;
     for (const auto& event : observer->events) {
-        if (const auto* fault =
-                std::get_if<smarthydro::FaultDetected>(&event)) {
-            detected_fault = fault;
-            break;
+        if (const auto* state_changed =
+                std::get_if<smarthydro::StateChanged>(&event)) {
+            if (state_changed->current_state ==
+                smarthydro::OperationalState::DEGRADED) {
+                degraded_transition = state_changed;
+                break;
+            }
         }
     }
-    ASSERT_NE(detected_fault, nullptr);
-    EXPECT_EQ(detected_fault->component, "ph_sensor");
-    EXPECT_EQ(detected_fault->rule, "missing_value");
-    EXPECT_EQ(
-        detected_fault->severity,
-        smarthydro::ControlFaultSeverity::RECOVERABLE);
+    ASSERT_NE(degraded_transition, nullptr);
+    EXPECT_NE(
+        degraded_transition->reason.find("ph_sensor"),
+        std::string::npos);
+    EXPECT_NE(
+        degraded_transition->reason.find("missing_value"),
+        std::string::npos);
 }
 
 TEST(RuntimeCommandProcessorTest, TimedSensorOffsetExpiresAndRecovers) {

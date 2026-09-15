@@ -15,7 +15,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_set>
 
 namespace smarthydro {
 
@@ -224,9 +223,6 @@ private:
     void record_actuator_observation(
         const ActuatorCommand& command,
         const ActuatorOutput& output) noexcept;
-    void publish_detected_faults(
-        const std::vector<DetectedFault>& faults,
-        double timestamp_seconds);
     void apply_degraded_isolation(
         EdgeStepResult& result,
         const std::vector<DetectedFault>& faults);
@@ -311,7 +307,6 @@ private:
     double recipe_time_offset_seconds_ = 0.0;
     bool recipe_completed_ = false;
     SoilType active_substrate_ = SoilType::AERATED_UNIVERSAL;
-    std::unordered_set<std::string> reported_runtime_faults_;
     ActuatorCommand detector_command_observation_;
     ActuatorOutput detector_output_observation_;
     std::vector<DetectedFault> previous_actuator_faults_;

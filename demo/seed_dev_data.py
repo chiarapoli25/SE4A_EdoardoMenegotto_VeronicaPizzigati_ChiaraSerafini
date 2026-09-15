@@ -229,10 +229,14 @@ Il nuovo meccanismo, deterministico e riproducibile:
   dal safety_range fin dal primo ciclo: 81.33%, ben oltre 57): cambiare
   quella stringa cambia il campione, quindi NON rinominarla senza riverifica
   dal vivo.
-- Il risultato e' un FaultDetected CRITICAL con rule="outside_recipe_
-  safety_range" component="soil_moisture_sensor" (edge/src/faults/
-  fault_detector.cpp) sul primissimo ciclo di controllo, seguito
-  immediatamente da StateChanged Nominal -> EmergencyLockdown (bypassando
+- Il risultato e' un'evidenza CRITICAL rilevata dal FaultDetector con
+  rule="outside_recipe_safety_range" component="soil_moisture_sensor"
+  (edge/src/faults/fault_detector.cpp) sul primissimo ciclo di controllo.
+  Non viene piu' pubblicato come evento FaultDetected a se stante (rimosso
+  perche' ridondante — la StateChanged che segue ne riporta gia' per
+  intero componente/regola/diagnostica nel campo reason, vedi il commento
+  su EdgeDomainEvent in edge/include/smarthydro/events/event_bus.hpp): guida
+  direttamente la StateChanged Nominal -> EmergencyLockdown (bypassando
   Degraded, vedi la nota IMPORTANTE sotto) — senza bisogno di alcun
   InjectFault ne' di ripetuti cicli di attesa: e' per questo lo scenario
   piu' VELOCE dei tre, utile per stare dentro il budget dei primi 3 minuti
@@ -275,6 +279,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -492,8 +497,9 @@ LOCKDOWN_SAFETY_DEMO_RECIPE_ID = "recipe-safety-demo-g"
 # prima ricetta del reparto restituita da GET /recipes, che per puro
 # ordinamento alfabetico degli id (recipe-fragola < recipe-kumquat < ...)
 # risulterebbe "recipe-fragola": la stessa ricetta gia' assegnata a r4-s1 da
-# pick_recipes(), producendo "Fragola (demo lockdown sicurezza)" — non piu'
-# voluto. "recipe-peperoncino" esiste nel catalogo del reparto 4
+# pick_recipes(), producendo su r4-s2 lo stesso identico plant_type "Fragola"
+# gia' mostrato per r4-s1 — non voluto, perche' renderebbe le due zone
+# indistinguibili in dashboard. "recipe-peperoncino" esiste nel catalogo del reparto 4
 # (config/recipe_catalog/recipes/peperoncino.json) con lo stesso substrate
 # "organic-retentive" di Fragola, quindi il campionamento iniziale
 # deterministico di soil_moisture (che dipende da recipe.id e da
@@ -672,7 +678,7 @@ def ensure_safety_lockdown_recipe() -> str:
     recipe.pop("department_name", None)  # computed field, non accettato in POST
     recipe["id"] = LOCKDOWN_SAFETY_DEMO_RECIPE_ID
     recipe["version"] = 1
-    plant_type = f"{template['plant_type']} (demo lockdown sicurezza)"
+    plant_type = template["plant_type"]
     recipe["plant_type"] = plant_type
 
     # Target soil_moisture volutamente stretto: safety_range e' solo 2 punti
@@ -924,6 +930,30 @@ def poll_events_until(
         time.sleep(POLL_INTERVAL_SECONDS)
     print(f"[seed] AVVISO: timeout ({timeout_seconds:.0f}s) in attesa di '{description}' su {zone_id}")
     return None
+
+
+_FAULT_REASON_PATTERN = re.compile(
+    r"^(?:recoverable fault persisted: )?([\w.-]+) violated ([\w.-]+): (.*)$"
+)
+
+
+def parse_fault_reason(reason: str | None) -> tuple[str | None, str | None, str | None]:
+    """Estrae (component, rule, diagnostic) dal reason di uno StateChanged
+    causato da un fault. Non esiste piu' un evento FaultDetected dedicato
+    (rimosso perche' ridondante — vedi il commento su EdgeDomainEvent in
+    edge/include/smarthydro/events/event_bus.hpp): edge_runtime_fsm.cpp
+    compone sempre il reason come "<component> violated <rule>:
+    <diagnostic>", con un prefisso "recoverable fault persisted: " quando
+    lo stesso guasto ha gia' fatto scalare da Degraded a EmergencyLockdown
+    — entrambe le forme sono riconosciute qui. Un reason che non segue
+    questo schema (es. un control interlock, o un recovery/reset) restituisce
+    solo il diagnostic grezzo (il reason stesso), senza component/rule."""
+    if not reason:
+        return None, None, None
+    match = _FAULT_REASON_PATTERN.match(reason)
+    if not match:
+        return None, None, reason
+    return match.group(1), match.group(2), match.group(3)
 
 
 def get_telemetry_latest(zone_id: str) -> dict | None:
@@ -1346,32 +1376,12 @@ def step5_degraded_demo(run_suffix: str) -> None:
         print(f"[seed] avviso: fault non accodato su {zone_id}, salto la verifica del punto 6")
         return
 
-    print(f"[seed] --- Passo 6: attendo FaultDetected + StateChanged(Degraded) su {zone_id} ---")
-    # Il payload di FaultDetected non porta il fault_id che abbiamo scelto
-    # noi (solo component/rule/severity/diagnostic, vedi
-    # edge/src/backend/http_backend_client.cpp): correliamo quindi sul
-    # componente/regola attesi per un sensor_dropout su soil_moisture.
-    fault_event = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "FaultDetected"
-        and e.get("payload", {}).get("component") == "soil_moisture_sensor"
-        and e.get("payload", {}).get("rule") == "missing_value",
-        "evento FaultDetected (soil_moisture_sensor / missing_value)",
-        since=since,
-    )
-    if fault_event is not None:
-        payload = fault_event.get("payload", {})
-        print(
-            f"[seed] FaultDetected osservato: component={payload.get('component')} "
-            f"rule={payload.get('rule')} severity={payload.get('severity')} "
-            f"diagnostic={payload.get('diagnostic')!r}"
-        )
-    else:
-        print(
-            "[seed] avviso: nessun FaultDetected osservato entro il timeout — "
-            "può darsi che il fault non sia stato ancora rilevato dall'Edge."
-        )
-
+    print(f"[seed] --- Passo 6: attendo StateChanged(Degraded) su {zone_id} ---")
+    # Non esiste piu' un FaultDetected separato da attendere prima (rimosso
+    # perche' ridondante — vedi il commento su EdgeDomainEvent in
+    # edge/include/smarthydro/events/event_bus.hpp): lo StateChanged verso
+    # Degraded riporta gia' per intero, nel proprio reason, componente e
+    # regola del fault che l'ha causato (parse_fault_reason() li estrae).
     degraded_event = poll_events_until(
         zone_id,
         lambda e: e.get("event_type") == "StateChanged"
@@ -1380,10 +1390,14 @@ def step5_degraded_demo(run_suffix: str) -> None:
         since=since,
     )
     if degraded_event is not None:
+        component, rule, diagnostic = parse_fault_reason(
+            degraded_event["payload"].get("reason")
+        )
         print(
             f"[seed] StateChanged osservato: "
             f"{degraded_event['payload'].get('previous_state')} -> "
-            f"{degraded_event['payload'].get('current_state')}"
+            f"{degraded_event['payload'].get('current_state')} "
+            f"(component={component} rule={rule} diagnostic={diagnostic!r})"
         )
         print(f"[seed] {zone_id} è passata a Degraded per un fault reale rilevato dall'Edge.")
     else:
@@ -1494,51 +1508,42 @@ def step_safety_lockdown_demo(since: datetime) -> None:
         f"{zone_id} (nessun InjectFault: basta il target di fase gia' assegnato) ---"
     )
 
-    fault_event = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "FaultDetected"
-        and e.get("payload", {}).get("rule") == "outside_recipe_safety_range",
-        "evento FaultDetected (outside_recipe_safety_range)",
-        since=since,
-    )
-    if fault_event is None:
-        print(
-            f"[seed] avviso: nessun FaultDetected outside_recipe_safety_range "
-            f"osservato entro il timeout su {zone_id} — puo' darsi che l'Edge "
-            "non abbia ancora eseguito il primo ciclo di controllo su questa zona."
-        )
-        return
-    payload = fault_event.get("payload", {})
-    print(
-        f"[seed] FaultDetected osservato: component={payload.get('component')} "
-        f"severity={payload.get('severity')} diagnostic={payload.get('diagnostic')!r}"
-    )
-    if payload.get("severity") != "Critical":
-        print(
-            "[seed] avviso: severity non e' 'Critical' come atteso per una "
-            "violazione di safety_range (verifica manuale consigliata)."
-        )
-
+    # Non esiste piu' un FaultDetected separato da attendere prima (rimosso
+    # perche' ridondante — vedi il commento su EdgeDomainEvent in
+    # edge/include/smarthydro/events/event_bus.hpp): la StateChanged verso
+    # EmergencyLockdown riporta gia' per intero, nel proprio reason, il
+    # component e la rule ("outside_recipe_safety_range") della violazione
+    # che l'ha causata (parse_fault_reason() li estrae).
     lockdown_event = poll_events_until(
         zone_id,
         lambda e: e.get("event_type") == "StateChanged"
         and e.get("payload", {}).get("current_state") == "EmergencyLockdown",
-        "StateChanged -> EmergencyLockdown (dopo FaultDetected safety_range)",
+        "StateChanged -> EmergencyLockdown (safety_range)",
         since=since,
     )
     if lockdown_event is None:
         print(
-            f"[seed] avviso: {zone_id} non risulta ancora in EmergencyLockdown "
-            "entro il timeout, anche se il FaultDetected e' stato osservato."
+            f"[seed] avviso: nessuno StateChanged verso EmergencyLockdown "
+            f"osservato entro il timeout su {zone_id} — puo' darsi che l'Edge "
+            "non abbia ancora eseguito il primo ciclo di controllo su questa zona."
         )
         return
+    component, rule, diagnostic = parse_fault_reason(
+        lockdown_event["payload"].get("reason")
+    )
     print(
         f"[seed] {zone_id} e' passata a EmergencyLockdown: "
         f"{lockdown_event['payload'].get('previous_state')} -> "
         f"{lockdown_event['payload'].get('current_state')} "
-        "(una violazione CRITICAL di safety_range forza SEMPRE EmergencyLockdown "
+        f"(component={component} rule={rule} diagnostic={diagnostic!r}) — "
+        "una violazione CRITICAL di safety_range forza SEMPRE EmergencyLockdown "
         "bypassando Degraded — vedi la nota in cima al file)."
     )
+    if rule != "outside_recipe_safety_range":
+        print(
+            "[seed] avviso: la rule osservata non e' 'outside_recipe_safety_range' "
+            "come atteso per questo scenario (verifica manuale consigliata)."
+        )
     print(
         f"[seed] Verifica nella UI: apri la pagina Allarmi da amministratore "
         f"e controlla che compaia una card di allarme per {zone_id} "

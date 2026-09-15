@@ -139,22 +139,6 @@ struct StateChanged {
     std::string reason;
 };
 
-/** @brief Guasto strutturato prodotto dal FaultDetector osservazionale. */
-struct FaultDetected {
-    /** Zona nella quale e stato rilevato il guasto. */
-    std::string zone_id;
-    /** Timestamp simulato del rilevamento, in secondi. */
-    double timestamp_seconds = 0.0;
-    /** Sensore, modello o attuatore che ha prodotto l'evidenza. */
-    std::string component;
-    /** Regola stabile violata dal componente. */
-    std::string rule;
-    /** Severita usata dalla FSM. */
-    ControlFaultSeverity severity = ControlFaultSeverity::NONE;
-    /** Diagnostica leggibile e contestuale. */
-    std::string diagnostic;
-};
-
 /** @brief Cambio della Strategy associata a una variabile controllata. */
 struct StrategyChanged {
     /** Zona interessata dalla modifica. */
@@ -193,16 +177,6 @@ struct RecipeCompleted {
     std::string final_phase;
     /** Durata nominale complessiva della ricetta, in ore. */
     double total_duration_hours = 0.0;
-};
-
-/** @brief Ingresso della FSM nello stato EmergencyLockdown. */
-struct EmergencyTriggered {
-    /** Zona portata nello stato sicuro. */
-    std::string zone_id;
-    /** Timestamp simulato dell'emergenza, in secondi. */
-    double timestamp_seconds = 0.0;
-    /** Causa diagnostica dell'emergenza. */
-    std::string reason;
 };
 
 /** @brief Fallimento di una consegna verso il backend. */
@@ -245,7 +219,16 @@ struct CommandFailed {
     std::string diagnostic;
 };
 
-/** @brief Unione chiusa degli eventi pubblicabili sul bus dell'Edge. */
+/**
+ * @brief Unione chiusa degli eventi pubblicabili sul bus dell'Edge.
+ *
+ * Non contiene un evento dedicato per "guasto rilevato" o "ingresso in
+ * EmergencyLockdown": entrambi risultavano ridondanti rispetto a
+ * StateChanged, che gia' riporta per intero (nel campo `reason`) componente,
+ * regola e diagnostica della violazione, oltre allo stato risultante. Un
+ * consumer che vuole sapere "cosa e' successo e perche'" legge StateChanged;
+ * non c'e' altro evento da correlare.
+ */
 using EdgeDomainEvent = std::variant<
     TelemetrySample,
     ZoneLifecycleChanged,
@@ -254,11 +237,9 @@ using EdgeDomainEvent = std::variant<
     SimulationDurationCompleted,
     SchedulerLagStateChanged,
     StateChanged,
-    FaultDetected,
     StrategyChanged,
     RecipePhaseChanged,
     RecipeCompleted,
-    EmergencyTriggered,
     BackendUnavailable,
     CommandExecuted,
     CommandFailed>;

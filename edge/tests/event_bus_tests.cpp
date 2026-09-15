@@ -89,8 +89,12 @@ TEST(EventBusTest, PublishesUnsubscribesAndIsolatesObserverFailures) {
 
     event_bus.unsubscribe(recorder_subscription);
     event_bus.publish(
-        smarthydro::EmergencyTriggered{
-            "zone-a", 120.0, "persistent failure"});
+        smarthydro::StateChanged{
+            "zone-a",
+            120.0,
+            smarthydro::OperationalState::DEGRADED,
+            smarthydro::OperationalState::EMERGENCY_LOCKDOWN,
+            "persistent failure"});
     EXPECT_EQ(recorder->events.size(), 1U);
 }
 
@@ -303,7 +307,7 @@ TEST(EventBusTest, RuntimePublishesTelemetryAndExecutedCommands) {
     EXPECT_DOUBLE_EQ(telemetry->current_setpoints[ph_index], 6.2);
 }
 
-TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
+TEST(EventBusTest, RuntimePublishesStateChangedOnActuatorSaturation) {
     auto recipe = load_demo_recipe();
     auto& soil_target =
         recipe.phases.front().targets[
@@ -317,7 +321,7 @@ TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
     smarthydro::EnvironmentConfig environment_config;
     // Deficit di umidita' deliberato rispetto alla banda 80-90 sopra, cosi'
     // il controllore richiede piu' acqua del tetto minuscolo dell'attuatore
-    // (0.1L) e fa scattare CommandFailed/EmergencyTriggered attesi sotto
+    // (0.1L) e fa scattare i CommandFailed/StateChanged attesi sotto
     // (altrimenti environment_for_recipe() campionerebbe l'umidita'
     // iniziale vicina al setpoint e nessun comando eccederebbe mai 0.1L).
     environment_config.initial_soil_moisture_percent = 20.0;
@@ -344,16 +348,12 @@ TEST(EventBusTest, RuntimePublishesStateAndEmergencyEvents) {
             recorder->events),
         1U);
     EXPECT_EQ(
-        count_events<smarthydro::EmergencyTriggered>(
-            recorder->events),
-        1U);
-    EXPECT_EQ(
         count_events<smarthydro::TelemetrySample>(
             recorder->events),
         1U);
 }
 
-TEST(EventBusTest, RuntimePublishesAutomaticallyDetectedSensorFault) {
+TEST(EventBusTest, RuntimeTransitionsToDegradedOnAutomaticSensorFault) {
     auto sensor_config = deterministic_sensors();
     sensor_config.temperature.dropout_probability = 1.0;
     auto event_bus = std::make_shared<smarthydro::EventBus>();
@@ -369,9 +369,6 @@ TEST(EventBusTest, RuntimePublishesAutomaticallyDetectedSensorFault) {
     EXPECT_EQ(
         result.operational_state,
         smarthydro::OperationalState::DEGRADED);
-    EXPECT_EQ(
-        count_events<smarthydro::FaultDetected>(recorder->events),
-        1U);
     EXPECT_EQ(
         count_events<smarthydro::StateChanged>(recorder->events),
         1U);

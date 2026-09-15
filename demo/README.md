@@ -17,7 +17,7 @@ Il comando configura e compila l'Edge, sceglie una porta libera e verifica:
 2. attivazione e telemetria di entrambe;
 3. cambio Strategy e conferma della nuova configurazione;
 4. avanzamento manuale della fase;
-5. fault temporaneo, `FaultDetected`, `Degraded` e recovery in `Nominal`;
+5. fault temporaneo, transizione a `Degraded` e recovery in `Nominal`;
 6. rimozione di una zona, mancata esecuzione dei suoi nuovi comandi e
    prosecuzione dell'altra zona.
 
