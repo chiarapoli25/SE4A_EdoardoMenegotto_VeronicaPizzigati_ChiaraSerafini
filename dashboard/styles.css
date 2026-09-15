@@ -783,6 +783,16 @@ a:hover { color: var(--accent-dark); }
 .quarantine-tile-row .v { font-weight: 500; text-align: right; }
 .quarantine-tile-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
 
+/* Purely visual accelerated countdown (see QUARANTINE_VISUAL_* in script.js)
+   — an in-demo fake clock, unrelated to the real quarantined_at/backend
+   release check just above it. */
+.quarantine-visual-clock { padding: 6px 0 4px; border-bottom: 1px solid #f0f3f1; }
+.quarantine-visual-clock-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+.quarantine-visual-clock-row .k { color: var(--ink-mute); }
+.quarantine-visual-clock-row .v { font-weight: 600; color: #8a4f28; }
+.quarantine-visual-bar { height: 5px; border-radius: 3px; background: #f0e6dc; overflow: hidden; }
+.quarantine-visual-bar-fill { height: 100%; background: #c98a4a; transition: width 1s linear; }
+
 /* "Stato impianto" + "Allarmi recenti": a full-width row below the
    department grid, the two cards side by side within it (was ".home-aside",
    renamed since it's no longer beside anything). */
@@ -901,7 +911,7 @@ a:hover { color: var(--accent-dark); }
 .cols-control { grid-template-columns: .8fr 1.6fr 1.4fr 1fr .9fr 1.5fr .5fr; }
 .cols-advanced { grid-template-columns: 1.6fr .8fr .7fr .7fr 1.9fr; }
 .cols-global-strategy { grid-template-columns: 1.6fr 2.2fr 1.4fr; }
-.cols-users { grid-template-columns: 1.4fr 1.4fr 1fr 1.3fr 1.2fr; }
+.cols-users { grid-template-columns: 1.3fr 1.1fr .7fr 1.1fr 1.2fr 1.3fr; }
 
 .var-name { font-size: 13px; font-weight: 500; }
 .var-unit { font: 400 10.5px var(--mono); color: var(--ink-faint); margin-top: 2px; }
@@ -1136,6 +1146,22 @@ a:hover { color: var(--accent-dark); }
   background: #fff; border-radius: 26px; box-shadow: 0 30px 80px rgba(6, 26, 19, .4);
   animation: shPop .22s cubic-bezier(.2,.9,.3,1);
 }
+
+/* Pop-up di risoluzione EmergencyLockdown: stesso trattamento di
+   .modal-overlay/.modal-content ma un secondo overlay indipendente (può
+   stare sopra il modale di dettaglio settore, z-index più alto) e un
+   riquadro più stretto — è una domanda sì/no, non una vista dati. */
+.emergency-modal-overlay { z-index: 50; }
+.emergency-modal-content { width: min(480px, 100%); }
+.emergency-modal-body { padding: 24px 26px 26px; }
+.emergency-modal-title { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 600; margin-bottom: 4px; }
+.emergency-modal-zone { font: 500 10.5px/1 var(--mono); letter-spacing: .08em; color: var(--ink-mute); margin-bottom: 16px; }
+.emergency-modal-question { font-size: 13.5px; color: var(--ink-soft); line-height: 1.55; margin-bottom: 18px; }
+.emergency-modal-question b { color: var(--ink); }
+.emergency-modal-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.emergency-modal-status { font-size: 12px; color: var(--ink-mute); margin-top: 12px; }
+.emergency-modal-status.error { color: var(--danger); }
+.emergency-modal-status.success { color: var(--nominal); }
 
 /* Il simulatore e' una superficie di analisi, non un semplice dettaglio:
    sfrutta quasi tutto lo schermo senza modificare gli altri pop-up. */
@@ -1420,7 +1446,10 @@ a:hover { color: var(--accent-dark); }
 
 /* ---------- Utenti (pagina dedicata, admin-only) ---------- */
 
-.cols-users { grid-template-columns: 1.4fr 1.2fr .8fr 1.3fr 1.4fr; }
+.cols-users { grid-template-columns: 1.3fr 1.1fr .7fr 1.1fr 1.2fr 1.3fr; }
+
+.user-password-cell { font: 500 11.5px var(--mono); color: var(--ink-soft); }
+.user-password-cell.unknown { font: 400 11px var(--sans); color: var(--ink-faint); font-style: italic; }
 
 .role-admin { color: var(--accent-dark); background: var(--accent-soft); }
 .role-agronomo { color: var(--ink-mute); background: var(--line-soft); }

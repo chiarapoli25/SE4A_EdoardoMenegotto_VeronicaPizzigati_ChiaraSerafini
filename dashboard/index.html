@@ -149,6 +149,14 @@
       <div id="modal-content" class="modal-content" role="dialog" aria-modal="true"></div>
     </div>
 
+    <!-- Pop-up di risoluzione EmergencyLockdown (renderEmergencyModal()):
+         un secondo overlay indipendente da #modal-overlay, apribile sia
+         dalla card di Situazioni attive della pagina Allarmi sia dal
+         riepilogo del settore — vedi openEmergencyModal() in script.js. -->
+    <div id="emergency-modal-overlay" class="modal-overlay emergency-modal-overlay hidden">
+      <div id="emergency-modal-content" class="modal-content emergency-modal-content" role="dialog" aria-modal="true"></div>
+    </div>
+
     <div id="toast" class="toast hidden"></div>
 
     <script src="script.js"></script>

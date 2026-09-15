@@ -121,6 +121,19 @@ mano. Non e' quindi un dato calcolato a mano: e' lo stesso comando che un
 agronomo potrebbe inviare dal pannello di controllo per far avanzare
 manualmente una coltivazione.
 
+Poiché il comando sposta SOLO l'orologio della ricetta e mai lo stato
+fisico, la telemetria reale può restare per qualche ciclo di controllo
+fuori dall'allowed_range della fase appena raggiunta (nuovo setpoint,
+stessi valori di soil_moisture/ph/N/P/K di un attimo prima). Per questo
+advance_zone_to_last_phase() attende — con poll_telemetry_in_band_until(),
+mai con una POST manuale (vedi VINCOLI RISPETTATI sopra) — che quei cinque
+valori rientrino in banda prima di procedere con il salto successivo: solo
+così una zona Nominal, senza alcun guasto voluto, risulta davvero in banda
+in ogni fase attraversata e non solo nell'ultima. La luce (DLI) resta
+esclusa da questa verifica: vedi il commento su TELEMETRY_FIELD_BY_VARIABLE
+più sotto sul perché non è confrontabile con il PPFD istantaneo di
+telemetria.
+
 BACKDATING QUARANTENA — dashboard/script.js definisce
 QUARANTINE_MIN_RELEASE_MS (24h, solo lato frontend, non imposto dal
 backend) prima che "Fai uscire" diventi cliccabile. PATCH /plants/{id}/
@@ -346,6 +359,33 @@ SHORT_FAULT_DURATION_SECONDS = 60.0
 COMMAND_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 2.0
 
+# Quanto aspettare che la telemetria reale rientri in banda dopo un
+# AdvanceRecipePhase (vedi advance_zone_to_last_phase() e la nota
+# AVANZAMENTO DI FASE in cima al file): un cambio di fase sposta SOLO
+# l'orologio della ricetta, mai lo stato fisico, quindi soil_moisture/ph/
+# N/P/K impiegano un numero di cicli di controllo reali a riconvergere sul
+# nuovo target.
+#
+# 5 cicli di margine, a ~15s reali/ciclo con DEV_TIME_SCALE=60 e step da
+# 900s (stesso conto di COMMAND_TIMEOUT_SECONDS sopra) — DELIBERATAMENTE
+# più corto degli ~8-10 cicli che edge/src/control/controllers.cpp
+# suggerirebbe in astratto per i nutrienti: verificato dal vivo in questa
+# sessione (run end-to-end reale, non solo a codice) che quando un target
+# di fase CALA rispetto a quello precedente — soil_moisture in particolare,
+# dato che l'attuatore può solo irrigare, mai "asciugare" il terriccio, e
+# la diluizione dei nutrienti segue la stessa lentezza — il valore misurato
+# si sposta di pochi decimi anche dopo 150s pieni (10 cicli): aspettare più
+# a lungo qui non aumenta la probabilità di rientrare in banda in tempo
+# utile, allunga solo la demo. Un valore più corto lascia comunque tutto il
+# tempo a un salto DI FACILE convergenza (o a quelli in aumento, che
+# irrigazione/dosaggio possono davvero accelerare) di rientrare subito —
+# poll_telemetry_in_band_until() esce non appena è in banda, ben prima del
+# timeout, quindi accorciarlo qui non penalizza mai i casi facili, solo il
+# costo massimo di quelli strutturalmente lenti. Un timeout resta comunque
+# solo un avviso, mai un errore fatale (vedi poll_telemetry_in_band_until()).
+CONTROL_CYCLE_SECONDS_AT_DEV_SCALE = 900.0 / DEV_TIME_SCALE
+PHASE_CONVERGENCE_TIMEOUT_SECONDS = 5 * CONTROL_CYCLE_SECONDS_AT_DEV_SCALE
+
 DEGRADED_DEMO_ZONE_ID = "r1-s2"
 LOCKDOWN_DEMO_ZONE_ID = "r4-s1"
 
@@ -364,6 +404,27 @@ EDGE_READY_PROBE_SECONDS = 25.0
 # dalla dimostrazione Degraded/EmergencyLockdown (step7_lockdown_demo) e
 # viene avanzata di fase solo DOPO essere rientrata Nominal — vedi main().
 PHASE_ADVANCE_ZONE_IDS = ["r1-s1", "r2-s1", "r3-s1"]
+
+# Variabili controllabili verificabili direttamente confrontando l'ultimo
+# campione di GET /zones/{id}/telemetry/latest con l'allowed_range della
+# fase corrente (stessi nomi di campo di dashboard/script.js VARIABLES).
+# "light" è escluso apposta: il target di ricetta è un DLI giornaliero
+# (mol/m2/giorno, vedi backend/app/features/recipes/models.py) mentre
+# l'unico dato di luce in telemetria è light_ppfd_umol_m2_s, un PPFD
+# ISTANTANEO — grandezze non direttamente confrontabili (la stessa
+# dashboard integra il PPFD nel tempo per ricavare il DLI, vedi
+# telemetryLightDliPoints() in script.js). Verificare "luce in banda" qui
+# richiederebbe di rifare in Python quella stessa integrazione sull'intera
+# giornata simulata corrente: non praticabile in modo affidabile dentro il
+# budget di pochi minuti di questa demo, quindi la luce non è tra le
+# variabili di cui si attende la convergenza in advance_zone_to_last_phase().
+TELEMETRY_FIELD_BY_VARIABLE = {
+    "soil_moisture": "soil_moisture_percent",
+    "ph": "ph",
+    "nitrogen": "nitrogen_estimate_mg_per_liter",
+    "phosphorus": "phosphorus_estimate_mg_per_liter",
+    "potassium": "potassium_estimate_mg_per_liter",
+}
 
 # Le 5 piante del Passo 8 risultano già in quarantena da questo intervallo
 # al momento in cui la demo parte: deve superare
@@ -426,6 +487,19 @@ LOCKDOWN_SAFETY_DEMO_ZONE_ID = "r4-s2"
 LOCKDOWN_SAFETY_DEMO_DEPARTMENT = 4
 LOCKDOWN_SAFETY_DEMO_SECTOR = 2
 LOCKDOWN_SAFETY_DEMO_RECIPE_ID = "recipe-safety-demo-g"
+# Ricetta di catalogo usata come base per LOCKDOWN_SAFETY_DEMO_RECIPE_ID (vedi
+# ensure_safety_lockdown_recipe()). Scelta esplicitamente per id — MAI la
+# prima ricetta del reparto restituita da GET /recipes, che per puro
+# ordinamento alfabetico degli id (recipe-fragola < recipe-kumquat < ...)
+# risulterebbe "recipe-fragola": la stessa ricetta gia' assegnata a r4-s1 da
+# pick_recipes(), producendo "Fragola (demo lockdown sicurezza)" — non piu'
+# voluto. "recipe-peperoncino" esiste nel catalogo del reparto 4
+# (config/recipe_catalog/recipes/peperoncino.json) con lo stesso substrate
+# "organic-retentive" di Fragola, quindi il campionamento iniziale
+# deterministico di soil_moisture (che dipende da recipe.id e da
+# config.soil_type, non dal plant_type) resta invariato: il meccanismo di
+# lockdown funziona esattamente come prima, solo con una specie diversa.
+LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID = "recipe-peperoncino"
 
 # id, nome, department_number, sector_number, ha un Edge assegnato
 PRODUCTION_ZONES = [
@@ -562,17 +636,18 @@ def ensure_safety_lockdown_recipe() -> str:
     plant_type usato, cosi' ensure_safety_lockdown_zone() puo' mostrarlo
     come specie della zona senza doverlo ricalcolare.
 
-    Copia una ricetta REALE del catalogo del reparto
-    LOCKDOWN_SAFETY_DEMO_DEPARTMENT e sovrascrive SOLO il target di fase di
-    soil_moisture: il controllore (selected_strategy/parameters) resta
-    quello originale del catalogo, perche' tanto verrebbe comunque
-    ristampato dalla Strategy globale d'impianto alla lettura (vedi la nota
-    in cima al file) — non c'e' piu' alcun motivo di toccarlo.
+    Copia la ricetta REALE LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID (Peperoncino)
+    del catalogo del reparto LOCKDOWN_SAFETY_DEMO_DEPARTMENT e sovrascrive SOLO
+    il target di fase di soil_moisture: il controllore (selected_strategy/
+    parameters) resta quello originale del catalogo, perche' tanto verrebbe
+    comunque ristampato dalla Strategy globale d'impianto alla lettura (vedi
+    la nota in cima al file) — non c'e' piu' alcun motivo di toccarlo.
 
-    Chiamata SOLO dopo che il Passo 1 ha gia' assegnato le ricette di
-    catalogo alle zone via pick_recipes(): questa ricetta non esiste ancora
-    quando quel passo gira, quindi pick_recipes(4, ...) non puo' mai
-    sceglierla per sbaglio al posto della ricetta vera di r4-s1.
+    Il template e' scelto per id esatto (LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID),
+    non "la prima ricetta del reparto diversa da questa": r4-s1 riceve la sua
+    ricetta separatamente da pick_recipes() nel Passo 1, quindi non c'e'
+    ambiguita' possibile tra le due, a prescindere dall'ordinamento restituito
+    da GET /recipes.
 
     Idempotente: un 409 (RecipeVersionConflict, stessa versione gia'
     salvata da un run precedente) viene tollerato, non e' un errore."""
@@ -582,14 +657,15 @@ def ensure_safety_lockdown_recipe() -> str:
     template = None
     if status == 200 and isinstance(catalog, list):
         template = next(
-            (r for r in catalog if r.get("id") != LOCKDOWN_SAFETY_DEMO_RECIPE_ID), None
+            (r for r in catalog if r.get("id") == LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID),
+            None,
         )
     if template is None:
         raise SystemExit(
-            "[seed] impossibile trovare una ricetta di catalogo del reparto "
+            f"[seed] impossibile trovare la ricetta di catalogo "
+            f"{LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID!r} del reparto "
             f"{LOCKDOWN_SAFETY_DEMO_DEPARTMENT} da usare come base per la "
-            "ricetta della demo lockdown/safety_range (serve che r4-s1 sia "
-            "gia' stata registrata nel Passo 1)."
+            "ricetta della demo lockdown/safety_range."
         )
 
     recipe = copy.deepcopy(template)
@@ -850,6 +926,128 @@ def poll_events_until(
     return None
 
 
+def get_telemetry_latest(zone_id: str) -> dict | None:
+    """GET /zones/{id}/telemetry/latest: nessun campione ancora ricevuto è
+    un 404 (o comunque status != 200), non un errore — vedi Investigazione
+    sull'assenza di telemetria in diagnose_actuator_snapshot()."""
+    status, body = request("GET", f"/zones/{zone_id}/telemetry/latest")
+    return body if status == 200 and isinstance(body, dict) else None
+
+
+def phase_targets_by_variable(recipe: dict, phase_name: str) -> dict[str, dict] | None:
+    """Da un oggetto Recipe (risposta di GET /recipes/{id}), l'elenco dei 6
+    PhaseVariableTarget della fase `phase_name`, indicizzati per variabile.
+    None se la fase non esiste nella ricetta (non dovrebbe succedere: i nomi
+    vengono sempre letti dalla stessa ricetta, vedi advance_zone_to_last_
+    phase())."""
+    for phase in recipe.get("phases", []):
+        if phase.get("name") == phase_name:
+            return {t["variable"]: t for t in phase.get("targets", [])}
+    return None
+
+
+def telemetry_out_of_band(telemetry: dict, targets_by_variable: dict) -> list[str]:
+    """Confronta l'ultimo campione di telemetria con l'allowed_range di fase
+    per ciascuna delle variabili in TELEMETRY_FIELD_BY_VARIABLE (la luce è
+    intenzionalmente esclusa, vedi il commento su quella costante).
+    Restituisce la lista (vuota se tutto in banda) delle variabili fuori
+    range, con valore e banda attesa, solo per messaggi diagnostici — non
+    altera mai nulla."""
+    out_of_band: list[str] = []
+    for variable, field in TELEMETRY_FIELD_BY_VARIABLE.items():
+        target = targets_by_variable.get(variable)
+        value = telemetry.get(field)
+        if target is None or value is None:
+            continue
+        allowed = target.get("allowed_range") or {}
+        minimum, maximum = allowed.get("minimum"), allowed.get("maximum")
+        if minimum is None or maximum is None:
+            continue
+        if not (minimum <= value <= maximum):
+            out_of_band.append(f"{variable}={value:.2f} (banda {minimum:.2f}-{maximum:.2f})")
+    return out_of_band
+
+
+def poll_telemetry_in_band_until(
+    zone_id: str,
+    targets_by_variable: dict,
+    description: str,
+    *,
+    timeout_seconds: float = PHASE_CONVERGENCE_TIMEOUT_SECONDS,
+) -> bool:
+    """Interroga GET /zones/{id}/telemetry/latest finché soil_moisture/ph/
+    nitrogen/phosphorus/potassium non rientrano TUTTI nell'allowed_range
+    della fase corrente (vedi TELEMETRY_FIELD_BY_VARIABLE), o scade il
+    timeout. Non POSTa mai telemetria: si limita ad aspettare che il
+    controllo reale dell'Edge porti da solo i valori in banda dopo un
+    AdvanceRecipePhase (vedi VINCOLI RISPETTATI in cima al file). Un
+    timeout produce solo un avviso, mai un errore fatale: la demo prosegue
+    comunque, esattamente come per le altre attese di questo script."""
+    deadline = time.monotonic() + timeout_seconds
+    last_out_of_band: list[str] = []
+    saw_any_sample = False
+    while time.monotonic() < deadline:
+        telemetry = get_telemetry_latest(zone_id)
+        if telemetry is not None:
+            saw_any_sample = True
+            last_out_of_band = telemetry_out_of_band(telemetry, targets_by_variable)
+            if not last_out_of_band:
+                return True
+        time.sleep(POLL_INTERVAL_SECONDS)
+    if not saw_any_sample:
+        print(
+            f"[seed] avviso: timeout ({timeout_seconds:.0f}s) in attesa di un campione di "
+            f"telemetria per {description} su {zone_id} (nessun campione ricevuto ancora)"
+        )
+    else:
+        print(
+            f"[seed] avviso: timeout ({timeout_seconds:.0f}s) in attesa che {description} "
+            f"rientri in banda su {zone_id}; ancora fuori banda: {', '.join(last_out_of_band)}"
+        )
+    return False
+
+
+def poll_first_phase_telemetry(
+    zone_id: str,
+    expected_phase: str | None,
+    *,
+    timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
+) -> bool:
+    """Interroga GET /zones/{id}/telemetry/latest finché non arriva un
+    campione della fase `expected_phase` (o un campione qualsiasi, se
+    `expected_phase` è None perché non ancora noto), o scade il timeout.
+
+    Perché serve: zone.status passa a "online" (mostrato in dashboard) alla
+    ricezione di QUALUNQUE contatto dall'Edge reale — non solo telemetria,
+    anche un semplice evento o uno snapshot attuatori (vedi
+    backend/app/features/events/repository.py e
+    backend/app/features/actuators/repository.py, entrambi con lo stesso
+    side-effect di backend/app/features/telemetry/repository.py). Subito
+    dopo lifecycle_state=Running, quindi, una zona può risultare "online"
+    prima ancora che l'Edge abbia completato il suo primissimo ciclo di
+    controllo e inviato un campione di telemetria della fase corrente.
+    Aspettare qui, PRIMA di considerare la zona pronta per i passi
+    successivi, evita che chi guarda la demo dal vivo trovi "online" senza
+    ancora alcun dato di telemetria da mostrare per la prima fase.
+
+    Nessuna POST: solo attesa reale del primo ciclo dell'Edge. Un timeout
+    produce un avviso, non un errore fatale — come tutte le attese di
+    questo script."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        telemetry = get_telemetry_latest(zone_id)
+        if telemetry is not None and (
+            expected_phase is None or telemetry.get("current_phase") == expected_phase
+        ):
+            return True
+        time.sleep(POLL_INTERVAL_SECONDS)
+    print(
+        f"[seed] avviso: timeout ({timeout_seconds:.0f}s) in attesa del primo "
+        f"campione di telemetria (fase {expected_phase!r}) su {zone_id}"
+    )
+    return False
+
+
 def ensure_plant(plant_id: str, species: str, home_zone_id: str) -> None:
     status, body = request(
         "POST",
@@ -1006,13 +1204,25 @@ def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) ->
     """Fa avanzare `zone_id` fino all'ultima fase della sua ricetta con
     AdvanceRecipePhase ripetuti (vedi la nota AVANZAMENTO DI FASE in cima
     al file) — mai aspettando che trascorra davvero il tempo simulato
-    necessario, impraticabile per una demo di pochi minuti. Si ferma
-    quando il comando risulta rejected per "already in its last phase",
-    quando current_phase raggiunge l'ultima fase, o quando
+    necessario per ESAURIRE una fase, impraticabile per una demo di pochi
+    minuti. Si ferma quando il comando risulta rejected per "already in its
+    last phase", quando current_phase raggiunge l'ultima fase, o quando
     cultivation_completed diventa true (il secondo criterio richiesto,
     praticamente irraggiungibile in una demo breve: la fase finale dura
     comunque centinaia di ore anche a time_scale=60, ma il controllo resta
-    qui per correttezza)."""
+    qui per correttezza).
+
+    Prima di ogni salto (inclusa la primissima fase, appena raggiunto
+    lifecycle_state=Running) attende — con poll_telemetry_in_band_until(),
+    MAI con una POST manuale, vedi VINCOLI RISPETTATI in cima al file — che
+    soil_moisture/ph/N/P/K rientrino nell'allowed_range della fase appena
+    raggiunta: un AdvanceRecipePhase sposta SOLO l'orologio della ricetta,
+    mai lo stato fisico, quindi un valore può restare transitoriamente
+    fuori banda subito dopo il salto. È per questo che una zona Nominal
+    senza alcun guasto voluto deve mostrare telemetria in banda in OGNI
+    fase attraversata, non solo nell'ultima. Un timeout in
+    poll_telemetry_in_band_until() produce solo un avviso: non blocca mai
+    questa funzione né il resto della demo."""
     status, recipe = request("GET", f"/recipes/{recipe_id}")
     if status != 200 or not isinstance(recipe, dict) or not recipe.get("phases"):
         print(
@@ -1026,6 +1236,18 @@ def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) ->
         f"\n[seed] --- Avanzamento di fase su {zone_id}: "
         f"{' -> '.join(phase_names)} ---"
     )
+
+    def _await_band(phase_name: str | None) -> None:
+        if phase_name is None:
+            return
+        targets = phase_targets_by_variable(recipe, phase_name)
+        if targets is None:
+            return
+        poll_telemetry_in_band_until(zone_id, targets, f"la fase {phase_name!r}")
+
+    initial_zone = get_zone(zone_id)
+    _await_band(initial_zone.get("current_phase") if initial_zone is not None else None)
+
     for step_index in range(len(phase_names) - 1):
         zone = get_zone(zone_id)
         if zone is not None and (
@@ -1047,6 +1269,7 @@ def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) ->
         zone = get_zone(zone_id)
         current = zone.get("current_phase") if zone is not None else None
         print(f"[seed] {zone_id}: fase avanzata a {current!r}")
+        _await_band(current)
 
     final_zone = get_zone(zone_id)
     if final_zone is None:
@@ -1546,7 +1769,26 @@ def main() -> None:
                 "attivo, potrebbero non bastare per questa zona."
             )
 
-    # --- Passo 4ter: AdvanceRecipePhase sulle zone Nominal per tutta la ----
+    # --- Passo 4ter: attendo il primo campione di telemetria di fase -------
+    # (vedi poll_first_phase_telemetry()) PRIMA di considerare pronta ogni
+    # zona Running: lifecycle_state=Running dice solo che l'Edge ha iniziato
+    # a lavorarci, non che abbia già completato un ciclo di controllo e
+    # quindi prodotto un campione della fase corrente. Fatto qui, DOPO che
+    # time_scale=60 è già attivo (Passo 4bis) — a time_scale=1 un ciclo dura
+    # 900s reali, un'attesa non pensabile in questa demo.
+    print(
+        "\n[seed] --- Passo 4ter: attendo il primo campione di telemetria di "
+        f"fase (timeout {COMMAND_TIMEOUT_SECONDS:.0f}s ciascuna) sulle zone Running ---"
+    )
+    for zone_id in edge_zone_ids:
+        if not running.get(zone_id):
+            continue
+        zone = get_zone(zone_id)
+        expected_phase = zone.get("current_phase") if zone is not None else None
+        if poll_first_phase_telemetry(zone_id, expected_phase):
+            print(f"[seed] {zone_id}: telemetria della fase {expected_phase!r} già presente.")
+
+    # --- Passo 4quater: AdvanceRecipePhase sulle zone Nominal per tutta la -
     # demo (vedi la nota AVANZAMENTO DI FASE in cima al file). Fatto qui,
     # subito dopo che time_scale e' gia' attivo su tutte, cosi' questi
     # eventi (avanzamenti di fase) compaiono ben dentro i primi 3 minuti

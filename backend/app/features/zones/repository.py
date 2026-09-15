@@ -116,6 +116,7 @@ def _zone_from_row(row: tuple) -> Zone:
         current_setpoints=setpoint_projection,
         time_scale=row[17],
         active_cultivation_id=row[18],
+        active_fault_id=row[19],
     )
 
 
@@ -159,7 +160,7 @@ def get_zone(connection: sqlite3.Connection, zone_id: str) -> Zone | None:
                last_edge_contact, current_phase, cultivation_completed,
                administrative_status, lifecycle_state, operational_state,
                active_recipe_version, current_strategies, current_setpoints,
-               time_scale, active_cultivation_id
+               time_scale, active_cultivation_id, active_fault_id
         FROM zones
         WHERE id = ?
         """,
@@ -180,7 +181,7 @@ def list_zones(connection: sqlite3.Connection) -> list[Zone]:
                last_edge_contact, current_phase, cultivation_completed,
                administrative_status, lifecycle_state, operational_state,
                active_recipe_version, current_strategies, current_setpoints,
-               time_scale, active_cultivation_id
+               time_scale, active_cultivation_id, active_fault_id
         FROM zones
         ORDER BY department_number, sector_number
         """
@@ -201,7 +202,7 @@ def list_zones_for_edge(
                last_edge_contact, current_phase, cultivation_completed,
                administrative_status, lifecycle_state, operational_state,
                active_recipe_version, current_strategies, current_setpoints,
-               time_scale, active_cultivation_id
+               time_scale, active_cultivation_id, active_fault_id
         FROM zones
         WHERE assigned_edge_id = ?
         ORDER BY department_number, sector_number

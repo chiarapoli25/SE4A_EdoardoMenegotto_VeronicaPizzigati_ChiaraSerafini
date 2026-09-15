@@ -169,6 +169,32 @@ def complete_command(
                 """,
                 (recipe_id, zone_id),
             )
+    if (
+        result.status is CommandStatus.SUCCEEDED
+        and existing.command_type.value == "InjectFault"
+    ):
+        # zones.active_fault_id esiste SOLO per permettere a un client (la
+        # dashboard) di costruire il payload di un ResetFault reale senza
+        # già conoscere l'id scelto da chi ha iniettato il guasto — vedi il
+        # commento su Zone.active_fault_id. Scritto qui, non alla creazione
+        # del comando: solo un InjectFault RIUSCITO garantisce che l'Edge
+        # l'abbia davvero applicato (FaultInjector.inject() rifiuta un
+        # secondo guasto sullo stesso target, vedi
+        # edge/src/faults/fault_injector.cpp).
+        fault_id = existing.payload.get("fault_id")
+        if isinstance(fault_id, str) and fault_id:
+            connection.execute(
+                "UPDATE zones SET active_fault_id = ? WHERE id = ?",
+                (fault_id, zone_id),
+            )
+    if (
+        result.status is CommandStatus.SUCCEEDED
+        and existing.command_type.value == "ResetFault"
+    ):
+        connection.execute(
+            "UPDATE zones SET active_fault_id = NULL WHERE id = ?",
+            (zone_id,),
+        )
     from ..cultivations.repository import apply_command_result
 
     apply_command_result(
