@@ -21,7 +21,7 @@ from .models import Recipe, RecipeCareProfile, SoilType
 DEFAULT_CATALOG_PATH = Path(
     os.environ.get(
         "SMARTHYDRO_RECIPE_CATALOG_PATH",
-        Path(__file__).resolve().parents[4] / "config" / "recipe_catalog",
+        Path(__file__).resolve().parents[4] / "recipe_catalog",
     )
 )
 

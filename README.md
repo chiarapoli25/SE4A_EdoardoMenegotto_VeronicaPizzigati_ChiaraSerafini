@@ -29,7 +29,8 @@ descritto in [`doc/domain_model.md`](doc/domain_model.md). In sintesi:
 ```text
 .
 |-- backend/       Backend FastAPI e test automatici
-|-- config/        Ricette e configurazioni di esempio
+|-- examples/      Ricetta dimostrativa usata da test e simulatori
+|-- recipe_catalog/ Ricette di bootstrap e profili condivisi
 |-- dashboard/     Dashboard statica HTML, CSS e JavaScript
 |-- demo/          Scenario end-to-end Edge-backend ripetibile
 |-- doc/           Documentazione di progetto e contratto del dominio
@@ -855,12 +856,12 @@ Prima dell'uscita, il supervisore applica con priorita:
   non confermata.
 
 `load_recipe_json()` e `save_recipe_json()` serializzano l'intero modello. La
-ricetta dimostrativa e in `config/example_recipe.json` e descrive due fasi del
+ricetta dimostrativa e in `examples/example_recipe.json` e descrive due fasi del
 pomodoro su substrato universale aerato. I coefficienti sono didattici.
 
-La directory `config/recipe_catalog/recipes/` contiene un file JSON di
+La directory `recipe_catalog/recipes/` contiene un file JSON di
 bootstrap per ciascuna delle 20 piante, cinque per ognuno dei quattro reparti
-produttivi. `config/recipe_catalog/profiles.json` raccoglie i profili condivisi
+produttivi. `recipe_catalog/profiles.json` raccoglie i profili condivisi
 di luce, irrigazione e concimazione e quattro sequenze di fasi riutilizzabili:
 fogliame, fioritura, succulente e produzione. Ogni file pianta puo scegliere
 una sequenza diversa e sovrascrivere durata, fotoperiodo, fattori dei setpoint o
@@ -1029,7 +1030,7 @@ cumulativa.
 Entrambi i confronti mantengono i dati in memoria e non creano CSV o PNG; la
 finestra rimane aperta finche non si preme Invio nel terminale.
 
-`recipe_control_simulation` carica `config/example_recipe.json`, simula la
+`recipe_control_simulation` carica `examples/example_recipe.json`, simula la
 conferma dell'agronomo ed esegue per intero la prima fase con passo di 15
 minuti. Il processo dimostrativo applica i comandi sicuri di acqua, luce, pH e
 N/P/K. Salva `recipe_phase_simulation.csv`, con stato, comandi e dosi
@@ -1145,15 +1146,15 @@ dell'interfaccia.
 
 ## Ricetta JSON
 
-Il file `config/example_recipe.json` e caricato dai test, dal sistema di
+Il file `examples/example_recipe.json` e caricato dai test, dal sistema di
 controllo Edge e dall'experiment dedicato. Contiene le fasi
 `VegetativeGrowth` e `Flowering`, i target delle sei variabili, le
 configurazioni Strategy e tutti i limiti prioritari. I valori hanno finalita
 dimostrativa e non sostituiscono la validazione di un agronomo.
 
 Il catalogo iniziale modificabile e organizzato in
-`config/recipe_catalog/profiles.json` e
-`config/recipe_catalog/recipes/<pianta>.json`. Per aggiungere una pianta basta
+`recipe_catalog/profiles.json` e
+`recipe_catalog/recipes/<pianta>.json`. Per aggiungere una pianta basta
 aggiungere un file valido nella directory `recipes`, senza modificare Python.
 Il modulo `backend/app/features/recipes/catalog.py` valida profili e ricette,
 segnala il percorso esatto dei file errati, applica la sequenza condivisa della

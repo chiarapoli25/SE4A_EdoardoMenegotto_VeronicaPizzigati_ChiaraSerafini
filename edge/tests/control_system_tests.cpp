@@ -385,7 +385,7 @@ TEST(RecipeControlSystemTest, NutrientsIgnoreMeasuredValuesAndRequireValidHistor
 }
 
 TEST(RecipeControlSystemTest, LightIsOnOnlyAfterSolarDaylightCompletes) {
-    // VegetativeGrowth's light target (config/example_recipe.json) e' un
+    // VegetativeGrowth's light target (examples/example_recipe.json) e' un
     // DLI di 29.2 mol/m^2/giorno, finestra di luce naturale 6h-20h (14h),
     // tetto di illuminazione supplementare 6h/giorno.
     smarthydro::RecipeControlSystem system(load_demo_recipe());
@@ -470,7 +470,7 @@ TEST(RecipeControlSystemTest, LightIsOnOnlyAfterSolarDaylightCompletes) {
     EXPECT_EQ(met.message, "daily DLI target already met");
 
     // Un deficit ancora aperto ma il tetto di ore supplementari (6h/giorno
-    // in config/example_recipe.json) gia' raggiunto: la lampada resta
+    // in examples/example_recipe.json) gia' raggiunto: la lampada resta
     // spenta comunque — un limite dell'agronomo, non negoziabile dal
     // deficit residuo.
     request.daily_light_mol_m2_so_far = 3.0;

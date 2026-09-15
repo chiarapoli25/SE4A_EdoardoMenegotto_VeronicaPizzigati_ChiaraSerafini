@@ -89,7 +89,7 @@ target_link_libraries(event_bus_tests
 target_compile_features(event_bus_tests PRIVATE cxx_std_17)
 target_compile_definitions(event_bus_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(event_bus_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(event_bus_tests)
@@ -126,7 +126,7 @@ target_link_libraries(control_system_tests
 target_compile_features(control_system_tests PRIVATE cxx_std_17)
 target_compile_definitions(control_system_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(control_system_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(control_system_tests)
@@ -142,7 +142,7 @@ target_link_libraries(edge_runtime_tests
 target_compile_features(edge_runtime_tests PRIVATE cxx_std_17)
 target_compile_definitions(edge_runtime_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(edge_runtime_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(edge_runtime_tests)
@@ -158,7 +158,7 @@ target_link_libraries(runtime_command_tests
 target_compile_features(runtime_command_tests PRIVATE cxx_std_17)
 target_compile_definitions(runtime_command_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(runtime_command_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(runtime_command_tests)
@@ -174,7 +174,7 @@ target_link_libraries(http_backend_client_tests
 target_compile_features(http_backend_client_tests PRIVATE cxx_std_17)
 target_compile_definitions(http_backend_client_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(http_backend_client_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(http_backend_client_tests)
@@ -190,7 +190,7 @@ target_link_libraries(greenhouse_manager_tests
 target_compile_features(greenhouse_manager_tests PRIVATE cxx_std_17)
 target_compile_definitions(greenhouse_manager_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(greenhouse_manager_tests PROPERTIES CXX_EXTENSIONS OFF)
 gtest_discover_tests(greenhouse_manager_tests)
@@ -209,7 +209,7 @@ target_link_libraries(simulation_scheduler_tests
 target_compile_features(simulation_scheduler_tests PRIVATE cxx_std_17)
 target_compile_definitions(simulation_scheduler_tests
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(
     simulation_scheduler_tests
@@ -235,7 +235,7 @@ add_test(
     NAME edge_simulator_json_smoke
     COMMAND ${CMAKE_COMMAND}
         -DEDGE_EXECUTABLE=$<TARGET_FILE:edge_simulator>
-        -DRECIPE_PATH=${PROJECT_SOURCE_DIR}/../config/example_recipe.json
+        -DRECIPE_PATH=${PROJECT_SOURCE_DIR}/../examples/example_recipe.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/edge_json_smoke.cmake
 )
 

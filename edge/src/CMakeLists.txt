@@ -250,7 +250,7 @@ target_link_libraries(edge_simulator
 )
 target_compile_definitions(edge_simulator
     PRIVATE
-        SMARTHYDRO_DEFAULT_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_DEFAULT_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(edge_simulator PROPERTIES CXX_EXTENSIONS OFF)
 

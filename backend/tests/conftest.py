@@ -6,7 +6,7 @@ import pytest
 from backend.app.models import Recipe
 
 EXAMPLE_RECIPE_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "config" / "example_recipe.json"
+    Path(__file__).resolve().parent.parent.parent / "examples" / "example_recipe.json"
 )
 
 

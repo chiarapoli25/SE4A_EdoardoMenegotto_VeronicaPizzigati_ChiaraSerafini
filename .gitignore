@@ -11,7 +11,7 @@ __pycache__/
 .pytest_cache/
 
 # Database SQLite del backend
-backend/data/
+backend/database/
 
 # Editors
 .idea/
@@ -35,4 +35,4 @@ claude/
 # dalla working directory del repository (vedi demo/seed_dev_data.py).
 edge-data/
 
-.claude/
+uml/

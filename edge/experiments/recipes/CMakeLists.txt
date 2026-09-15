@@ -14,7 +14,7 @@ target_compile_features(
 target_compile_definitions(
     recipe_control_simulation
     PRIVATE
-        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../config/example_recipe.json"
+        SMARTHYDRO_EXAMPLE_RECIPE_PATH="${PROJECT_SOURCE_DIR}/../examples/example_recipe.json"
 )
 set_target_properties(
     recipe_control_simulation

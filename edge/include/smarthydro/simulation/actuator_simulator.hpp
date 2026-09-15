@@ -65,7 +65,7 @@ struct ActuatorConfig {
      * l'intero fotoperiodo piu' lungo (15h) fanno appena ~21.6 mol/m2/
      * giorno, INSUFFICIENTI da soli a coprire il fabbisogno delle specie a
      * luce alta del catalogo (es. pomodoro, fino a 58.17 mol/m2/giorno —
-     * vedi light_profiles "full_sun" in config/recipe_catalog/
+     * vedi light_profiles "full_sun" in recipe_catalog/
      * profiles.json): anche col controllo a ritmo che tiene la lampada
      * accesa quasi sempre per quelle specie (osservato empiricamente), il
      * totale giornaliero restava sempre sotto il MINIMO di banda, non

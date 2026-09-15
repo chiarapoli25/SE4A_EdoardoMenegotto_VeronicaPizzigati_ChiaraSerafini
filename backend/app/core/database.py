@@ -17,7 +17,7 @@ from .config import default_edge_id
 DEFAULT_DATABASE_PATH = Path(
     os.environ.get(
         "SMARTHYDRO_DATABASE_PATH",
-        Path(__file__).resolve().parents[2] / "data" / "smarthydro.db",
+        Path(__file__).resolve().parents[2] / "database" / "smarthydro.db",
     )
 )
 

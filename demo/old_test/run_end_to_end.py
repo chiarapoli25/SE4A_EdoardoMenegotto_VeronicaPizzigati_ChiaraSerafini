@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -21,7 +22,7 @@ from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SCENARIO = Path(__file__).with_name("end_to_end_scenario.json")
+DEFAULT_SCENARIO = ROOT / "demo" / "end_to_end_scenario.json"
 
 
 class DemoFailure(RuntimeError):
@@ -45,13 +46,17 @@ def request_json(
     method: str,
     path: str,
     payload: dict[str, Any] | None = None,
+    session_token: str | None = None,
 ) -> Any:
     body = None if payload is None else json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if session_token is not None:
+        headers["Authorization"] = f"Bearer {session_token}"
     request = Request(
         base_url + path,
         data=body,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urlopen(request, timeout=2.0) as response:
@@ -120,6 +125,7 @@ def enqueue(
     command_id: str,
     command_type: str,
     payload: dict[str, Any] | None = None,
+    session_token: str | None = None,
 ) -> None:
     created = request_json(
         base_url,
@@ -130,6 +136,7 @@ def enqueue(
             "command_type": command_type,
             "payload": payload or {},
         },
+        session_token=session_token,
     )
     if created["status"] != "pending":
         raise DemoFailure(f"command {command_id} was not queued")
@@ -265,6 +272,18 @@ def run(args: argparse.Namespace) -> None:
             )
         wait_for("backend health", lambda: request_json(base_url, "GET", "/health"))
 
+        step("creating an isolated administrator session")
+        admin_session = request_json(
+            base_url,
+            "POST",
+            "/auth/bootstrap-admin",
+            {
+                "username": "demo-admin",
+                "password": secrets.token_urlsafe(24),
+            },
+        )
+        admin_token = str(admin_session["token"])
+
         step("registering two zones with different catalog recipes")
         for zone in zones:
             request_json(
@@ -355,6 +374,7 @@ def run(args: argparse.Namespace) -> None:
                 "strategy": strategy["strategy"],
                 "parameters": strategy["parameters"],
             },
+            session_token=admin_token,
         )
         enqueue(
             base_url,
@@ -363,6 +383,7 @@ def run(args: argparse.Namespace) -> None:
             "demo-confirm-changed-strategy",
             "ConfirmConfiguration",
             {"variable": strategy["variable"]},
+            session_token=admin_token,
         )
         wait_for(
             "Strategy projection",

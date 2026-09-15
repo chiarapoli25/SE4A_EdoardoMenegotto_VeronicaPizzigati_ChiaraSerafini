@@ -339,8 +339,8 @@
  * Le zone espongono il nome canonico dei quattro reparti produttivi; il quinto
  * nome e riservato alla destinazione fisica di quarantena, mentre lo stato di
  * quarantena appartiene sempre alla pianta. La directory
- * `config/recipe_catalog/recipes/` contiene un JSON di bootstrap per ciascuna
- * delle 20 specie, mentre `config/recipe_catalog/profiles.json` raccoglie i
+ * `recipe_catalog/recipes/` contiene un JSON di bootstrap per ciascuna
+ * delle 20 specie, mentre `recipe_catalog/profiles.json` raccoglie i
  * profili condivisi e le sequenze di fase per categoria. `init_db()` espande
  * profili e override della singola pianta e salva integralmente ogni ricetta
  * multifase in `recipes.data`. `recipe_catalog_imports.catalog_version`

@@ -254,7 +254,7 @@ const VARIABLE_UNIT = {
 };
 // The two OutputSafetyLimits fields the recipe form does not expose
 // (the user's spec lists exactly 5 editable safety limits); these get a
-// sensible fixed default instead, matching config/example_recipe.json.
+// sensible fixed default instead, matching examples/example_recipe.json.
 const HIDDEN_OUTPUT_LIMIT_DEFAULTS = {
   water_pump_flow_liters_per_hour: 2.0,
   ph_settling_time_seconds: 1800.0,
@@ -311,7 +311,7 @@ function defaultPhase(name) {
 
 /**
  * Real phase-name sequence used by each of the 4 production departments'
- * recipes today, per config/recipe_catalog/profiles.json's phase_sequences
+ * recipes today, per recipe_catalog/profiles.json's phase_sequences
  * (department -> sequence mapping is catalog.py's
  * _DEPARTMENT_PHASE_SEQUENCE: 1->foliage, 2->flowering, 3->succulent,
  * 4->fruiting). Confirmed against the live catalog via GET /recipes across

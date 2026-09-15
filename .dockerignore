@@ -12,7 +12,7 @@ __pycache__
 edge/build/
 
 # Database SQLite locale: viene creato al primo avvio dal container.
-backend/data/
+backend/database/
 
 edge/experiment_results/
 edge-data/
