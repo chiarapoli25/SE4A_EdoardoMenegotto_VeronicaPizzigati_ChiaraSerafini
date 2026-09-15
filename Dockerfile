@@ -67,7 +67,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ backend/
 COPY dashboard/ dashboard/
-COPY config/ config/
+COPY examples/ examples/
+COPY recipe_catalog/ recipe_catalog/
 COPY demo/ demo/
 COPY --from=edge-builder /src/edge/build/bin/edge edge/build/bin/edge
 COPY --from=edge-builder /src/edge/build/bin/edge_simulator edge/build/bin/edge_simulator
