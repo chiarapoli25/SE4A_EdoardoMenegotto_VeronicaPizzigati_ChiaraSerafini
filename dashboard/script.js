@@ -1958,15 +1958,10 @@ function activeZoneCardMeta(zone) {
 function renderActiveZoneCard({ zone, lastEvent }) {
   const meta = activeZoneCardMeta(zone);
   const deptName = zone.department_name || DEPT_FALLBACK_NAMES[zone.department_number] || "";
-  // The static per-state explanation above is always true; swap in the
-  // real reason from this zone's last event when that event is actually
-  // what produced the CURRENT badge — only for EmergencyLockdown/Degraded,
-  // never for "SETTORE OFFLINE": once a zone stops reporting, its last
-  // event could be anything (even an old recovery to Nominal, as here),
-  // and showing it as if it explains "why offline" would be misleading —
-  // the honest answer for offline is exactly the static text above.
+  
   let detail = meta.staticDetail;
-  if ((meta.badge === "EMERGENCYLOCKDOWN" || meta.badge === "DEGRADED")
+  // Qui abbiamo aggiornato le stringhe "BLOCCO DI EMERGENZA" e "ANOMALIA"
+  if ((meta.badge === "BLOCCO DI EMERGENZA" || meta.badge === "ANOMALIA")
       && lastEvent && lastEvent.event_type === "StateChanged" && lastEvent.payload
       && lastEvent.payload.current_state === zone.operational_state) {
     detail = lastEvent.payload.reason || detail;
@@ -5789,14 +5784,11 @@ function renderEmergencyModal() {
 
   const zone = STATE.zones.find((z) => z.id === em.zoneId) || null;
   if (zone && zone.operational_state !== "EmergencyLockdown" && em.phase === "ask") {
-    // Un'altra sessione/operatore l'ha già sbloccato mentre questo pop-up
-    // era aperto (o il poll di STATE.zones l'ha appena confermato) — niente
-    // da fare, non ha senso proporre ancora l'azione.
     content.innerHTML = `
       <div class="emergency-modal-body">
         <div class="emergency-modal-title">✅ Settore già sbloccato</div>
         <div class="emergency-modal-zone">${escapeHtml(em.zoneLabel)}</div>
-        <div class="emergency-modal-question">Questo settore non risulta più in EmergencyLockdown: probabilmente è già stato gestito da un altro operatore.</div>
+        <div class="emergency-modal-question">Questo settore non risulta più in Blocco di Emergenza: probabilmente è già stato gestito da un altro operatore.</div>
         <div class="emergency-modal-actions">
           <button type="button" class="btn btn-primary" data-action="close-emergency-modal">Chiudi</button>
         </div>
@@ -5830,9 +5822,6 @@ function renderEmergencyModal() {
       </div>
     `;
   } else {
-    // "safety_range" e il fallback prudente "unknown" condividono la stessa
-    // UI: mai un ResetFault senza un fault_id verificato (Zone.
-    // active_fault_id), quindi qui si offre SOLO il reset forzato.
     body = `
       <div class="emergency-modal-title">⚠️ Violazione del range di sicurezza</div>
       <div class="emergency-modal-zone">${escapeHtml(em.zoneLabel)}</div>
@@ -5912,7 +5901,7 @@ async function sendForceResetEmergency(zoneId, { afterFaultReset = false } = {})
     pollEmergencyModal(zoneId, {
       isDone: (zone) => zone.operational_state !== "EmergencyLockdown",
       onDone: () => {
-        showToast(`Settore ${em.zoneLabel} sbloccato: tornato Nominal.`);
+        showToast(`Settore ${em.zoneLabel} sbloccato: tornato Regolare.`);
         closeEmergencyModal();
       },
       onTimeout: () => {
