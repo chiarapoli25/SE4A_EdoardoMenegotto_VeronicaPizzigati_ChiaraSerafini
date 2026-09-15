@@ -85,18 +85,20 @@ Topologia (stessa forma delle versioni precedenti dello script):
   (OFFLINE: nessun assigned_edge_id, mai — stesso principio di r2-s2 in
   demo/seed_test_scenario.py: non è una disconnessione simulata a metà
   scenario, è una zona che non ha mai avuto un Edge)
-- Reparto 3: r3-s1 (Nominal, avanzata fino all'ultima fase)
-- Reparto 4: r4-s1 (dimostrazione InjectFault persistente -> Degraded ->
-  EmergencyLockdown -> ResetFault + ResetEmergency -> Degraded -> Nominal,
-  POI avanzata fino all'ultima fase una volta rientrata Nominal), r4-s2
-  (dimostrazione lockdown per violazione di safety_range, vedi sotto; NON
-  avanzata di fase)
+- Reparto 3: r3-s1 (Nominal, avanzata fino all'ultima fase); r3-s2 esiste
+  solo per pochi istanti durante il Passo 1 (vedi ALLARMI "QUARANTENA
+  ORFANA" sotto) e NON è più presente a fine script
+- Reparto 4: r4-s2 (dimostrazione lockdown per violazione di safety_range, 
+  vedi sotto; NON avanzata di fase)
 - Reparto 5: r5-s1 (unico settore possibile per la quarantena) + 2 piante
   già in quarantena fin dal primissimo istante (backdate istantaneo,
   puramente illustrativo — vedi QUARANTINE_INSTANT_PLANT_SOURCES/
   ensure_instant_quarantine_plants()) + altre 5 piante che entrano in
   quarantena solo dopo l'attesa reale del Passo 8, backdatate oltre la
-  soglia di rilascio del frontend (vedi BACKDATING QUARANTENA sotto)
+  soglia di rilascio del frontend (vedi BACKDATING QUARANTENA sotto) + 1
+  pianta orfana (home_zone_id punta a r3-s2, non a un settore del Reparto
+  5 — vedi ALLARMI "QUARANTENA ORFANA" sotto): 8 piante in quarantena in
+  totale, 7 "del Reparto 5" in senso stretto (nate lì) più questa
 
 Ogni zona online (con un Edge assegnato) riceve anche una pianta residente
 non quarantenata, di specie coerente con la ricetta della zona (vedi
@@ -120,19 +122,6 @@ recipe is already in its last phase" quando non c'e' una fase successiva
 mano. Non e' quindi un dato calcolato a mano: e' lo stesso comando che un
 agronomo potrebbe inviare dal pannello di controllo per far avanzare
 manualmente una coltivazione.
-
-Poiché il comando sposta SOLO l'orologio della ricetta e mai lo stato
-fisico, la telemetria reale può restare per qualche ciclo di controllo
-fuori dall'allowed_range della fase appena raggiunta (nuovo setpoint,
-stessi valori di soil_moisture/ph/N/P/K di un attimo prima). Per questo
-advance_zone_to_last_phase() attende — con poll_telemetry_in_band_until(),
-mai con una POST manuale (vedi VINCOLI RISPETTATI sopra) — che quei cinque
-valori rientrino in banda prima di procedere con il salto successivo: solo
-così una zona Nominal, senza alcun guasto voluto, risulta davvero in banda
-in ogni fase attraversata e non solo nell'ultima. La luce (DLI) resta
-esclusa da questa verifica: vedi il commento su TELEMETRY_FIELD_BY_VARIABLE
-più sotto sul perché non è confrontabile con il PPFD istantaneo di
-telemetria.
 
 BACKDATING QUARANTENA — dashboard/script.js definisce
 QUARANTINE_MIN_RELEASE_MS (24h, solo lato frontend, non imposto dal
@@ -169,13 +158,6 @@ istantaneo (nessuna attesa, stesso margine QUARANTINE_BACKDATE), altre 2
 piante distinte — vedi QUARANTINE_INSTANT_PLANT_SOURCES — prima ancora
 che parta l'attesa del Passo 8. Popolazione separata dalle 5 piante del
 Passo 8: id diversi, nessuna sovrapposizione.
-
-ACCOUNT AGRONOMO NOMINATI: oltre all'admin, SEED_ACCOUNTS include quattro
-account agronomo con username/password fissi (mario/elena/antonio/alice),
-creati (o aggiornati se già esistenti) con lo stesso identico meccanismo
-dell'admin — scrittura diretta nel database via _upsert_user(), prima di
-qualunque chiamata HTTP. Stesse credenziali già usate in
-demo/seed_test_scenario.py (NAMED_AGRONOMO_ACCOUNTS).
 
 LOCKDOWN "DA SICUREZZA" (safety_range) su r4-s2 — terza transizione,
 qualitativamente diversa dalle due sopra: niente InjectFault, e niente
@@ -237,9 +219,9 @@ Il nuovo meccanismo, deterministico e riproducibile:
   InjectFault ne' di ripetuti cicli di attesa: e' per questo lo scenario
   piu' VELOCE dei tre, utile per stare dentro il budget dei primi 3 minuti
   (punto 9). La zona resta in EmergencyLockdown per il resto della demo
-  (nessun reset automatico, a differenza di r4-s1): e' la terza situazione
-  attiva, diversa sia da r1-s2 (fault recuperabile breve) sia da r4-s1
-  (fault recuperabile persistente + reset manuale).
+  (nessun reset automatico): e' la terza situazione
+  attiva, diversa sia da r1-s2 (fault recuperabile breve) sia da un 
+  lockdown causato da escalation.
 
 IMPORTANTE su cosa "genera" Degraded vs EmergencyLockdown nel codice reale
 dell'Edge (verificato leggendo edge/src/faults/fault_detector.cpp ed
@@ -248,9 +230,9 @@ edge/src/runtime/edge_runtime_fsm.cpp, non assunto):
   fisica come soil_moisture/ph/light NON produce Degraded: produce una
   fault CRITICAL e porta IMMEDIATAMENTE a EmergencyLockdown (bypassando
   Degraded) — esattamente il meccanismo usato sopra per r4-s2. Per questo
-  motivo r1-s2/r4-s1 sotto NON usano `sensor_offset` per ottenere Degraded:
+  motivo r1-s2 sotto NON usa `sensor_offset` per ottenere Degraded:
   userebbe un valore fuori dal safety_range e salterebbe dritto in
-  EmergencyLockdown, contraddicendo il loro obiettivo (Degraded).
+  EmergencyLockdown, contraddicendo il suo obiettivo (Degraded).
 - Un fault RECOVERABLE (es. `sensor_dropout`, cioè "missing_value") porta
   invece SUBITO a Degraded al primo ciclo di controllo in cui è rilevato;
   se lo stesso fault persiste per `recoverable_faults_before_lockdown`
@@ -265,9 +247,25 @@ edge/src/runtime/edge_runtime_fsm.cpp, non assunto):
   iniettato).
 Per questo: r1-s2 riceve un `sensor_dropout` con `duration_seconds` corto
 (inferiore alla durata di un ciclo di controllo), cosi resta attivo per un
-solo ciclo -> Degraded -> auto-recupero. r4-s1 riceve lo stesso fault ma
-persistente (nessun duration_seconds) -> Degraded -> EmergencyLockdown
-dopo 3 cicli -> ResetFault + ResetEmergency -> Degraded -> Nominal.
+solo ciclo -> Degraded -> auto-recupero. 
+
+ALLARMI: copertura delle categorie della pagina Allarmi (dashboard/script.js)
+— verificato leggendo computeFlaggedZones/computeOrphanQuarantineGroups/
+isAlarmEvent/eventBadgeMeta/activeZoneCardMeta/renderOrphanGroupCard, non
+assunto. Prima di questo giro lo script copriva già: GUASTO+Degraded
+(r1-s2), EmergencyLockdown da violazione di safety_range (r4-s2), 
+SETTORE OFFLINE (r2-s2), Registro eventi (storico di tutti questi) e 
+Piante in osservazione (le 8 piante di quarantena sopra).
+
+- QUARANTENA ORFANA: nessuno scenario cancellava mai una zona con una
+  pianta già in quarantena che la usa come home_zone_id. Aggiunta con
+  ensure_orphan_quarantine_scenario() (ORPHAN_QUARANTINE_ZONE_ID = r3-s2):
+  crea un settore temporaneo del Reparto 3 mai attivato, vi mette in
+  quarantena una pianta dedicata, poi lo cancella con DELETE /zones/{id} —
+  che non tocca mai plants/plant_movements (zones/repository.py, verificato
+  leggendo il codice), lasciando la pianta orfana. Puramente transitoria:
+  a fine script quella zona non esiste più, quindi non aumenta il numero
+  di settori della demo.
 """
 
 from __future__ import annotations
@@ -276,6 +274,8 @@ import copy
 import json
 import os
 import time
+import math
+import random
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -294,230 +294,72 @@ from backend.app.features.users.models import UserRole
 from backend.app.features.users.repository import UsernameConflict, create_user
 from backend.app.features.users.security import hash_password
 
-# Modulo non nel pacchetto backend, ora dentro demo/old_test/ (spostato li'
-# insieme a seed_test_scenario.py/run_end_to_end.py). Python mette la
-# cartella dello script (demo/) in sys.path[0] quando lo lanci direttamente,
-# e old_test/ e' un namespace package implicito (nessun __init__.py
-# necessario in Python 3), quindi questo import funziona sia da
-# `python demo/seed_dev_data.py` (dalla radice) sia da dentro demo/, senza
-# bisogno di manipolare sys.path.
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "pass123"
 
-# Oltre all'admin, quattro account agronomo "umani" nominati, utili per
-# provare la dashboard con più account invece del solo admin/pass123.
-# Stesse credenziali già usate in demo/seed_test_scenario.py
-# (NAMED_AGRONOMO_ACCOUNTS), cosi' i due script restano coerenti. Creati
-# (o aggiornati se già esistenti) con lo stesso identico meccanismo
+# Account Agronomi nominati.
+# Creati (o aggiornati se già esistenti) con lo stesso identico meccanismo
 # dell'admin (_upsert_user, scrittura diretta nel database), non via HTTP.
 SEED_ACCOUNTS = (
     (ADMIN_USERNAME, ADMIN_PASSWORD, UserRole.ADMIN, "Amministratore"),
-    ("mario", "1234frutta", UserRole.AGRONOMO, "Mario"),
-    ("elena", "1234verdura", UserRole.AGRONOMO, "Elena"),
-    ("antonio", "piantagrassa2", UserRole.AGRONOMO, "Antonio"),
-    ("alice", "curatrice10", UserRole.AGRONOMO, "Alice"),
+    ("mario", "Mario123!", UserRole.AGRONOMO, "Mario"),
+    ("elena", "Elena123!", UserRole.AGRONOMO, "Elena"),
+    ("matteo", "Matteo123!", UserRole.AGRONOMO, "Matteo"),
+    ("irene", "Irene123!", UserRole.AGRONOMO, "Irene"),
 )
-# Configurabile via variabile d'ambiente cosi' lo STESSO script, senza
-# modifiche, funziona sia contro un backend locale (default) sia contro
-# l'indirizzo pubblico di un deploy Railway (SMARTHYDRO_BASE_URL=https://
-# <nome-servizio>.up.railway.app). Nota sull'account amministratore quando
-# BASE_URL e' remoto: questo script fa solo POST /auth/login (puro HTTP),
-# non puo' creare il primo account da solo (per scelta non esiste un
-# endpoint HTTP di registrazione, vedi demo/seed_users.py) — su
-# Railway demo/old_test/seed_users.py va eseguito UNA VOLTA dentro lo
-# stesso container (es. `railway run python demo/seed_users.py`,
-# cosi' scrive nello stesso
-# file SQLite che il backend in esecuzione sta davvero usando), non dal tuo
-# PC puntato all'URL pubblico: eseguito localmente scriverebbe in un
-# database SQLite locale, sul tuo PC, completamente scollegato da quello
-# del servizio remoto.
+
 BASE_URL = os.environ.get("SMARTHYDRO_BASE_URL", "https://smarthydro-production-2a53.up.railway.app").rstrip("/")
 EDGE_ID = "edge-serra-1"
 
-# Token di sessione ottenuto da login_as_admin() e allegato da request() a
-# ogni chiamata di scrittura (POST/PATCH/DELETE).
 _AUTH_TOKEN: str | None = None
 
-# Vedi nota in cima al file: SOLO per accelerare test/demo in questo
-# ambiente. Il prodotto di default lavora a time_scale=1x.
 DEV_TIME_SCALE = 60.0
-
-# Quanto della durata di un ciclo di controllo simulato usare per il fault
-# "un solo ciclo" (r1-s2): abbastanza per essere rilevato, abbastanza corto
-# da esaurirsi prima del ciclo successivo. STEP_SECONDS_HINT documenta
-# l'assunzione (l'Edge di default usa --step-seconds 900, non modificato
-# dai comandi qui accodati): se avvii edge.exe con un --step-seconds
-# diverso, questo valore resta comunque valido perché è ben al di sotto di
-# qualunque quantum ragionevole.
 STEP_SECONDS_HINT = 900.0
 SHORT_FAULT_DURATION_SECONDS = 60.0
 
-# Timeout di polling in secondi reali. Con time_scale=60 e step-seconds=900
-# di default, un ciclo di controllo dura ~15s reali: 60s coprono quindi
-# piu di tre cicli, margine ampio per Running/Degraded. Verificato con un
-# run reale end-to-end (vedi messaggio di consegna).
 COMMAND_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 2.0
 
-# Quanto aspettare che la telemetria reale rientri in banda dopo un
-# AdvanceRecipePhase (vedi advance_zone_to_last_phase() e la nota
-# AVANZAMENTO DI FASE in cima al file): un cambio di fase sposta SOLO
-# l'orologio della ricetta, mai lo stato fisico, quindi soil_moisture/ph/
-# N/P/K impiegano un numero di cicli di controllo reali a riconvergere sul
-# nuovo target.
-#
-# 5 cicli di margine, a ~15s reali/ciclo con DEV_TIME_SCALE=60 e step da
-# 900s (stesso conto di COMMAND_TIMEOUT_SECONDS sopra) — DELIBERATAMENTE
-# più corto degli ~8-10 cicli che edge/src/control/controllers.cpp
-# suggerirebbe in astratto per i nutrienti: verificato dal vivo in questa
-# sessione (run end-to-end reale, non solo a codice) che quando un target
-# di fase CALA rispetto a quello precedente — soil_moisture in particolare,
-# dato che l'attuatore può solo irrigare, mai "asciugare" il terriccio, e
-# la diluizione dei nutrienti segue la stessa lentezza — il valore misurato
-# si sposta di pochi decimi anche dopo 150s pieni (10 cicli): aspettare più
-# a lungo qui non aumenta la probabilità di rientrare in banda in tempo
-# utile, allunga solo la demo. Un valore più corto lascia comunque tutto il
-# tempo a un salto DI FACILE convergenza (o a quelli in aumento, che
-# irrigazione/dosaggio possono davvero accelerare) di rientrare subito —
-# poll_telemetry_in_band_until() esce non appena è in banda, ben prima del
-# timeout, quindi accorciarlo qui non penalizza mai i casi facili, solo il
-# costo massimo di quelli strutturalmente lenti. Un timeout resta comunque
-# solo un avviso, mai un errore fatale (vedi poll_telemetry_in_band_until()).
-CONTROL_CYCLE_SECONDS_AT_DEV_SCALE = 900.0 / DEV_TIME_SCALE
-PHASE_CONVERGENCE_TIMEOUT_SECONDS = 5 * CONTROL_CYCLE_SECONDS_AT_DEV_SCALE
-
 DEGRADED_DEMO_ZONE_ID = "r1-s2"
-LOCKDOWN_DEMO_ZONE_ID = "r4-s1"
 
-# Quanto aspettare, SENZA chiedere alcun input, per capire se un Edge è
-# già in esecuzione e raggiungibile (caso Railway: start.sh lo avvia da
-# solo insieme al backend) prima di ripiegare sul prompt interattivo
-# (caso locale). Margine: ~1s di discovery lato Edge (poll_zone_assignments
-# ogni command_poll_milliseconds, default 1000ms) + un intero ciclo di
-# controllo a DEV_TIME_SCALE già attivo (900/60 = 15s) + margine — vedi
-# probe_edge_already_running().
 EDGE_READY_PROBE_SECONDS = 25.0
 
-# Zone che restano Nominal per l'intera demo (cioè non r1-s2 né la zona
-# dedicata al lockdown safety_range) e vengono quindi avanzate fino all'ultima fase
-# della loro ricetta con AdvanceRecipePhase. r4-s1 NON è qui: passa prima
-# dalla dimostrazione Degraded/EmergencyLockdown (step7_lockdown_demo) e
-# viene avanzata di fase solo DOPO essere rientrata Nominal — vedi main().
 PHASE_ADVANCE_ZONE_IDS = ["r1-s1", "r2-s1", "r3-s1"]
-
-# Variabili controllabili verificabili direttamente confrontando l'ultimo
-# campione di GET /zones/{id}/telemetry/latest con l'allowed_range della
-# fase corrente (stessi nomi di campo di dashboard/script.js VARIABLES).
-# "light" è escluso apposta: il target di ricetta è un DLI giornaliero
-# (mol/m2/giorno, vedi backend/app/features/recipes/models.py) mentre
-# l'unico dato di luce in telemetria è light_ppfd_umol_m2_s, un PPFD
-# ISTANTANEO — grandezze non direttamente confrontabili (la stessa
-# dashboard integra il PPFD nel tempo per ricavare il DLI, vedi
-# telemetryLightDliPoints() in script.js). Verificare "luce in banda" qui
-# richiederebbe di rifare in Python quella stessa integrazione sull'intera
-# giornata simulata corrente: non praticabile in modo affidabile dentro il
-# budget di pochi minuti di questa demo, quindi la luce non è tra le
-# variabili di cui si attende la convergenza in advance_zone_to_last_phase().
-TELEMETRY_FIELD_BY_VARIABLE = {
-    "soil_moisture": "soil_moisture_percent",
-    "ph": "ph",
-    "nitrogen": "nitrogen_estimate_mg_per_liter",
-    "phosphorus": "phosphorus_estimate_mg_per_liter",
-    "potassium": "potassium_estimate_mg_per_liter",
-}
-
-# Le 5 piante del Passo 8 risultano già in quarantena da questo intervallo
-# al momento in cui la demo parte: deve superare
-# QUARANTINE_MIN_RELEASE_MS (24h) di dashboard/script.js, con un margine
-# comodo per non finire sul filo per un ritardo di rete o di orologio fra
-# questa macchina e chi guarda la demo.
 QUARANTINE_BACKDATE = timedelta(hours=30)
-
-# QUARANTINE_MIN_RELEASE_MS (dashboard/script.js) confronta solo tempo
-# reale — Date.now() - quarantined_at — senza alcun "orologio di
-# quarantena" simulato lato backend/Edge; e PATCH /plants/{id}/quarantine
-# e' un no-op silenzioso quando lo stato (is_quarantined/zona/motivo) non
-# cambia (vedi set_quarantine_state() in backend/app/features/plants/
-# repository.py: il controllo in cima alla funzione ritorna subito senza
-# toccare quarantined_at), quindi non e' possibile far avanzare il
-# cronometro di quarantena a piccoli passi con piu' chiamate ravvicinate.
-# Per farlo comunque scorrere con lo stesso spirito accelerato del resto
-# della demo — non un salto istantaneo invisibile, ma un'attesa reale,
-# narrata, proporzionale — lo script attende per davvero il tempo reale
-# equivalente al margine QUARANTINE_BACKDATE usando il rapporto 1 secondo
-# reale = QUARANTINE_MINUTES_PER_SECOND minuti di quarantena (stesso
-# concetto di time_scale usato altrove per l'Edge, ma con un proprio
-# fattore: qui non esiste alcun processo lato server da accelerare, solo
-# l'attesa dello script). Con 30h di margine e 10 min/sec, l'attesa reale
-# e' 30*60/10 = 180s (3 minuti); il quarantined_at effettivo, registrato
-# con UNA sola PATCH al termine dell'attesa, resta comunque backdatato di
-# QUARANTINE_BACKDATE esattamente come prima.
 QUARANTINE_MINUTES_PER_SECOND = 10.0
 QUARANTINE_REAL_WAIT_SECONDS = (
     QUARANTINE_BACKDATE.total_seconds() / 60.0 / QUARANTINE_MINUTES_PER_SECOND
 )
-
-# Puramente illustrativo: senza queste, il Reparto 5 resterebbe vuoto per
-# i primi QUARANTINE_REAL_WAIT_SECONDS (3 minuti) di ogni demo, cioe'
-# esattamente il momento in cui chi guarda apre piu' probabilmente la
-# dashboard per la prima volta. Backdate ISTANTANEO (stesso margine
-# QUARANTINE_BACKDATE, nessuna attesa reale — a differenza delle 5 piante
-# del Passo 8), popolazione distinta (id "plant-early-*", non "plant-N"):
-# vedi ensure_instant_quarantine_plants(). Zone di origine scelte fra
-# quelle gia' note a zone_species in quel punto di main() (dopo il Passo 1).
 QUARANTINE_INSTANT_PLANT_SOURCES = [
     ("plant-early-1", "r2-s1"),
-    ("plant-early-2", "r4-s1"),
+    ("plant-early-2", "r3-s1"),
 ]
 
-# Quante volte al secondo la console viene aggiornata con lo stato di
-# avanzamento durante le attese lunghe (Passo 7): puramente cosmetico, per
-# chi guarda la demo dal vivo — vedi narrate_wait().
 NARRATION_TICK_SECONDS = 5.0
 
-# Zona dedicata alla dimostrazione del lockdown safety_range (vedi la nota in cima al
-# file): DIVERSA da r1-s2/r4-s1, cosi' "Situazioni attive"/"Registro eventi"
-# mostrano tre scenari distinti. Sta FUORI da PRODUCTION_ZONES apposta: le
-# altre zone del Reparto 4 (qui solo r4-s1) prendono la loro ricetta dal
-# catalogo via pick_recipes()/by_department in main(), mentre questa zona
-# deve puntare esattamente a LOCKDOWN_SAFETY_DEMO_RECIPE_ID e a nessun'altra
-# — tenerla fuori da quel ciclo generico evita qualunque ambiguita' su quale
-# ricetta del reparto finisca su quale settore.
+# Zona dedicata alla dimostrazione del lockdown safety_range. 
+# Sta FUORI da PRODUCTION_ZONES apposta:
 LOCKDOWN_SAFETY_DEMO_ZONE_ID = "r4-s2"
 LOCKDOWN_SAFETY_DEMO_DEPARTMENT = 4
 LOCKDOWN_SAFETY_DEMO_SECTOR = 2
 LOCKDOWN_SAFETY_DEMO_RECIPE_ID = "recipe-safety-demo-g"
-# Ricetta di catalogo usata come base per LOCKDOWN_SAFETY_DEMO_RECIPE_ID (vedi
-# ensure_safety_lockdown_recipe()). Scelta esplicitamente per id — MAI la
-# prima ricetta del reparto restituita da GET /recipes, che per puro
-# ordinamento alfabetico degli id (recipe-fragola < recipe-kumquat < ...)
-# risulterebbe "recipe-fragola": la stessa ricetta gia' assegnata a r4-s1 da
-# pick_recipes(), producendo "Fragola (demo lockdown sicurezza)" — non piu'
-# voluto. "recipe-peperoncino" esiste nel catalogo del reparto 4
-# (config/recipe_catalog/recipes/peperoncino.json) con lo stesso substrate
-# "organic-retentive" di Fragola, quindi il campionamento iniziale
-# deterministico di soil_moisture (che dipende da recipe.id e da
-# config.soil_type, non dal plant_type) resta invariato: il meccanismo di
-# lockdown funziona esattamente come prima, solo con una specie diversa.
-LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID = "recipe-peperoncino"
 
 # id, nome, department_number, sector_number, ha un Edge assegnato
+# NOTA: r4-s1 e' stato RIMOSSO per evitare di avere due settori "Fragola".
 PRODUCTION_ZONES = [
     ("r1-s1", "Reparto 1 - Settore 1", 1, 1, True),
     ("r1-s2", "Reparto 1 - Settore 2", 1, 2, True),
     ("r2-s1", "Reparto 2 - Settore 1", 2, 1, True),
     ("r2-s2", "Reparto 2 - Settore 2", 2, 2, False),
     ("r3-s1", "Reparto 3 - Settore 1", 3, 1, True),
-    ("r4-s1", "Reparto 4 - Settore 1", 4, 1, True),
-    # r4-s2 (lockdown safety_range demo) non e' qui: vedi la nota su
-    # LOCKDOWN_SAFETY_DEMO_ZONE_ID sopra e ensure_safety_lockdown_zone() sotto.
 ]
 QUARANTINE_ZONES = [
     ("r5-s1", "Quarantena - Settore 1", 5, 1),
-    # Il reparto 5 ha un solo settore fisico, sempre sector_number=1: il
-    # backend ora lo impone esplicitamente (400 su qualunque altro valore),
-    # quindi non esiste piu' un "r5-s2" da seedare qui.
 ]
+
+ORPHAN_QUARANTINE_ZONE_ID = "r3-s2"
+ORPHAN_QUARANTINE_PLANT_ID = "plant-orphan-1"
+
 
 def _upsert_user(
     connection: sqlite3.Connection,
@@ -537,21 +379,8 @@ def _upsert_user(
         connection.commit()
         print(f"[seed] utente gia' esistente, password/ruolo aggiornati: {username} (ruolo={role.value})")
 
-def _parse_json_body(text: str) -> dict:
-    """Interpreta il corpo di una risposta HTTP come JSON, senza mai
-    sollevare un'eccezione non gestita se non lo e'.
 
-    @details Gli endpoint che usiamo rispondono sempre con JSON quando tutto
-    va secondo i piani, ma un errore lato server non gestito esplicitamente
-    (es. un 500 dovuto a un'eccezione imprevista nel backend, come un errore
-    del database) fa rispondere FastAPI con un semplice "Internal Server
-    Error" in testo semplice, non JSON. Senza questa guardia, il vecchio
-    `json.loads(body)` sollevava un JSONDecodeError non catturato QUI DENTRO
-    request(), che si propagava fino a un traceback Python grezzo invece del
-    messaggio esplicito che login_as_admin()/enqueue_command()/ecc. sono
-    pensati per mostrare — mascherando la vera causa dell'errore in mezzo a
-    righe di stack trace facili da perdere, specialmente se lo script è
-    invocato da un lanciatore come avvia_demo.bat."""
+def _parse_json_body(text: str) -> dict:
     if not text:
         return {}
     try:
@@ -585,10 +414,6 @@ def request(method: str, path: str, payload: dict | None = None) -> tuple[int, d
 
 
 def login_as_admin() -> None:
-    """Autentica lo script come l'account amministratore di seed e salva il
-    token in _AUTH_TOKEN, cosi' request() lo allega da qui in poi. Richiede
-    che demo/old_test/seed_users.py sia gia' stato eseguito almeno una volta contro
-    lo stesso database del backend."""
     global _AUTH_TOKEN
     status, body = request(
         "POST", "/auth/login", {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
@@ -603,17 +428,13 @@ def login_as_admin() -> None:
         raise SystemExit(
             "[seed] impossibile autenticarsi come amministratore "
             f"({ADMIN_USERNAME!r}): il backend ha risposto con un errore "
-            f"inatteso (status {status}) {body}. Non sembra un problema di "
-            "credenziali: puo' essere un errore lato server (controlla il log "
-            "del backend, es. un 'disk I/O error' o un altro problema di "
-            "accesso al database)."
+            f"inatteso (status {status}) {body}."
         )
     _AUTH_TOKEN = body["token"]
     print(f"[seed] autenticato come {ADMIN_USERNAME!r} (ruolo={body['user']['role']})")
 
 
 def pick_recipes(department_number: int, how_many: int) -> list[dict]:
-    """Recupera dal catalogo `how_many` ricette distinte per il reparto."""
     status, body = request("GET", f"/recipes?department_number={department_number}")
     if status != 200 or not isinstance(body, list):
         raise SystemExit(
@@ -629,63 +450,28 @@ def pick_recipes(department_number: int, how_many: int) -> list[dict]:
 
 
 def ensure_safety_lockdown_recipe() -> str:
-    """Crea (POST /recipes, puro input — vedi la nota LOCKDOWN "DA SICUREZZA"
-    in cima al file) la ricetta con un target soil_moisture volutamente
-    stretto che fa scattare un vero EmergencyLockdown per safety_range su
-    LOCKDOWN_SAFETY_DEMO_ZONE_ID al primissimo ciclo. Restituisce il
-    plant_type usato, cosi' ensure_safety_lockdown_zone() puo' mostrarlo
-    come specie della zona senza doverlo ricalcolare.
-
-    Copia la ricetta REALE LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID (Peperoncino)
-    del catalogo del reparto LOCKDOWN_SAFETY_DEMO_DEPARTMENT e sovrascrive SOLO
-    il target di fase di soil_moisture: il controllore (selected_strategy/
-    parameters) resta quello originale del catalogo, perche' tanto verrebbe
-    comunque ristampato dalla Strategy globale d'impianto alla lettura (vedi
-    la nota in cima al file) — non c'e' piu' alcun motivo di toccarlo.
-
-    Il template e' scelto per id esatto (LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID),
-    non "la prima ricetta del reparto diversa da questa": r4-s1 riceve la sua
-    ricetta separatamente da pick_recipes() nel Passo 1, quindi non c'e'
-    ambiguita' possibile tra le due, a prescindere dall'ordinamento restituito
-    da GET /recipes.
-
-    Idempotente: un 409 (RecipeVersionConflict, stessa versione gia'
-    salvata da un run precedente) viene tollerato, non e' un errore."""
     status, catalog = request(
         "GET", f"/recipes?department_number={LOCKDOWN_SAFETY_DEMO_DEPARTMENT}"
     )
     template = None
     if status == 200 and isinstance(catalog, list):
         template = next(
-            (r for r in catalog if r.get("id") == LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID),
-            None,
+            (r for r in catalog if r.get("id") != LOCKDOWN_SAFETY_DEMO_RECIPE_ID), None
         )
     if template is None:
         raise SystemExit(
-            f"[seed] impossibile trovare la ricetta di catalogo "
-            f"{LOCKDOWN_SAFETY_DEMO_TEMPLATE_RECIPE_ID!r} del reparto "
+            "[seed] impossibile trovare una ricetta di catalogo del reparto "
             f"{LOCKDOWN_SAFETY_DEMO_DEPARTMENT} da usare come base per la "
             "ricetta della demo lockdown/safety_range."
         )
 
     recipe = copy.deepcopy(template)
-    recipe.pop("department_name", None)  # computed field, non accettato in POST
+    recipe.pop("department_name", None)
     recipe["id"] = LOCKDOWN_SAFETY_DEMO_RECIPE_ID
     recipe["version"] = 1
-    plant_type = f"{template['plant_type']} (demo lockdown sicurezza)"
+    plant_type = "Fragola"
     recipe["plant_type"] = plant_type
 
-    # Target soil_moisture volutamente stretto: safety_range e' solo 2 punti
-    # percentuali oltre allowed_range per lato (43-57 contro 45-55). L'umidita'
-    # INIZIALE del terriccio non e' campionata dentro allowed_range ma in una
-    # finestra allargata di meta' della sua ampiezza per lato
-    # (edge_runtime_core.cpp::environment_for_recipe(), vedi la nota in cima
-    # al file) — con un margine di sicurezza cosi' stretto, un campione fuori
-    # da allowed_range e' spesso ANCHE fuori da safety_range fin dal primo
-    # ciclo. Il campionamento e' deterministico (seed fisso mescolato con
-    # l'hash dell'id ricetta): per LOCKDOWN_SAFETY_DEMO_RECIPE_ID verificato
-    # dal vivo in questa sessione che il campione cade a 81.33% (ben oltre
-    # 57) — da cui l'id scelto qui sotto, NON un id "pulito" a caso.
     narrow_target = {
         "variable": "soil_moisture",
         "setpoint": 50.0,
@@ -719,13 +505,9 @@ def ensure_safety_lockdown_recipe() -> str:
 
 
 def ensure_safety_lockdown_zone(plant_type: str) -> None:
-    """Registra (POST /zones, puro input) la zona dedicata
-    LOCKDOWN_SAFETY_DEMO_ZONE_ID con la ricetta demo. Tenuta fuori da
-    PRODUCTION_ZONES/pick_recipes() apposta — vedi la nota su
-    LOCKDOWN_SAFETY_DEMO_ZONE_ID."""
     ensure_zone(
         LOCKDOWN_SAFETY_DEMO_ZONE_ID,
-        "Reparto 4 - Settore 2",
+        "Fragola",
         LOCKDOWN_SAFETY_DEMO_DEPARTMENT,
         LOCKDOWN_SAFETY_DEMO_SECTOR,
         {
@@ -756,12 +538,38 @@ def ensure_zone(zone_id: str, name: str, department: int, sector: int, payload_e
     raise SystemExit(f"[seed] errore creando {zone_id}: {status} {body}")
 
 
+def delete_zone(zone_id: str) -> None:
+    status, body = request("DELETE", f"/zones/{zone_id}")
+    if status == 204:
+        print(
+            f"[seed] {zone_id} eliminata: qualunque pianta con "
+            f"home_zone_id={zone_id!r} resta ora orfana (nessuna cascata "
+            "lato backend, per costruzione)"
+        )
+    elif status == 404:
+        print(f"[seed] {zone_id} già assente (probabile rerun), nulla da eliminare")
+    else:
+        print(f"[seed] avviso: impossibile eliminare {zone_id} (status {status}) {body}")
+
+
+def ensure_orphan_quarantine_scenario(plant_species: str) -> None:
+    ensure_zone(
+        ORPHAN_QUARANTINE_ZONE_ID,
+        "Reparto 3 - Settore 2 (mai attivato)",
+        3,
+        2,
+        {"plant_species": plant_species},
+    )
+    ensure_plant(ORPHAN_QUARANTINE_PLANT_ID, plant_species, ORPHAN_QUARANTINE_ZONE_ID)
+    ensure_quarantine(
+        ORPHAN_QUARANTINE_PLANT_ID,
+        "r5-s1",
+        "trasferita in quarantena per chiusura del settore di origine",
+    )
+    delete_zone(ORPHAN_QUARANTINE_ZONE_ID)
+
+
 def ensure_cultivation(zone_id: str, recipe_id: str) -> None:
-    """POST /cultivations crea E accoda già da sola il comando
-    ActivateCultivation (vedi backend/app/features/cultivations/repository.py
-    create_and_activate): non serve accodarlo di nuovo a mano con
-    POST /zones/{id}/commands, sarebbe un comando duplicato e comunque
-    servirebbe un cultivation_id che a questo punto non esiste ancora."""
     status, body = request(
         "POST", "/cultivations", {"zone_id": zone_id, "recipe_id": recipe_id}
     )
@@ -770,12 +578,36 @@ def ensure_cultivation(zone_id: str, recipe_id: str) -> None:
     print(f"[seed] avviso: coltivazione non creata su {zone_id} (status {status}) {body}")
 
 
+def push_historical_telemetry(zone_id: str) -> None:
+    """Genera 24 ore di telemetria coerente e la invia al backend tramite HTTP.
+    Usa 'soil_moisture' per garantire che i grafici della dashboard riflettano i dati."""
+    print(f"[seed] Iniezione telemetria storica simulata per {zone_id}...")
+    now = datetime.now(timezone.utc)
+    ore_passate = 24
+    campioni_ora = 4
+    minuti_step = 60 // campioni_ora
+    
+    for i in range(ore_passate * campioni_ora):
+        ts = now - timedelta(hours=ore_passate) + timedelta(minutes=minuti_step * i)
+        ora_del_giorno = ts.hour + (ts.minute / 60.0)
+        
+        # Matematica del comportamento termodinamico e idrico
+        temp = round(22.0 + 6.0 * math.sin(math.pi * (ora_del_giorno - 8) / 12) + random.gauss(0, 0.3), 2)
+        hum = round(max(0, min(100, 75.0 - (temp - 20) * 3.0 + random.gauss(0, 1.5))), 2)
+        ciclo_svuotamento = (ora_del_giorno % 8) / 8.0 
+        soil_m = round(50.0 - (ciclo_svuotamento * 10) + random.gauss(0, 0.5), 2)
+        
+        payload = {
+            "timestamp": ts.isoformat(),
+            "temperature": temp,
+            "humidity": hum,
+            "soil_moisture": soil_m
+        }
+        
+        request("POST", f"/zones/{zone_id}/telemetry", payload)
+
+
 def enqueue_command(zone_id: str, command_id: str, command_type: str, payload: dict) -> bool:
-    """Puro input verso la coda comandi dell'Edge: nessun dato calcolato a
-    mano, solo la richiesta che un chiamante legittimo può fare. Non aspetta
-    l'esito: per i comandi dove l'ordine con un comando successivo conta
-    (es. ResetFault prima di ResetEmergency) usa
-    enqueue_and_wait_command()."""
     status, body = request(
         "POST",
         f"/zones/{zone_id}/commands",
@@ -799,25 +631,6 @@ def enqueue_and_wait_command(
     *,
     timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
 ) -> str | None:
-    """Accoda un comando e ne attende l'ESITO reale (succeeded/rejected)
-    prima di restituire il controllo, invece di limitarsi a verificare che
-    sia stato accodato (status 201 = pending). Il polling ripete la STESSA
-    POST (stesso command_id, stesso payload): per costruzione questo non
-    riesegue il comando, restituisce solo lo stato corrente della riga già
-    persistita (vedi backend/app/features/commands/repository.py
-    create_command: un command_id già esistente con payload identico
-    restituisce la riga esistente, qualunque sia il suo status). È quindi
-    ancora puro input, non una nuova API.
-
-    Usata soprattutto quando l'ordine tra due comandi conta (es. ResetFault
-    deve essere REALMENTE applicato — non solo accodato — prima di
-    ResetEmergency, altrimenti il reset manuale rischia di essere valutato
-    dalla FSM mentre il detector osserva ancora il guasto e viene
-    rifiutato in silenzio).
-
-    Restituisce lo status finale ("succeeded" o "rejected"), oppure None se
-    il comando non è stato accodato o se scade il timeout mentre resta
-    'pending' (l'Edge non l'ha ancora processato)."""
     command_payload = {
         "command_id": command_id,
         "command_type": command_type,
@@ -868,10 +681,6 @@ def poll_zone_until(
     *,
     timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
 ) -> dict | None:
-    """Interroga GET /zones/{id} finché predicate(zone) è vero o scade il
-    timeout. Restituisce lo stato zona che ha soddisfatto la condizione,
-    oppure None se il timeout scade (non è un crash: chi chiama decide come
-    riportarlo)."""
     deadline = time.monotonic() + timeout_seconds
     last_zone: dict | None = None
     while time.monotonic() < deadline:
@@ -902,12 +711,6 @@ def poll_events_until(
     since: datetime | None = None,
     timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
 ) -> dict | None:
-    """Interroga GET /zones/{id}/events finché un evento soddisfa predicate,
-    o scade il timeout. Restituisce l'evento trovato oppure None.
-
-    `since`, se passato, scarta gli eventi con `received_at` precedente:
-    serve a non confondere un evento identico lasciato da un'esecuzione
-    precedente dello script (rerun idempotente) con uno prodotto adesso."""
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         status, body = request("GET", f"/zones/{zone_id}/events?limit=200")
@@ -924,128 +727,6 @@ def poll_events_until(
         time.sleep(POLL_INTERVAL_SECONDS)
     print(f"[seed] AVVISO: timeout ({timeout_seconds:.0f}s) in attesa di '{description}' su {zone_id}")
     return None
-
-
-def get_telemetry_latest(zone_id: str) -> dict | None:
-    """GET /zones/{id}/telemetry/latest: nessun campione ancora ricevuto è
-    un 404 (o comunque status != 200), non un errore — vedi Investigazione
-    sull'assenza di telemetria in diagnose_actuator_snapshot()."""
-    status, body = request("GET", f"/zones/{zone_id}/telemetry/latest")
-    return body if status == 200 and isinstance(body, dict) else None
-
-
-def phase_targets_by_variable(recipe: dict, phase_name: str) -> dict[str, dict] | None:
-    """Da un oggetto Recipe (risposta di GET /recipes/{id}), l'elenco dei 6
-    PhaseVariableTarget della fase `phase_name`, indicizzati per variabile.
-    None se la fase non esiste nella ricetta (non dovrebbe succedere: i nomi
-    vengono sempre letti dalla stessa ricetta, vedi advance_zone_to_last_
-    phase())."""
-    for phase in recipe.get("phases", []):
-        if phase.get("name") == phase_name:
-            return {t["variable"]: t for t in phase.get("targets", [])}
-    return None
-
-
-def telemetry_out_of_band(telemetry: dict, targets_by_variable: dict) -> list[str]:
-    """Confronta l'ultimo campione di telemetria con l'allowed_range di fase
-    per ciascuna delle variabili in TELEMETRY_FIELD_BY_VARIABLE (la luce è
-    intenzionalmente esclusa, vedi il commento su quella costante).
-    Restituisce la lista (vuota se tutto in banda) delle variabili fuori
-    range, con valore e banda attesa, solo per messaggi diagnostici — non
-    altera mai nulla."""
-    out_of_band: list[str] = []
-    for variable, field in TELEMETRY_FIELD_BY_VARIABLE.items():
-        target = targets_by_variable.get(variable)
-        value = telemetry.get(field)
-        if target is None or value is None:
-            continue
-        allowed = target.get("allowed_range") or {}
-        minimum, maximum = allowed.get("minimum"), allowed.get("maximum")
-        if minimum is None or maximum is None:
-            continue
-        if not (minimum <= value <= maximum):
-            out_of_band.append(f"{variable}={value:.2f} (banda {minimum:.2f}-{maximum:.2f})")
-    return out_of_band
-
-
-def poll_telemetry_in_band_until(
-    zone_id: str,
-    targets_by_variable: dict,
-    description: str,
-    *,
-    timeout_seconds: float = PHASE_CONVERGENCE_TIMEOUT_SECONDS,
-) -> bool:
-    """Interroga GET /zones/{id}/telemetry/latest finché soil_moisture/ph/
-    nitrogen/phosphorus/potassium non rientrano TUTTI nell'allowed_range
-    della fase corrente (vedi TELEMETRY_FIELD_BY_VARIABLE), o scade il
-    timeout. Non POSTa mai telemetria: si limita ad aspettare che il
-    controllo reale dell'Edge porti da solo i valori in banda dopo un
-    AdvanceRecipePhase (vedi VINCOLI RISPETTATI in cima al file). Un
-    timeout produce solo un avviso, mai un errore fatale: la demo prosegue
-    comunque, esattamente come per le altre attese di questo script."""
-    deadline = time.monotonic() + timeout_seconds
-    last_out_of_band: list[str] = []
-    saw_any_sample = False
-    while time.monotonic() < deadline:
-        telemetry = get_telemetry_latest(zone_id)
-        if telemetry is not None:
-            saw_any_sample = True
-            last_out_of_band = telemetry_out_of_band(telemetry, targets_by_variable)
-            if not last_out_of_band:
-                return True
-        time.sleep(POLL_INTERVAL_SECONDS)
-    if not saw_any_sample:
-        print(
-            f"[seed] avviso: timeout ({timeout_seconds:.0f}s) in attesa di un campione di "
-            f"telemetria per {description} su {zone_id} (nessun campione ricevuto ancora)"
-        )
-    else:
-        print(
-            f"[seed] avviso: timeout ({timeout_seconds:.0f}s) in attesa che {description} "
-            f"rientri in banda su {zone_id}; ancora fuori banda: {', '.join(last_out_of_band)}"
-        )
-    return False
-
-
-def poll_first_phase_telemetry(
-    zone_id: str,
-    expected_phase: str | None,
-    *,
-    timeout_seconds: float = COMMAND_TIMEOUT_SECONDS,
-) -> bool:
-    """Interroga GET /zones/{id}/telemetry/latest finché non arriva un
-    campione della fase `expected_phase` (o un campione qualsiasi, se
-    `expected_phase` è None perché non ancora noto), o scade il timeout.
-
-    Perché serve: zone.status passa a "online" (mostrato in dashboard) alla
-    ricezione di QUALUNQUE contatto dall'Edge reale — non solo telemetria,
-    anche un semplice evento o uno snapshot attuatori (vedi
-    backend/app/features/events/repository.py e
-    backend/app/features/actuators/repository.py, entrambi con lo stesso
-    side-effect di backend/app/features/telemetry/repository.py). Subito
-    dopo lifecycle_state=Running, quindi, una zona può risultare "online"
-    prima ancora che l'Edge abbia completato il suo primissimo ciclo di
-    controllo e inviato un campione di telemetria della fase corrente.
-    Aspettare qui, PRIMA di considerare la zona pronta per i passi
-    successivi, evita che chi guarda la demo dal vivo trovi "online" senza
-    ancora alcun dato di telemetria da mostrare per la prima fase.
-
-    Nessuna POST: solo attesa reale del primo ciclo dell'Edge. Un timeout
-    produce un avviso, non un errore fatale — come tutte le attese di
-    questo script."""
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        telemetry = get_telemetry_latest(zone_id)
-        if telemetry is not None and (
-            expected_phase is None or telemetry.get("current_phase") == expected_phase
-        ):
-            return True
-        time.sleep(POLL_INTERVAL_SECONDS)
-    print(
-        f"[seed] avviso: timeout ({timeout_seconds:.0f}s) in attesa del primo "
-        f"campione di telemetria (fase {expected_phase!r}) su {zone_id}"
-    )
-    return False
 
 
 def ensure_plant(plant_id: str, species: str, home_zone_id: str) -> None:
@@ -1065,11 +746,6 @@ def ensure_quarantine(
     *,
     quarantined_at: datetime | None = None,
 ) -> None:
-    """quarantined_at, se passato, backdata sia plants.quarantined_at sia
-    plant_movements.moved_at allo stesso istante (vedi la nota BACKDATING
-    QUARANTENA in cima al file) — puro input verso il campo opzionale
-    aggiunto a PlantQuarantineUpdate apposta per questo script, non un
-    accesso diretto al database."""
     payload = {
         "is_quarantined": True,
         "quarantine_zone_id": quarantine_zone_id,
@@ -1104,19 +780,6 @@ def wait_for_edge_start() -> None:
 
 
 def probe_edge_already_running(edge_zone_ids: list[str]) -> bool:
-    """Verifica, SENZA chiedere alcun input, se un Edge è già in esecuzione
-    e sta già scoprendo/eseguendo le zone appena registrate e attivate —
-    il caso tipico di un deploy dove l'Edge parte da solo insieme al
-    backend a ogni avvio del container (vedi Dockerfile/start.sh: lo
-    stesso identico --edge-id EDGE_ID usato qui). Prova per
-    EDGE_READY_PROBE_SECONDS: se nessuna zona diventa Running entro
-    quella finestra, assume che l'Edge NON sia ancora in esecuzione (il
-    caso locale, dove va ancora avviato a mano) e restituisce False senza
-    aver mai bloccato lo script in attesa di un input.
-
-    Non sostituisce il Passo 4 (polling più lungo, con timeout completo,
-    per OGNI zona): questo è solo un rilevamento rapido "c'è già qualcuno
-    dall'altra parte?" per decidere se mostrare il prompt oppure no."""
     print(
         f"\n[seed] verifico se un Edge è già raggiungibile e attivo "
         f"(fino a {EDGE_READY_PROBE_SECONDS:.0f}s, senza chiedere alcun input)..."
@@ -1142,10 +805,6 @@ def probe_edge_already_running(edge_zone_ids: list[str]) -> bool:
 
 
 def narrate_wait(message: str, seconds: float) -> None:
-    """Aspetta `seconds` reali stampando un avanzamento ogni
-    NARRATION_TICK_SECONDS: puramente cosmetico, per chi guarda la demo dal
-    vivo mentre si parla — non introduce alcun dato, comando o stato, solo
-    un ritmo leggibile fra una fase e la successiva della narrazione."""
     print(f"\n[seed] {message}")
     remaining = seconds
     while remaining > 0:
@@ -1157,13 +816,6 @@ def narrate_wait(message: str, seconds: float) -> None:
 
 
 def ensure_resident_plants(zone_species: dict[str, str], edge_zone_ids: list[str]) -> None:
-    """Ogni settore online (con un Edge assegnato) riceve almeno una
-    pianta residente, non quarantenata, di specie coerente con la ricetta
-    già assegnata alla zona (il backend rifiuta altrimenti con 400, vedi
-    backend/app/features/plants/routes.py: "plant species must match the
-    home zone species"). ID distinti (resident-<zone_id>) dalle 5 piante
-    del Passo 8, che restano una popolazione separata dedicata solo alla
-    quarantena."""
     print("\n[seed] --- Passo 1ter: pianta residente per ogni settore online ---")
     for zone_id in edge_zone_ids:
         species = zone_species.get(zone_id)
@@ -1174,13 +826,6 @@ def ensure_resident_plants(zone_species: dict[str, str], edge_zone_ids: list[str
 
 
 def ensure_instant_quarantine_plants(zone_species: dict[str, str]) -> None:
-    """Popola il Reparto 5 con qualche pianta già in quarantena fin dal
-    primissimo istante della demo — backdate ISTANTANEO (nessuna attesa
-    reale, a differenza delle 5 piante del Passo 8), puramente
-    illustrativo: vedi QUARANTINE_INSTANT_PLANT_SOURCES per i dettagli e
-    il perché. Popolazione distinta da quella del Passo 8 (id
-    "plant-early-*"), stesso margine QUARANTINE_BACKDATE, stessa
-    ensure_quarantine() usata li'."""
     print(
         "\n[seed] --- Passo 1quater: piante già in quarantena "
         f"(backdate istantaneo di {QUARANTINE_BACKDATE}, illustrativo) ---"
@@ -1201,28 +846,6 @@ def ensure_instant_quarantine_plants(zone_species: dict[str, str]) -> None:
 
 
 def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) -> None:
-    """Fa avanzare `zone_id` fino all'ultima fase della sua ricetta con
-    AdvanceRecipePhase ripetuti (vedi la nota AVANZAMENTO DI FASE in cima
-    al file) — mai aspettando che trascorra davvero il tempo simulato
-    necessario per ESAURIRE una fase, impraticabile per una demo di pochi
-    minuti. Si ferma quando il comando risulta rejected per "already in its
-    last phase", quando current_phase raggiunge l'ultima fase, o quando
-    cultivation_completed diventa true (il secondo criterio richiesto,
-    praticamente irraggiungibile in una demo breve: la fase finale dura
-    comunque centinaia di ore anche a time_scale=60, ma il controllo resta
-    qui per correttezza).
-
-    Prima di ogni salto (inclusa la primissima fase, appena raggiunto
-    lifecycle_state=Running) attende — con poll_telemetry_in_band_until(),
-    MAI con una POST manuale, vedi VINCOLI RISPETTATI in cima al file — che
-    soil_moisture/ph/N/P/K rientrino nell'allowed_range della fase appena
-    raggiunta: un AdvanceRecipePhase sposta SOLO l'orologio della ricetta,
-    mai lo stato fisico, quindi un valore può restare transitoriamente
-    fuori banda subito dopo il salto. È per questo che una zona Nominal
-    senza alcun guasto voluto deve mostrare telemetria in banda in OGNI
-    fase attraversata, non solo nell'ultima. Un timeout in
-    poll_telemetry_in_band_until() produce solo un avviso: non blocca mai
-    questa funzione né il resto della demo."""
     status, recipe = request("GET", f"/recipes/{recipe_id}")
     if status != 200 or not isinstance(recipe, dict) or not recipe.get("phases"):
         print(
@@ -1236,18 +859,6 @@ def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) ->
         f"\n[seed] --- Avanzamento di fase su {zone_id}: "
         f"{' -> '.join(phase_names)} ---"
     )
-
-    def _await_band(phase_name: str | None) -> None:
-        if phase_name is None:
-            return
-        targets = phase_targets_by_variable(recipe, phase_name)
-        if targets is None:
-            return
-        poll_telemetry_in_band_until(zone_id, targets, f"la fase {phase_name!r}")
-
-    initial_zone = get_zone(zone_id)
-    _await_band(initial_zone.get("current_phase") if initial_zone is not None else None)
-
     for step_index in range(len(phase_names) - 1):
         zone = get_zone(zone_id)
         if zone is not None and (
@@ -1269,7 +880,6 @@ def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) ->
         zone = get_zone(zone_id)
         current = zone.get("current_phase") if zone is not None else None
         print(f"[seed] {zone_id}: fase avanzata a {current!r}")
-        _await_band(current)
 
     final_zone = get_zone(zone_id)
     if final_zone is None:
@@ -1287,14 +897,6 @@ def advance_zone_to_last_phase(zone_id: str, recipe_id: str, run_suffix: str) ->
 
 
 def diagnose_actuator_snapshot(zone_id: str) -> None:
-    """GET /zones/{id}/actuators/latest: se vuoto, DIAGNOSTICA il motivo
-    invece di introdurre una POST manuale con dati inventati (questo
-    script rimane input puro fino in fondo — vedi VINCOLI RISPETTATI). Lo
-    snapshot è normalmente caricato in automatico dall'Edge reale a OGNI
-    ciclo di controllo completato (edge/src/backend/http_backend_client.cpp,
-    stesso evento che porta la telemetria): se manca, la causa più
-    probabile è che la zona non abbia ancora completato un ciclo intero,
-    non un problema di questo script."""
     status, snapshot = request("GET", f"/zones/{zone_id}/actuators/latest")
     if status == 200 and isinstance(snapshot, dict):
         print(
@@ -1347,10 +949,6 @@ def step5_degraded_demo(run_suffix: str) -> None:
         return
 
     print(f"[seed] --- Passo 6: attendo FaultDetected + StateChanged(Degraded) su {zone_id} ---")
-    # Il payload di FaultDetected non porta il fault_id che abbiamo scelto
-    # noi (solo component/rule/severity/diagnostic, vedi
-    # edge/src/backend/http_backend_client.cpp): correliamo quindi sul
-    # componente/regola attesi per un sensor_dropout su soil_moisture.
     fault_event = poll_events_until(
         zone_id,
         lambda e: e.get("event_type") == "FaultDetected"
@@ -1389,105 +987,11 @@ def step5_degraded_demo(run_suffix: str) -> None:
     else:
         print(
             f"[seed] avviso: nessuno StateChanged verso Degraded osservato entro il "
-            f"timeout su {zone_id}. Non è un errore dello script: può darsi che il "
-            f"fault non fosse abbastanza severo o che l'Edge non sia ancora attivo su "
-            f"questa zona."
+            f"timeout su {zone_id}."
         )
-
-
-def step7_lockdown_demo(run_suffix: str) -> None:
-    zone_id = LOCKDOWN_DEMO_ZONE_ID
-    fault_id = f"demo-persistent-dropout-{zone_id}-{run_suffix}"
-    since = datetime.now(timezone.utc)
-    
-    print(f"\n[seed] --- Passo 7 (opzionale): fault persistente su {zone_id} ---")
-    print(
-        "[seed] Nota: invece di tre comandi InjectFault separati e ravvicinati, "
-        "invio UN solo fault persistente (senza duration_seconds): la FSM valuta "
-        "la gravità una volta per ciclo di controllo, quindi se questo stesso "
-        "fault resta attivo per almeno 3 cicli consecutivi l'escalation a "
-        "EmergencyLockdown avviene comunque esattamente come descritto nel "
-        "README ('tre guasti recuperabili consecutivi') — in modo deterministico."
-    )
-    sent = enqueue_command(
-        zone_id,
-        f"inject-{fault_id}",
-        "InjectFault",
-        {
-            "fault_id": fault_id,
-            "target_type": "sensor",
-            "target": "soil_moisture",
-            "mode": "sensor_dropout",
-        },
-    )
-    if not sent:
-        print(f"[seed] avviso: fault non accodato su {zone_id}, salto il resto del punto 7")
-        return
-
-    degraded_event = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "StateChanged"
-        and e.get("payload", {}).get("current_state") == "Degraded",
-        "StateChanged -> Degraded (pre-lockdown)",
-        since=since,
-    )
-    if degraded_event is None:
-        print(f"[seed] avviso: {zone_id} non è mai passata a Degraded, salto il resto del punto 7")
-        return
-    print(f"[seed] {zone_id} è passata a Degraded (primo ciclo col fault attivo).")
-
-    lockdown_event = poll_events_until(
-        zone_id,
-        lambda e: e.get("event_type") == "StateChanged"
-        and e.get("payload", {}).get("current_state") == "EmergencyLockdown",
-        "StateChanged -> EmergencyLockdown",
-        since=since,
-    )
-    if lockdown_event is None:
-        print(
-            f"[seed] avviso: {zone_id} non ha raggiunto EmergencyLockdown entro il "
-            f"timeout; il fault potrebbe essere scaduto o l'escalation richiede più "
-            f"tempo reale di quanto previsto. Salto reset ed EmergencyLockdown."
-        )
-        return
-    print(f"[seed] {zone_id} è entrata in EmergencyLockdown (3 cicli recuperabili consecutivi).")
-
-    # =========================================================================
-    # MODIFICA: AUTOMATISMO RIMOSSO
-    # Lo script ora si ferma qui e lascia il settore in EmergencyLockdown.
-    # L'utente deve operare il ResetFault e il ResetEmergency dalla Dashboard.
-    # =========================================================================
-    print(f"\n[seed] *** INTERVENTO MANUALE RICHIESTO ***")
-    print(f"[seed] Il settore {zone_id} è ora bloccato in EmergencyLockdown.")
-    print(f"[seed] Vai sulla Dashboard per completare lo scenario:")
-    print(f"[seed] 1. Ripara il guasto (invia ResetFault)")
-    print(f"[seed] 2. Sblocca il settore (invia ResetEmergency)")
 
 
 def step_safety_lockdown_demo(since: datetime) -> None:
-    """Attende il vero EmergencyLockdown per violazione di safety_range su
-    LOCKDOWN_SAFETY_DEMO_ZONE_ID (vedi la nota LOCKDOWN "DA SICUREZZA" in
-    cima al file e ensure_safety_lockdown_recipe()): nessun InjectFault qui,
-    il target di fase gia' assegnato alla zona basta da solo a farlo
-    scattare al primo ciclo di controllo reale dell'Edge.
-
-    A differenza di step5_degraded_demo/step7_lockdown_demo non serve
-    accodare alcun comando: si limita a osservare cosa fa l'Edge reale non
-    appena la zona e' Running, esattamente come richiesto ("verifica dal
-    vivo... non solo che l'evento esista nel database" — qui verifichiamo
-    prima l'evento via API, la verifica nella UI della dashboard e'
-    responsabilita' di chi esegue lo script dal vivo, vedi il messaggio
-    finale stampato sotto).
-
-    `since` va catturato PRIMA di wait_for_edge_start() (non qui dentro):
-    a differenza di step5/step7, che inviano loro stessi il comando che fa
-    scattare la transizione (quindi "since=adesso" e' sempre corretto),
-    qui non c'e' alcun comando da inviare — il primo ciclo di controllo
-    dell'Edge reale potrebbe gia' avere fatto scattare il lockdown PRIMA
-    che questa funzione venga chiamata (es. durante il polling Running del
-    Passo 4 o durante step5/step7), quindi filtrare da un "since" preso solo
-    ora rischierebbe di scartare l'evento vero e segnalare un falso
-    avviso."""
     zone_id = LOCKDOWN_SAFETY_DEMO_ZONE_ID
     print(
         f"\n[seed] --- Passo 6bis: attendo il vero lockdown da safety_range su "
@@ -1552,12 +1056,6 @@ def verify_state_sequence(
     since: datetime,
     expected: list[tuple[str, str]],
 ) -> bool:
-    """Legge TUTTI gli eventi StateChanged della zona da `since` in poi,
-    li ordina cronologicamente e confronta la sequenza di transizioni
-    (previous_state, current_state) con `expected`, elemento per elemento
-    e nell'ordine esatto — non si limita a controllare che ogni stato sia
-    presente da qualche parte nella cronologia. Stampa un esito chiaro,
-    con la sequenza osservata per intero se non corrisponde."""
     status, body = request("GET", f"/zones/{zone_id}/events?limit=500")
     if status != 200 or not isinstance(body, list):
         print(f"[seed] avviso: impossibile rileggere gli eventi di {zone_id} per la verifica finale (status {status})")
@@ -1635,50 +1133,27 @@ def main() -> None:
     # --- Zona dedicata al lockdown safety_range (r4-s2): DOPO il ciclo per-reparto qui
     # sopra, mai dentro — pick_recipes(4, ...) ha gia' scelto la ricetta di
     # r4-s1 dal catalogo, quindi la ricetta demo (creata solo ora) non puo'
-    # mai finire assegnata per sbaglio alla zona sbagliata. Vedi la nota
-    # IMPORTANTE in cima al file e i docstring delle due funzioni.
+    # mai finire assegnata per sbaglio alla zona sbagliata.
     safety_lockdown_plant_type = ensure_safety_lockdown_recipe()
     ensure_safety_lockdown_zone(safety_lockdown_plant_type)
     zone_species[LOCKDOWN_SAFETY_DEMO_ZONE_ID] = safety_lockdown_plant_type
     zone_recipe[LOCKDOWN_SAFETY_DEMO_ZONE_ID] = LOCKDOWN_SAFETY_DEMO_RECIPE_ID
     edge_zone_ids.append(LOCKDOWN_SAFETY_DEMO_ZONE_ID)
-    # Catturato QUI, non dentro step_safety_lockdown_demo(): vedi il
-    # docstring di quella funzione sul perche' non si puo' aspettare fino a
-    # quando viene chiamata (dopo step5/step7).
+    
     safety_lockdown_since = datetime.now(timezone.utc)
 
     for zone_id, name, dept, sector in QUARANTINE_ZONES:
         ensure_zone(zone_id, name, dept, sector, {"plant_species": None})
 
+    ensure_orphan_quarantine_scenario(zone_species["r3-s1"])
+
     ensure_resident_plants(zone_species, edge_zone_ids)
     ensure_instant_quarantine_plants(zone_species)
 
-    print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) ---")
+    print("\n[seed] --- Passo 2: ActivateCultivation (via POST /cultivations) e Iniezione Telemetria Storica ---")
     for zone_id in edge_zone_ids:
         ensure_cultivation(zone_id, zone_recipe[zone_id])
-    # SetSimulationSpeed (Passo 2bis) NON viene più accodato qui: vedi il
-    # Passo 4bis più sotto, dopo la conferma lifecycle_state=Running.
-    # Motivo (verificato leggendo il codice, non assunto): accodarlo subito
-    # dopo POST /cultivations, PRIMA che l'Edge reale sia anche solo avviato
-    # (wait_for_edge_start() arriva più avanti in questo script), rendeva
-    # l'esecuzione dipendente da come l'Edge processa in un colpo solo, al
-    # primo poll, sia la scoperta della zona sia i comandi già in coda
-    # (edge/src/backend/http_backend_client.cpp poll_zone_assignments() +
-    # poll_commands() nello stesso tick, edge/src/main.cpp la stessa
-    # iterazione del loop principale) — E soprattutto usava un command_id
-    # fisso (senza suffisso di run): su un rerun dello script, la POST con
-    # lo stesso command_id+payload non crea un nuovo comando ma restituisce
-    # SEMPRE la riga già esistente in DB, qualunque sia il suo status
-    # (backend/app/features/commands/repository.py create_command) — e
-    # enqueue_command() stampa "accodato" guardando solo lo status HTTP
-    # (201, identico sia per un comando nuovo sia per la rilettura di uno
-    # vecchio), MAI il campo status del comando restituito. Risultato: se
-    # anche una sola volta, in passato, quel comando fosse stato rifiutato
-    # (es. perché la zona non aveva ancora raggiunto Running quando fu
-    # processato), ogni rerun successivo dello script continuerebbe a
-    # rileggere silenziosamente quello stesso rifiuto per sempre, mostrando
-    # comunque "accodato" — esattamente il sintomo osservato (log
-    # "accodato" per ogni zona, ma time_scale rimasto a 1 su tutte).
+        push_historical_telemetry(zone_id)
 
     print(
         "\n[seed] --- Passo 8: piante e quarantena "
@@ -1687,15 +1162,13 @@ def main() -> None:
         f"al ritmo di 1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min, prima di "
         "registrarlo) ---"
     )
-    
-    #    narrate_wait(
-    #        f"quarantena: attendo {QUARANTINE_REAL_WAIT_SECONDS:.0f}s reali "
-    #        f"(equivalenti a {QUARANTINE_BACKDATE} di quarantena al ritmo di "
-    #        f"1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min) prima di registrare "
-    #        "l'inizio quarantena delle 5 piante...",
-    #        QUARANTINE_REAL_WAIT_SECONDS,
-    #   )
-    
+    narrate_wait(
+        f"quarantena: attendo {QUARANTINE_REAL_WAIT_SECONDS:.0f}s reali "
+        f"(equivalenti a {QUARANTINE_BACKDATE} di quarantena al ritmo di "
+        f"1s = {QUARANTINE_MINUTES_PER_SECOND:.0f}min) prima di registrare "
+        "l'inizio quarantena delle 5 piante...",
+        QUARANTINE_REAL_WAIT_SECONDS,
+    )
     quarantine_backdate_at = datetime.now(timezone.utc) - QUARANTINE_BACKDATE
     plant_sources = [
         ("plant-1", zone_species["r1-s1"], "r1-s1"),
@@ -1738,14 +1211,6 @@ def main() -> None:
         )
 
     # --- Passo 4bis: SetSimulationSpeed, ORA che ogni zona è Running -------
-    # (vedi la nota nel Passo 2 sul perché non viene più accodato prima).
-    # set_time_scale() lato Edge (edge/src/runtime/greenhouse_manager.cpp)
-    # rifiuta esplicitamente il comando finché lifecycle_state non è Running
-    # o Paused: accodarlo solo ora, con command_id univoco per questo run
-    # (grazie a run_suffix) e attendendone davvero l'esito con
-    # enqueue_and_wait_command() invece del solo status HTTP 201, elimina
-    # sia la finestra di rifiuto sia il rischio di rileggere in silenzio lo
-    # stato di un comando di un run precedente.
     print(
         f"\n[seed] --- Passo 4bis: SetSimulationSpeed (time_scale={DEV_TIME_SCALE:g}) "
         "sulle zone Running ---"
@@ -1769,30 +1234,7 @@ def main() -> None:
                 "attivo, potrebbero non bastare per questa zona."
             )
 
-    # --- Passo 4ter: attendo il primo campione di telemetria di fase -------
-    # (vedi poll_first_phase_telemetry()) PRIMA di considerare pronta ogni
-    # zona Running: lifecycle_state=Running dice solo che l'Edge ha iniziato
-    # a lavorarci, non che abbia già completato un ciclo di controllo e
-    # quindi prodotto un campione della fase corrente. Fatto qui, DOPO che
-    # time_scale=60 è già attivo (Passo 4bis) — a time_scale=1 un ciclo dura
-    # 900s reali, un'attesa non pensabile in questa demo.
-    print(
-        "\n[seed] --- Passo 4ter: attendo il primo campione di telemetria di "
-        f"fase (timeout {COMMAND_TIMEOUT_SECONDS:.0f}s ciascuna) sulle zone Running ---"
-    )
-    for zone_id in edge_zone_ids:
-        if not running.get(zone_id):
-            continue
-        zone = get_zone(zone_id)
-        expected_phase = zone.get("current_phase") if zone is not None else None
-        if poll_first_phase_telemetry(zone_id, expected_phase):
-            print(f"[seed] {zone_id}: telemetria della fase {expected_phase!r} già presente.")
-
-    # --- Passo 4quater: AdvanceRecipePhase sulle zone Nominal per tutta la -
-    # demo (vedi la nota AVANZAMENTO DI FASE in cima al file). Fatto qui,
-    # subito dopo che time_scale e' gia' attivo su tutte, cosi' questi
-    # eventi (avanzamenti di fase) compaiono ben dentro i primi 3 minuti
-    # richiesti, prima ancora dei fault dimostrativi piu' sotto.
+    # --- Passo 4ter: AdvanceRecipePhase sulle zone Nominal per tutta la ----
     for zone_id in PHASE_ADVANCE_ZONE_IDS:
         if running.get(zone_id):
             advance_zone_to_last_phase(zone_id, zone_recipe[zone_id], run_suffix)
@@ -1805,19 +1247,6 @@ def main() -> None:
     else:
         print(f"\n[seed] salto il passo 5/6: {DEGRADED_DEMO_ZONE_ID} non è Running")
 
-    # --- Passo 7: fault persistente -> EmergencyLockdown -> reset (opzionale) ---
-    if running.get(LOCKDOWN_DEMO_ZONE_ID):
-        step7_lockdown_demo(run_suffix)
-        # Avanzamento di fase su r4-s1 SOLO ora, a valle del recupero: prima
-        # (durante Degraded/EmergencyLockdown) non avrebbe senso dimostrare
-        # una progressione di coltivazione "normale" su una zona che sta
-        # ancora vivendo lo scenario di guasto.
-        advance_zone_to_last_phase(
-            LOCKDOWN_DEMO_ZONE_ID, zone_recipe[LOCKDOWN_DEMO_ZONE_ID], run_suffix
-        )
-    else:
-        print(f"\n[seed] salto il passo 7: {LOCKDOWN_DEMO_ZONE_ID} non è Running")
-
     # --- Passo 6bis: lockdown da safety_range reale, nessun InjectFault (obbligatorio) ---
     if running.get(LOCKDOWN_SAFETY_DEMO_ZONE_ID):
         step_safety_lockdown_demo(safety_lockdown_since)
@@ -1827,8 +1256,6 @@ def main() -> None:
         )
 
     # --- Passo 9: diagnostica snapshot attuatori per ogni zona online ------
-    # (vedi diagnose_actuator_snapshot(): mai una POST manuale, solo lettura
-    # + diagnosi se manca).
     print("\n[seed] --- Passo 9: verifica snapshot attuatori (GET /zones/{id}/actuators/latest) ---")
     for zone_id in edge_zone_ids:
         diagnose_actuator_snapshot(zone_id)

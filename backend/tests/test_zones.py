@@ -48,6 +48,7 @@ def test_create_and_read_zone(client: TestClient) -> None:
         "assigned_edge_id": "smarthydro-edge",
         "active_recipe_id": None,
         "active_cultivation_id": None,
+        "active_fault_id": None,
         "current_phase": None,
         "cultivation_completed": False,
         "administrative_status": "active",

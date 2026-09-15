@@ -211,6 +211,18 @@ class Zone(ZoneCreate):
     time_scale: float = Field(default=1.0, ge=1.0, le=60.0)
     ## @brief Ciclo colturale non archiviato attualmente assegnato.
     active_cultivation_id: str | None = None
+    ## @brief fault_id dell'ultimo InjectFault riuscito su questa zona non
+    ## ancora seguito da un ResetFault riuscito, oppure `None`. Popolato/
+    ## azzerato in backend/app/features/commands/repository.py::
+    ## complete_command() — mai scritto altrove. Esiste per permettere a un
+    ## client (dashboard) di costruire il payload di un ResetFault reale
+    ## senza dover già conoscere l'id scelto da chi ha iniettato il guasto:
+    ## edge/src/faults/fault_detector.cpp osserva solo le EVIDENZE di un
+    ## guasto (component/rule/severity), mai l'id con cui è stato iniettato
+    ## (netta separazione FaultInjector/FaultDetector, vedi le istruzioni di
+    ## progetto), quindi quell'id non è altrimenti recuperabile dopo
+    ## l'iniezione.
+    active_fault_id: str | None = None
 
 
 class ZoneUpdate(BaseModel):

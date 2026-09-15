@@ -163,9 +163,9 @@ const GLOBAL_STRATEGY_VARIABLES = [
 const VALID_ROLES = ["agronomo", "admin"];
 
 const OP_META = {
-  Nominal: { color: "#1f7a51" },
-  Degraded: { color: "#c9803f" },
-  EmergencyLockdown: { color: "#c15a4a" },
+  Nominal: { color: "#1f7a51", label: "Regolare" },
+  Degraded: { color: "#fdb50c", label: "Anomalia" },
+  EmergencyLockdown: { color: "#c15a4a", label: "Blocco di Emergenza" },
 };
 
 const DEPT_META = {
@@ -351,6 +351,40 @@ function remapPhaseNamesForDepartment(draft, departmentNumber) {
   });
 }
 
+// Password in chiaro degli account demo con credenziali fisse (vedi
+// SEED_ACCOUNTS in demo/seed_dev_data.py, e i due account di bootstrap
+// admin/agronomo di backend/app/features/users/repository.py
+// seed_default_users() — stessa password "pass123"). Queste sono le UNICHE
+// password in chiaro che esistono da qualunque parte in questo progetto:
+// backend/app/features/users/security.py usa PBKDF2-HMAC-SHA256
+// (200'000 iterazioni, salt casuale) per l'hash, quindi per un account
+// creato dopo l'installazione (form "+ Nuovo account" qui sotto) la
+// password reale non è mai recuperabile, nemmeno dal backend stesso — vedi
+// il ramo "altrimenti" in userPasswordDisplay().
+const KNOWN_DEMO_PASSWORDS = {
+  admin: "pass123",
+  agronomo: "pass123",
+  mario: "1234frutta",
+  elena: "1234verdura",
+  antonio: "piantagrassa2",
+  alice: "curatrice10",
+};
+
+/**
+ * Cosa mostrare nella colonna "Password" della schermata Utenti per
+ * l'account `username`: la password nota in chiaro per i 6 account demo a
+ * credenziali fisse sopra, altrimenti un messaggio onesto — non "•••••••",
+ * che lascerebbe intendere che il dato esista solo nascosto. Vedi anche
+ * Investigazione in claude/... sul perché il backend non può mai
+ * restituire una password reale creata dopo l'installazione.
+ */
+function userPasswordDisplay(username) {
+  const known = STATE.users.sessionPasswords[username] || KNOWN_DEMO_PASSWORDS[username];
+  return known
+    ? { text: known, known: true }
+    : { text: "non recuperabile (hash non reversibile)", known: false };
+}
+
 /* ------------------------------------------------------------------ */
 /* Application state                                                  */
 /* ------------------------------------------------------------------ */
@@ -460,6 +494,15 @@ const STATE = {
     deleteError: null,
     // null | { kind: "sending" } | { kind: "success"|"error", message }
     status: null,
+    // Password in chiaro degli account creati da QUESTA sessione di
+    // dashboard (username -> password), popolato in submitCreateUser():
+    // solo in memoria, mai persistito né rimandato al backend, che non la
+    // restituisce mai (vedi KNOWN_DEMO_PASSWORDS/userPasswordDisplay() più
+    // sopra). Si perde alla ricarica della pagina, esattamente come per
+    // qualunque account creato da un'altra sessione o da un altro
+    // amministratore: la colonna "Password" di quel momento in poi torna a
+    // mostrare "non recuperabile" per quell'account, onestamente.
+    sessionPasswords: {},
   },
 
   // Strategy di controllo a livello di impianto (pagina Controllo,
@@ -516,11 +559,39 @@ const STATE = {
   // "are you sure" step before the POST actually fires.
   addSectorForm: null,
 
+  // Pop-up di risoluzione EmergencyLockdown (#emergency-modal-overlay,
+  // renderEmergencyModal()/openEmergencyModal()) — INDIPENDENTE da
+  // modalKind/#modal-overlay sopra: i due pop-up non condividono stato,
+  // possono in teoria stare aperti insieme (es. aperto dal riepilogo del
+  // settore). null quando chiuso; altrimenti:
+  // { zoneId, zoneLabel, phase, cause, component, diagnostic, faultId,
+  //   error }
+  // - phase: "loading" (sto leggendo zona+eventi) | "ask" (pronto, in
+  //   attesa dell'operatore) | "sending-fault" | "sending-emergency" |
+  //   "waiting-fault" | "waiting-emergency" (comando inviato, in attesa che
+  //   l'Edge lo confermi) | "error"
+  // - cause: "hardware" (zone.active_fault_id valorizzato — solo un
+  //   InjectFault riuscito lo imposta, vedi Zone.active_fault_id lato
+  //   backend) | "safety_range" (EmergencyLockdown senza alcun guasto
+  //   iniettato: può derivare solo da una violazione di safety_range o
+  //   model_limit_incompatible, vedi la nota IMPORTANTE su Degraded vs
+  //   EmergencyLockdown in demo/seed_dev_data.py) | "unknown" (fallback
+  //   prudente: stessa UI di "safety_range", mai un ResetFault a caso)
+  emergencyModal: null,
+
   modalZoneId: null,
   modalZone: null,
   modalKind: null, // "zone" | "recipe" | null — which pop-up #modal-content currently shows
   modalTab: "summary",
   modalTelemetry: null,
+  // DLI (mol/m²/giorno) maturato nel giorno simulato corrente, ricavato
+  // integrando il PPFD storico con telemetryLightDliPoints() — vedi
+  // refreshModalLightDli(). Tenuto separato da modalTelemetry perché quel
+  // campo resta il PPFD ISTANTANEO grezzo (stessa unità del sensore): la
+  // riga "Luce (DLI)" del riepilogo confronta questo valore con il target
+  // di ricetta (anch'esso un DLI giornaliero), non il PPFD, altrimenti il
+  // confronto sarebbe tra due grandezze fisiche diverse.
+  modalLightDli: null,
   modalActuators: null,
   modalRecipe: null,
   modalRecipeId: null,
@@ -588,6 +659,11 @@ const STATE = {
   returnTo: null,
 
   adhocIntervals: [],
+  // Stessa idea di adhocIntervals ma per il pop-up di risoluzione
+  // EmergencyLockdown, indipendente dal modale principale (i due possono
+  // in teoria stare aperti insieme) — vedi pollEmergencyModal()/
+  // closeEmergencyModal().
+  emergencyAdhocIntervals: [],
 
   // Dedicated "Allarmi" page (STATE.view = "alerts"): situazioni attive +
   // registro eventi + movimenti in quarantena. `zoneBundle` holds the raw
@@ -1208,8 +1284,8 @@ function renderHome() {
         <div class="side-card">
           <div class="side-card-title">Stato impianto</div>
           <div class="status-line"><span class="swatch" style="background:var(--nominal)"></span><span class="label">Settori online</span><b>${online}/${total}</b></div>
-          <div class="status-line"><span class="swatch" style="background:var(--warn)"></span><span class="label">Settori Degraded</span><b>${degraded}</b></div>
-          <div class="status-line"><span class="swatch" style="background:var(--danger)"></span><span class="label">EmergencyLockdown</span><b>${emergency}</b></div>
+          <div class="status-line"><span class="swatch" style="background:var(--warn)"></span><span class="label">Settori in Anomalia</span><b>${degraded}</b></div>
+          <div class="status-line"><span class="swatch" style="background:var(--danger)"></span><span class="label">Blocco di Emergenza</span><b>${emergency}</b></div>
           <div class="status-sep"></div>
           <div class="status-hint">Ogni settore controlla 6 variabili con strategia Threshold, PID o Predictive. Setpoint e bande arrivano dalla fase attiva della ricetta assegnata.</div>
         </div>
@@ -1421,7 +1497,7 @@ function renderSectorRowInner(z, { showConnection = true, liveStripZoneId = null
       <div class="sector-row-species">${escapeHtml(species)}</div>
       <div class="sector-row-tags">
         <span class="tag-phase">${escapeHtml(z.current_phase || "nessuna fase attiva")}</span>
-        <span class="pill op-${z.operational_state}">${z.operational_state}</span>
+        <span class="pill op-${z.operational_state}">${OP_META[z.operational_state] ? OP_META[z.operational_state].label : z.operational_state}</span>
         <span class="tag-phase" data-plant-count="${escapeAttr(z.id)}">${escapeHtml(plantCountLabel(z.id))}</span>
       </div>
       ${showConnection ? `<div class="sector-actuator-indicators" data-actuator-indicators="${escapeAttr(z.id)}">${renderActuatorIndicators(STATE.actuatorSnapshots[z.id])}</div>` : ""}
@@ -1660,13 +1736,13 @@ function renderAlertsPanel() {
   const orphanPlants = computeOrphanQuarantinePlants();
 
   if (!alerts.length && !orphanPlants.length) {
-    el.innerHTML = '<div class="empty-note">Nessun allarme attivo: tutti i settori registrati sono Nominal.</div>';
+    el.innerHTML = '<div class="empty-note">Nessun allarme attivo: tutti i settori registrati sono in stato Regolare.</div>';
     return;
   }
 
   const zoneAlertsHtml = alerts.map((a) => {
     const op = OP_META[a.zone.operational_state] || OP_META.Nominal;
-    const title = `${zoneLabel(a.zone)} in ${a.zone.operational_state}`;
+    const title = `${zoneLabel(a.zone)} in ${op.label || a.zone.operational_state}`;
     const detail = a.event
       ? `${fmtDateTime(a.event.recorded_at)} · ${escapeHtml(a.event.event_type)}`
       : "nessun evento registrato per questo settore";
@@ -1678,10 +1754,6 @@ function renderAlertsPanel() {
     `;
   }).join("");
 
-  // Third, client-computed category: plants stuck in quarantine because
-  // their origin sector no longer exists. Distinct title from the zone
-  // alerts above but the same visual shape, so it reads as one more entry
-  // in the same list rather than a separate widget.
   const orphanHtml = orphanPlants.map((p) => {
     return `
       <div class="alert-item">
@@ -1807,9 +1879,9 @@ function eventBadgeMeta(ev) {
     return { badge: "COMANDO KO", color: "#a58a5e", bg: "rgba(201,128,63,.08)" };
   }
   if (ev.payload && ev.payload.current_state === "EmergencyLockdown") {
-    return { badge: "EMERGENCYLOCKDOWN", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)" };
+    return { badge: "BLOCCO DI EMERGENZA", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)" };
   }
-  return { badge: "DEGRADED", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
+  return { badge: "ANOMALIA", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)" };
 }
 
 /** Title/detail text built entirely from the event's own real payload
@@ -1834,8 +1906,9 @@ function eventTitleDetail(ev) {
     };
   }
   const cur = p.current_state || "?";
+  const curLabel = OP_META[cur] ? OP_META[cur].label : cur;
   return {
-    title: `Settore passato in ${cur}`,
+    title: `Settore passato in ${curLabel}`,
     detail: p.reason || "Nessun motivo registrato per questa transizione.",
   };
 }
@@ -1860,10 +1933,10 @@ function computeEventLogEntries(limitTotal) {
 function activeZoneCardMeta(zone) {
   if (zone.operational_state === "EmergencyLockdown") {
     return {
-      badge: "EMERGENCYLOCKDOWN", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)",
+      badge: "BLOCCO DI EMERGENZA", color: OP_META.EmergencyLockdown.color, bg: "rgba(193,90,74,.14)",
       tone: "danger",
       title: "Settore bloccato in emergenza",
-      staticDetail: "Il ciclo di controllo è sospeso: nessun comando viene applicato finché lo stato non torna Nominal.",
+      staticDetail: "Il ciclo di controllo è sospeso: nessun comando viene applicato finché lo stato non torna Regolare.",
     };
   }
   if (zone.status !== "online") {
@@ -1875,25 +1948,20 @@ function activeZoneCardMeta(zone) {
     };
   }
   return {
-    badge: "DEGRADED", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)",
+    badge: "ANOMALIA", color: OP_META.Degraded.color, bg: "rgba(201,128,63,.14)",
     tone: "warn",
-    title: "Settore in stato Degraded",
-    staticDetail: "Funzionamento ridotto: se la condizione persiste per più cicli di controllo scatta l'escalation a EmergencyLockdown.",
+    title: "Settore in stato di Anomalia",
+    staticDetail: "Funzionamento ridotto: se la condizione persiste per più cicli di controllo scatta l'escalation a Blocco di Emergenza.",
   };
 }
 
 function renderActiveZoneCard({ zone, lastEvent }) {
   const meta = activeZoneCardMeta(zone);
   const deptName = zone.department_name || DEPT_FALLBACK_NAMES[zone.department_number] || "";
-  // The static per-state explanation above is always true; swap in the
-  // real reason from this zone's last event when that event is actually
-  // what produced the CURRENT badge — only for EmergencyLockdown/Degraded,
-  // never for "SETTORE OFFLINE": once a zone stops reporting, its last
-  // event could be anything (even an old recovery to Nominal, as here),
-  // and showing it as if it explains "why offline" would be misleading —
-  // the honest answer for offline is exactly the static text above.
+  
   let detail = meta.staticDetail;
-  if ((meta.badge === "EMERGENCYLOCKDOWN" || meta.badge === "DEGRADED")
+  // Qui abbiamo aggiornato le stringhe "BLOCCO DI EMERGENZA" e "ANOMALIA"
+  if ((meta.badge === "BLOCCO DI EMERGENZA" || meta.badge === "ANOMALIA")
       && lastEvent && lastEvent.event_type === "StateChanged" && lastEvent.payload
       && lastEvent.payload.current_state === zone.operational_state) {
     detail = lastEvent.payload.reason || detail;
@@ -1917,6 +1985,9 @@ function renderActiveZoneCard({ zone, lastEvent }) {
       </div>
       <div class="alert-card-foot">
         <span class="alert-card-foot-hint">${escapeHtml(connHint)}</span>
+        ${zone.operational_state === "EmergencyLockdown"
+          ? `<button type="button" class="btn btn-danger-ghost" style="padding:6px 12px;font-size:11.5px" data-action="manage-emergency" data-zone-id="${escapeAttr(zone.id)}">Gestisci emergenza</button>`
+          : ""}
       </div>
     </article>
   `;
@@ -1973,7 +2044,7 @@ function renderActiveSituationsSection() {
   const orphanGroups = computeOrphanQuarantineGroups();
   const total = zoneAlerts.length + orphanGroups.length;
   const body = total === 0
-    ? '<div class="empty-note">Nessuna situazione attiva: tutti i settori registrati sono Nominal e nessuna pianta in quarantena ha perso il proprio settore di origine.</div>'
+    ? '<div class="empty-note">Nessuna situazione attiva: tutti i settori registrati sono in stato Regolare e nessuna pianta in quarantena ha perso il proprio settore di origine.</div>'
     : `<div class="alerts-grid">${zoneAlerts.map(renderActiveZoneCard).join("")}${orphanGroups.map(renderOrphanGroupCard).join("")}</div>`;
   return `
     <section class="alerts-section">
@@ -5258,6 +5329,7 @@ async function submitCreateUser() {
       role: form.role,
       display_name: form.displayName.trim() || undefined,
     });
+    state.sessionPasswords[created.username] = password;
     state.form = { username: "", password: "", displayName: "", role: "agronomo" };
     state.status = { kind: "success", message: `Account "${created.username}" (${roleLabel(created.role)}) creato.` };
     state.loaded = false;
@@ -5326,11 +5398,13 @@ function renderUserManagementPanel() {
             <button type="button" class="user-action-btn danger" data-action="confirm-delete-user" data-username="${escapeAttr(u.username)}" ${deleting ? "disabled" : ""}>${deleting ? "Eliminazione…" : "Elimina"}</button>
           </div>`
         : `<button type="button" class="user-action-btn danger" data-action="ask-delete-user" data-username="${escapeAttr(u.username)}">Elimina</button>`;
+    const password = userPasswordDisplay(u.username);
     return `
       <div class="data-table-row cols-users">
         <div>${escapeHtml(u.display_name)}</div>
         <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(u.username)}</div>
         <div><span class="pill role-${u.role}">${roleLabel(u.role)}</span></div>
+        <div class="user-password-cell${password.known ? "" : " unknown"}">${escapeHtml(password.text)}</div>
         <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${fmtDateTime(u.created_at)}</div>
         <div class="user-row-action">${action}</div>
       </div>
@@ -5341,7 +5415,7 @@ function renderUserManagementPanel() {
     ? `<div class="empty-note">Impossibile caricare gli account: ${escapeHtml(state.error)}</div>`
     : `
       <div class="data-table" style="margin-bottom:18px">
-        <div class="data-table-head cols-users"><span>NOME</span><span>UTENTE</span><span>RUOLO</span><span>CREATO IL</span><span>AZIONI</span></div>
+        <div class="data-table-head cols-users"><span>NOME</span><span>UTENTE</span><span>RUOLO</span><span>PASSWORD</span><span>CREATO IL</span><span>AZIONI</span></div>
         ${rowsHtml || '<div class="empty-note">Caricamento…</div>'}
       </div>
       ${state.deleteError ? `<div class="login-error" style="margin-bottom:18px">${escapeHtml(state.deleteError)}</div>` : ""}
@@ -5421,17 +5495,10 @@ function renderUsersView() {
 
 function renderControl() {
   if (!isAdmin()) {
-    // Defensive only — switchView() is the real gate and never leaves
-    // STATE.view as "control" for a non-Amministratore, so this path
-    // shouldn't be reachable in practice.
     document.getElementById("view-control").innerHTML = '<div class="empty-note">Sezione riservata agli amministratori.</div>';
     return;
   }
   const zones = STATE.zones;
-  // Department order everywhere is DEPT_ORDER (plain numeric, 1-5) — not
-  // alphabetical by name (which uniqueSorted would give). Only departments
-  // that actually have a registered zone show up in the filter, same as
-  // before, just in the fixed order.
   const deptRank = Object.fromEntries(DEPT_ORDER.map((n, i) => [n, i]));
   const deptNumbersPresent = DEPT_ORDER.filter((n) => zones.some((z) => z.department_number === n));
   const deptOptions = deptNumbersPresent.map((n) => {
@@ -5458,7 +5525,7 @@ function renderControl() {
         <div>${escapeHtml(z.department_name)}</div>
         <div style="color:var(--ink-soft)">${escapeHtml(z.plant_species || "—")}</div>
         <div class="mono" style="font-size:11.5px;color:var(--ink-mute)">${escapeHtml(z.current_phase || "—")}</div>
-        <div><span class="pill op-${z.operational_state}">${z.operational_state}</span></div>
+        <div><span class="pill op-${z.operational_state}">${OP_META[z.operational_state]?.label || z.operational_state}</span></div>
         <div class="mono" style="font-size:10.5px;color:var(--ink-faint)">${strategies.join(" · ")}</div>
         <div class="link-arrow">→</div>
       </div>
@@ -5506,6 +5573,7 @@ async function openZoneModal(zoneId, entry) {
   // if/when the user later drills into the advanced tab from here.
   STATE.returnTo = entry === "advanced" ? { action: "closeModal" } : null;
   STATE.modalTelemetry = null;
+  STATE.modalLightDli = null;
   STATE.modalActuators = null;
   STATE.modalRecipe = null;
   STATE.modalRecipeId = null;
@@ -5545,6 +5613,12 @@ async function openZoneModal(zoneId, entry) {
   if (STATE.modalZone.active_recipe_id) loadModalRecipe(STATE.modalZone.active_recipe_id);
 
   setPoll("modal", tickModal, MODAL_POLL_MS);
+  // Cadenza CHART_POLL_MS (non MODAL_POLL_MS): a differenza degli altri
+  // dati del modale, questo richiede una GET fino a 500 campioni storici
+  // (vedi refreshModalLightDli()), troppo pesante per essere rifatta ogni
+  // 4s. Attivo su ENTRAMBE le tab (non solo "advanced" come modal-chart):
+  // la tile "Luce (DLI)" del riepilogo la usa quanto il grafico avanzato.
+  setPoll("modal-light-dli", refreshModalLightDli, CHART_POLL_MS);
   if (STATE.modalTab === "advanced") {
     setPoll("modal-chart", refreshChartData, CHART_POLL_MS);
   }
@@ -5562,11 +5636,13 @@ function closeModal() {
   document.getElementById("modal-overlay").classList.add("hidden");
   clearPoll("modal");
   clearPoll("modal-chart");
+  clearPoll("modal-light-dli");
   STATE.adhocIntervals.forEach(clearInterval);
   STATE.adhocIntervals = [];
   STATE.modalZoneId = null;
   STATE.modalZone = null;
   STATE.modalKind = null;
+  STATE.modalLightDli = null;
   STATE.currentRecipe = null;
   STATE.recipeForm = null;
   STATE.deleteZoneConfirm = false;
@@ -5611,6 +5687,268 @@ function goBack() {
     openZoneModal(target.zoneId, "advanced");
     return;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Pop-up di risoluzione EmergencyLockdown (#emergency-modal-overlay)  */
+/*                                                                     */
+/* Apribile dalla card "Situazioni attive" della pagina Allarmi        */
+/* (data-action="manage-emergency" su renderActiveZoneCard) e dal      */
+/* riepilogo del settore (renderZoneSummary) — vedi STATE.             */
+/* emergencyModal più sopra per la forma dello stato e il perché della  */
+/* distinzione hardware/safety_range.                                 */
+/* ------------------------------------------------------------------ */
+
+async function openEmergencyModal(zoneId) {
+  STATE.emergencyModal = {
+    zoneId,
+    zoneLabel: zoneId,
+    phase: "loading",
+    cause: "unknown",
+    component: null,
+    diagnostic: null,
+    faultId: null,
+    error: null,
+  };
+  document.getElementById("emergency-modal-overlay").classList.remove("hidden");
+  renderEmergencyModal();
+
+  try {
+    const [zone, events] = await Promise.all([
+      apiGet(`/zones/${encodeURIComponent(zoneId)}`),
+      apiGet(`/zones/${encodeURIComponent(zoneId)}/events`, { limit: 50 }),
+    ]);
+    if (!STATE.emergencyModal || STATE.emergencyModal.zoneId !== zoneId) return; // chiuso nel frattempo
+    updateZoneInState(zone);
+    // Più recente prima (vedi backend/app/features/events/repository.py
+    // list_events, ORDER BY ... DESC): il primo FaultDetected della lista
+    // è quindi già il più recente, nessun ordinamento da rifare qui.
+    const lastFault = events.find((e) => e.event_type === "FaultDetected");
+    const em = STATE.emergencyModal;
+    em.zoneLabel = zoneLabel(zone);
+    // Vedi il commento su Zone.active_fault_id: SOLO un InjectFault
+    // riuscito lo valorizza, quindi è un modo affidabile per distinguere
+    // un guasto hardware (sempre iniettato, in questo sistema simulato)
+    // da una violazione di safety_range (mai iniettata, scatenata da puro
+    // input di ricetta — vedi demo/seed_dev_data.py).
+    if (zone.active_fault_id) {
+      em.cause = "hardware";
+      em.faultId = zone.active_fault_id;
+    } else if (zone.operational_state === "EmergencyLockdown") {
+      em.cause = "safety_range";
+    } else {
+      em.cause = "unknown"; // non (più) in EmergencyLockdown: vedi renderEmergencyModal
+    }
+    if (lastFault) {
+      em.component = lastFault.payload && lastFault.payload.component || null;
+      em.diagnostic = lastFault.payload && lastFault.payload.diagnostic || null;
+    }
+    em.phase = "ask";
+    renderEmergencyModal();
+  } catch (err) {
+    if (!STATE.emergencyModal || STATE.emergencyModal.zoneId !== zoneId) return;
+    STATE.emergencyModal.phase = "error";
+    STATE.emergencyModal.error = err.message;
+    renderEmergencyModal();
+  }
+}
+
+function closeEmergencyModal() {
+  STATE.emergencyModal = null;
+  document.getElementById("emergency-modal-overlay").classList.add("hidden");
+  STATE.emergencyAdhocIntervals.forEach(clearInterval);
+  STATE.emergencyAdhocIntervals = [];
+}
+
+function renderEmergencyModal() {
+  const em = STATE.emergencyModal;
+  const content = document.getElementById("emergency-modal-content");
+  if (!em) { content.innerHTML = ""; return; }
+
+  if (em.phase === "loading") {
+    content.innerHTML = `<div class="emergency-modal-body"><div class="empty-note">Caricamento…</div></div>`;
+    return;
+  }
+  if (em.phase === "error") {
+    content.innerHTML = `
+      <div class="emergency-modal-body">
+        <div class="emergency-modal-title">Impossibile aprire la gestione dell'emergenza</div>
+        <div class="emergency-modal-status error">${escapeHtml(em.error || "Errore sconosciuto.")}</div>
+        <div class="emergency-modal-actions" style="margin-top:16px">
+          <button type="button" class="btn" data-action="close-emergency-modal">Chiudi</button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const zone = STATE.zones.find((z) => z.id === em.zoneId) || null;
+  if (zone && zone.operational_state !== "EmergencyLockdown" && em.phase === "ask") {
+    content.innerHTML = `
+      <div class="emergency-modal-body">
+        <div class="emergency-modal-title">✅ Settore già sbloccato</div>
+        <div class="emergency-modal-zone">${escapeHtml(em.zoneLabel)}</div>
+        <div class="emergency-modal-question">Questo settore non risulta più in Blocco di Emergenza: probabilmente è già stato gestito da un altro operatore.</div>
+        <div class="emergency-modal-actions">
+          <button type="button" class="btn btn-primary" data-action="close-emergency-modal">Chiudi</button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const componentLabel = em.component ? String(em.component).replace(/_/g, " ") : "il sensore coinvolto";
+  const busy = em.phase === "sending-fault" || em.phase === "waiting-fault" || em.phase === "sending-emergency" || em.phase === "waiting-emergency";
+
+  let statusHtml = "";
+  if (em.phase === "sending-fault") statusHtml = `<div class="emergency-modal-status">Invio ResetFault…</div>`;
+  else if (em.phase === "waiting-fault") statusHtml = `<div class="emergency-modal-status">ResetFault inviato: attendo la conferma dall'Edge Controller…</div>`;
+  else if (em.phase === "sending-emergency") statusHtml = `<div class="emergency-modal-status">Sensore ripristinato: invio ResetEmergency…</div>`;
+  else if (em.phase === "waiting-emergency") statusHtml = `<div class="emergency-modal-status">ResetEmergency inviato: attendo la conferma dall'Edge Controller…</div>`;
+  if (em.error) statusHtml += `<div class="emergency-modal-status error">${escapeHtml(em.error)}</div>`;
+
+  let body;
+  if (em.cause === "hardware") {
+    body = `
+      <div class="emergency-modal-title">🔧 Guasto hardware rilevato</div>
+      <div class="emergency-modal-zone">${escapeHtml(em.zoneLabel)}</div>
+      <div class="emergency-modal-question">
+        Hai fisicamente riparato <b>${escapeHtml(componentLabel)}</b>?
+        ${em.diagnostic ? `<br><span style="color:var(--ink-faint);font-size:12px">${escapeHtml(em.diagnostic)}</span>` : ""}
+      </div>
+      <div class="emergency-modal-actions">
+        <button type="button" class="btn" data-action="close-emergency-modal" ${busy ? "disabled" : ""}>Annulla</button>
+        <button type="button" class="btn btn-primary" data-action="confirm-hardware-repaired" data-zone-id="${escapeAttr(em.zoneId)}" ${busy ? "disabled" : ""}>Sì, sblocca settore</button>
+      </div>
+    `;
+  } else {
+    body = `
+      <div class="emergency-modal-title">⚠️ Violazione del range di sicurezza</div>
+      <div class="emergency-modal-zone">${escapeHtml(em.zoneLabel)}</div>
+      <div class="emergency-modal-question">
+        ${componentLabel !== "il sensore coinvolto"
+          ? `Il valore misurato da <b>${escapeHtml(componentLabel)}</b> è risultato critico.`
+          : "Un valore misurato è risultato critico rispetto al range di sicurezza della ricetta."}
+        Assicurati di aver corretto il problema in serra o di aver modificato la ricetta prima di sbloccare.
+      </div>
+      <div class="emergency-modal-actions">
+        <button type="button" class="btn" data-action="close-emergency-modal" ${busy ? "disabled" : ""}>Annulla</button>
+        <button type="button" class="btn btn-danger" data-action="confirm-force-reset-emergency" data-zone-id="${escapeAttr(em.zoneId)}" ${busy ? "disabled" : ""}>Forza sblocco (ResetEmergency)</button>
+      </div>
+    `;
+  }
+
+  content.innerHTML = `<div class="emergency-modal-body">${body}${statusHtml}</div>`;
+}
+
+/**
+ * Ramo "guasto hardware": ResetFault con l'active_fault_id verificato
+ * della zona (mai un id indovinato — vedi Zone.active_fault_id), e SOLO
+ * dopo la conferma (status 201 sull'invio + poll che active_fault_id sia
+ * davvero tornato null) l'invio automatico di ResetEmergency, esattamente
+ * la sequenza richiesta: mai i due comandi insieme "a scommessa".
+ */
+async function confirmHardwareRepaired(zoneId) {
+  const em = STATE.emergencyModal;
+  if (!em || em.zoneId !== zoneId || em.cause !== "hardware" || !em.faultId) return;
+  em.phase = "sending-fault";
+  em.error = null;
+  renderEmergencyModal();
+  try {
+    await apiPost(`/zones/${encodeURIComponent(zoneId)}/commands`, {
+      command_id: `reset-fault-${zoneId}-${Date.now()}`,
+      command_type: "ResetFault",
+      payload: { fault_id: em.faultId },
+    });
+    em.phase = "waiting-fault";
+    renderEmergencyModal();
+    pollEmergencyModal(zoneId, {
+      isDone: (zone) => !zone.active_fault_id,
+      onDone: () => sendForceResetEmergency(zoneId, { afterFaultReset: true }),
+      onTimeout: () => {
+        em.phase = "ask";
+        em.error = "Nessuna conferma dall'Edge Controller entro il timeout: verifica che il sensore sia stato davvero riparato e riprova.";
+        renderEmergencyModal();
+      },
+    });
+  } catch (err) {
+    em.phase = "ask";
+    em.error = "Invio del ResetFault non riuscito: " + err.message;
+    renderEmergencyModal();
+  }
+}
+
+/**
+ * Ramo "safety_range"/"unknown" (chiamata diretta dal pop-up) E secondo
+ * passo del ramo "hardware" (chiamata da confirmHardwareRepaired() dopo la
+ * conferma del ResetFault) — stesso comando, StateChanged verso Nominal è
+ * l'unico segnale osservabile in entrambi i casi.
+ */
+async function sendForceResetEmergency(zoneId, { afterFaultReset = false } = {}) {
+  const em = STATE.emergencyModal;
+  if (!em || em.zoneId !== zoneId) return;
+  em.phase = "sending-emergency";
+  em.error = null;
+  renderEmergencyModal();
+  try {
+    await apiPost(`/zones/${encodeURIComponent(zoneId)}/commands`, {
+      command_id: `reset-emergency-${zoneId}-${Date.now()}`,
+      command_type: "ResetEmergency",
+      payload: {},
+    });
+    em.phase = "waiting-emergency";
+    renderEmergencyModal();
+    pollEmergencyModal(zoneId, {
+      isDone: (zone) => zone.operational_state !== "EmergencyLockdown",
+      onDone: () => {
+        showToast(`Settore ${em.zoneLabel} sbloccato: tornato Regolare.`);
+        closeEmergencyModal();
+      },
+      onTimeout: () => {
+        em.phase = "ask";
+        em.error = afterFaultReset
+          ? "Il sensore risulta riparato, ma nessuna conferma di ResetEmergency è arrivata entro il timeout: riprova a forzare lo sblocco."
+          : "Nessuna conferma dall'Edge Controller entro il timeout: verifica di aver corretto il problema o la ricetta, poi riprova.";
+        renderEmergencyModal();
+      },
+    });
+  } catch (err) {
+    em.phase = "ask";
+    em.error = "Invio del ResetEmergency non riuscito: " + err.message;
+    renderEmergencyModal();
+  }
+}
+
+function confirmForceResetEmergency(zoneId) {
+  sendForceResetEmergency(zoneId, { afterFaultReset: false });
+}
+
+/** @brief Polling condiviso dai due comandi del pop-up: rilegge GET
+ * /zones/{id} finché `isDone(zone)` non è vera o scade il timeout — stesso
+ * pattern di pollForPhaseChange/pollForCultivationStopped. */
+function pollEmergencyModal(zoneId, { isDone, onDone, onTimeout }) {
+  let elapsed = 0;
+  const iv = setInterval(async () => {
+    elapsed += COMMAND_POLL_MS;
+    try {
+      const zone = await apiGet(`/zones/${encodeURIComponent(zoneId)}`);
+      updateZoneInState(zone);
+      if (!STATE.emergencyModal || STATE.emergencyModal.zoneId !== zoneId) {
+        clearInterval(iv); // pop-up chiuso nel frattempo
+        return;
+      }
+      if (isDone(zone)) {
+        clearInterval(iv);
+        onDone();
+        return;
+      }
+    } catch (e) { /* errore transitorio, continuo a interrogare */ }
+    if (elapsed >= COMMAND_TIMEOUT_MS) {
+      clearInterval(iv);
+      if (STATE.emergencyModal && STATE.emergencyModal.zoneId === zoneId) onTimeout();
+    }
+  }, COMMAND_POLL_MS);
+  STATE.emergencyAdhocIntervals.push(iv);
 }
 
 async function loadModalRecipe(recipeId) {
@@ -5756,7 +6094,7 @@ function renderModal() {
       <div style="min-width:0">
         <div class="zone-header-code">
           <span class="code">${zoneLabel(zone)}</span>
-          <span class="pill op-${zone.operational_state}"><span class="pill-dot"></span>${zone.operational_state}</span>
+          <span class="pill op-${zone.operational_state}"><span class="pill-dot"></span>${OP_META[zone.operational_state]?.label || zone.operational_state}</span>
         </div>
         <h2>Reparto ${zone.department_number} — Settore ${zone.sector_number}</h2>
         <div class="zone-header-meta">
@@ -5792,7 +6130,9 @@ function renderZoneSummary(zone) {
 
   const recipe = STATE.modalRecipe;
   const tiles = VARIABLES.map((v) => {
-    const reading = STATE.modalTelemetry ? STATE.modalTelemetry[v.sensorField] : null;
+    const reading = v.key === "light"
+      ? STATE.modalLightDli
+      : (STATE.modalTelemetry ? STATE.modalTelemetry[v.sensorField] : null);
     const strategy = zone.current_strategies[v.key];
     const target = findPhaseTarget(recipe, zone.current_phase, v.key);
     const min = target ? target.allowed_range.minimum : null;
@@ -5820,9 +6160,12 @@ function renderZoneSummary(zone) {
       </section>
       <section class="zone-section" style="background:#fbfdfc">
         <div class="live-head"><span class="live-badge">LIVE</span><span class="title">Stato riportato dal sistema</span><span class="ro">sola lettura</span></div>
-        <div class="status-tile"><span class="status-tile-icon" style="background:${op.color}"></span><div><div class="label">Stato di sicurezza</div><div class="value mono" style="color:${op.color}">${zone.operational_state}</div></div></div>
+        <div class="status-tile"><span class="status-tile-icon" style="background:${op.color}"></span><div><div class="label">Stato di sicurezza</div><div class="value mono" style="color:${op.color}">${op.label || zone.operational_state}</div></div></div>
         <div class="status-tile"><span class="status-tile-icon round" style="background:${online ? "#2f9e6b" : "#c15a4a"}"></span><div><div class="label">Connessione</div><div class="value">${online ? "Online" : "Offline"}</div></div></div>
         <div class="status-tile"><span class="status-tile-icon round" style="border:2px solid ${online ? "#2f9e6b" : "#9aada4"}"></span><div><div class="label">Attività corrente</div><div class="value">${escapeHtml(lifecycleLabel)}</div><div class="sub">ultimo contatto Edge · ${escapeHtml(contactLabel)}</div></div></div>
+        ${zone.operational_state === "EmergencyLockdown"
+          ? `<div style="display:flex;justify-content:flex-end;margin-top:14px"><button type="button" class="btn btn-danger" data-action="manage-emergency" data-zone-id="${escapeAttr(zone.id)}">Gestisci emergenza</button></div>`
+          : ""}
       </section>
       <section class="zone-section span2">
         <div class="zone-section-title">Fase della ricetta</div>
@@ -6790,6 +7133,36 @@ function telemetryLightDliPoints(samples) {
   });
 }
 
+/**
+ * DLI (mol/m²/giorno) maturato finora nel giorno simulato corrente per il
+ * settore aperto nel modale, in STATE.modalLightDli — l'unica grandezza
+ * confrontabile con il target di luce della ricetta (anch'esso un DLI
+ * giornaliero, vedi il commento su VARIABLES/telemetryLightDliPoints più
+ * sopra). Usata dalla tile "Luce (DLI)" di renderZoneSummary invece del
+ * PPFD istantaneo grezzo di STATE.modalTelemetry.light_ppfd_umol_m2_s, che
+ * è nella grandezza fisica sbagliata per quel confronto.
+ *
+ * Stessa finestra/GET di refreshChartData (ultime 24h reali, fino a 500
+ * campioni) ma con la propria cadenza CHART_POLL_MS indipendente dalla tab
+ * attiva — vedi il commento su setPoll("modal-light-dli", ...) in
+ * openZoneModal().
+ */
+async function refreshModalLightDli() {
+  if (!STATE.modalZoneId) return;
+  const zoneId = STATE.modalZoneId;
+  try {
+    const from = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const samples = await apiGet(`/zones/${encodeURIComponent(zoneId)}/telemetry`, { from, limit: 500 });
+    if (STATE.modalZoneId !== zoneId) return; // modal changed while the request was in flight
+    const points = telemetryLightDliPoints(samples);
+    const last = points.length ? points[points.length - 1] : null;
+    STATE.modalLightDli = last && last.v !== null && last.v !== undefined && isFinite(last.v) ? last.v : null;
+  } catch (e) {
+    STATE.modalLightDli = null;
+  }
+  renderModalIfSafe();
+}
+
 async function refreshChartData() {
   if (!STATE.modalZoneId) return;
   const zoneId = STATE.modalZoneId;
@@ -7043,6 +7416,25 @@ function initEventDelegation() {
 
     const closeBtn = e.target.closest('[data-action="close-modal"]');
     if (closeBtn) { closeModal(); return; }
+
+    // Pop-up di risoluzione EmergencyLockdown: controllato PRIMA di
+    // "open-zone" qui sotto perché il bottone "Gestisci" vive dentro una
+    // card/tile che ha anche data-action="open-zone" — closest() risolve
+    // comunque al bottone (l'antenato più vicino), ma solo se questo
+    // branch intercetta e ritorna prima di arrivare a quel controllo.
+    if (e.target.id === "emergency-modal-overlay") { closeEmergencyModal(); return; }
+
+    const closeEmergencyBtn = e.target.closest('[data-action="close-emergency-modal"]');
+    if (closeEmergencyBtn) { closeEmergencyModal(); return; }
+
+    const manageEmergency = e.target.closest('[data-action="manage-emergency"]');
+    if (manageEmergency) { openEmergencyModal(manageEmergency.dataset.zoneId); return; }
+
+    const confirmHardware = e.target.closest('[data-action="confirm-hardware-repaired"]');
+    if (confirmHardware && !confirmHardware.disabled) { confirmHardwareRepaired(confirmHardware.dataset.zoneId); return; }
+
+    const confirmForceEmergency = e.target.closest('[data-action="confirm-force-reset-emergency"]');
+    if (confirmForceEmergency && !confirmForceEmergency.disabled) { confirmForceResetEmergency(confirmForceEmergency.dataset.zoneId); return; }
 
     const openZone = e.target.closest('[data-action="open-zone"], [data-action="open-zone-advanced"]');
     if (openZone) {

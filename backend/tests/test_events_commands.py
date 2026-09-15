@@ -276,6 +276,88 @@ def test_command_round_trip_is_idempotent(client: TestClient) -> None:
     assert client.get("/api/v1/zones/zone-1/commands").json() == []
 
 
+def test_inject_fault_sets_and_reset_fault_clears_active_fault_id(
+    client: TestClient,
+) -> None:
+    """zones.active_fault_id esiste solo per permettere a un client (la
+    dashboard) di costruire il payload di un ResetFault reale senza gia'
+    conoscere l'id scelto da chi ha iniettato il guasto — vedi il commento
+    su Zone.active_fault_id e su complete_command()."""
+    assert client.get("/zones/zone-1").json()["active_fault_id"] is None
+
+    inject = client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": "inject-1",
+            "command_type": "InjectFault",
+            "payload": {
+                "fault_id": "demo-dropout-zone-1",
+                "target_type": "sensor",
+                "target": "soil_moisture",
+                "mode": "sensor_dropout",
+            },
+        },
+    )
+    assert inject.status_code == 201
+
+    # In sospeso (nessun result ancora inviato): active_fault_id non deve
+    # ancora riflettere un'iniezione che l'Edge non ha (per quanto ne sa il
+    # backend) ancora applicata con successo.
+    assert client.get("/zones/zone-1").json()["active_fault_id"] is None
+
+    client.post(
+        "/api/v1/zones/zone-1/commands/inject-1/result",
+        json={"status": "succeeded", "message": "fault injected", "replayed": False},
+    )
+    assert client.get("/zones/zone-1").json()["active_fault_id"] == "demo-dropout-zone-1"
+
+    reset = client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": "reset-1",
+            "command_type": "ResetFault",
+            "payload": {"fault_id": "demo-dropout-zone-1"},
+        },
+    )
+    assert reset.status_code == 201
+    # Ancora non azzerato: solo un ResetFault RIUSCITO (result inviato sotto)
+    # deve pulire il campo, non la sola messa in coda del comando.
+    assert client.get("/zones/zone-1").json()["active_fault_id"] == "demo-dropout-zone-1"
+
+    client.post(
+        "/api/v1/zones/zone-1/commands/reset-1/result",
+        json={"status": "succeeded", "message": "fault reset", "replayed": False},
+    )
+    assert client.get("/zones/zone-1").json()["active_fault_id"] is None
+
+
+def test_inject_fault_rejected_does_not_set_active_fault_id(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/v1/zones/zone-1/commands",
+        json={
+            "command_id": "inject-2",
+            "command_type": "InjectFault",
+            "payload": {
+                "fault_id": "demo-dropout-zone-1-b",
+                "target_type": "sensor",
+                "target": "soil_moisture",
+                "mode": "sensor_dropout",
+            },
+        },
+    )
+    client.post(
+        "/api/v1/zones/zone-1/commands/inject-2/result",
+        json={
+            "status": "rejected",
+            "message": "target already has an active injected fault",
+            "replayed": False,
+        },
+    )
+    assert client.get("/zones/zone-1").json()["active_fault_id"] is None
+
+
 def test_can_enqueue_cultivation_activation(client: TestClient) -> None:
     response = client.post(
         "/api/v1/zones/zone-1/commands",

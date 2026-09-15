@@ -262,6 +262,20 @@ def _migrate_zone_administrative_status_column(
         )
 
 
+def _migrate_zone_active_fault_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """@brief Aggiunge il tracciamento del guasto iniettato attivo alle zone
+    create in precedenza (vedi backend/app/features/commands/repository.py
+    complete_command(), che lo popola/azzera su InjectFault/ResetFault
+    riusciti, e Zone.active_fault_id)."""
+    if (
+        _table_columns(connection, "zones")
+        and "active_fault_id" not in _table_columns(connection, "zones")
+    ):
+        connection.execute("ALTER TABLE zones ADD COLUMN active_fault_id TEXT")
+
+
 def _migrate_fifth_department_schema(connection: sqlite3.Connection) -> None:
     """@brief Estende i reparti a 1-5 e rende mista la composizione del quinto."""
     columns = _table_columns(connection, "zones")
@@ -398,6 +412,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             administrative_status TEXT NOT NULL DEFAULT 'active'
                 CHECK (administrative_status IN
                        ('active', 'inactive', 'maintenance')),
+            active_fault_id TEXT,
             CHECK (
                 (department_number BETWEEN 1 AND 4
                  AND plant_species IS NOT NULL)
@@ -414,6 +429,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     _migrate_zone_administrative_status_column(connection)
     _migrate_cultivation_completed_column(connection)
     _migrate_zone_projection_columns(connection)
+    _migrate_zone_active_fault_column(connection)
     connection.execute(
         """
         UPDATE zones
